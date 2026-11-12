@@ -15,9 +15,9 @@ $package = ./scripts/Package-Release.ps1 -Target x86_64-pc-windows-msvc -Evidenc
 
 默认要求存在提交且工作区干净。开发快照可以显式加 `-AllowUncommitted`；清单会记录 `dirtySource=true` 和独立源码快照 SHA-256，不能仅靠提交号识别这种产物。输出目录已存在时拒绝覆盖。
 
-包中包括原生库、公开头文件、SDK 源码、许可证、依赖锁、工具链声明、SPDX 2.3 SBOM、验证证据及 SHA-256 清单。打包时检查 PE/ELF 机器类型和位宽，防止把 x64 库标成 x86/ARM。`Test-Release.ps1` 检查文件集合、长度、哈希、依赖清单引用以及原生目标；校验和检测意外损坏，不代替发布签名或可信分发。
+包中包括原生库、公开头文件、SDK 源码、许可证、依赖锁、工具链声明、SPDX 2.3 SBOM、可选验证证据及 SHA-256 清单。打包时检查 PE/ELF 机器类型和位宽，防止把 x64 库标成 x86/ARM。`Test-Release.ps1` 检查文件集合、长度、哈希、依赖清单引用以及原生目标；校验和检测意外损坏，不代替发布签名或可信分发。
 
-SBOM 从 `cargo metadata --locked --offline` 和 Cargo.lock 生成，包含解析到的开发/构建依赖；`--filter-platform` 用于目标过滤。工作区本地包没有 crates.io 归档校验和，因此其完整性由源码快照和候选包哈希覆盖。SBOM 的许可证声明不等于法律清查结论。
+SBOM 从 `cargo metadata --locked --offline` 和 Cargo.lock 生成，包含解析到的开发/构建依赖；`--filter-platform` 用于目标过滤。`creationInfo.comment` 记录锁文件 SHA-256 和目标，打包与验包通过共享的 `Test-Sbom.ps1` 核对来源及每个依赖的名称、版本和 checksum。`Test-Sbom-Regression.ps1` 覆盖错误版本、checksum、锁来源、目标以及打包/验包负测。工作区本地包没有 crates.io 归档校验和，因此其完整性由源码快照和候选包哈希覆盖。SBOM 的许可证声明不等于法律清查结论。
 
 ## 正式发布的证据
 
@@ -40,16 +40,16 @@ SBOM 从 `cargo metadata --locked --offline` 和 Cargo.lock 生成，包含解�
 
 ## 本轮开发候选清单（2026-11-12）
 
-七个 Release 开发候选已生成并通过 `Test-Release.ps1` 的文件集合、长度、SHA-256、SPDX 引用和原生机器类型检查。它们都使用 Cargo.lock SHA-256 `22325345ec78e56bbe09fdc376d8411b970916e7a26feb1a7bf9325f0d5a2f67`，源码快照 SHA-256 `2e57adfe549e00b38811489cb328031835c0873379bc44530c14f28ff05322b4`。仓库当前没有提交，因此各 manifest 均明确记录 `dirtySource=true`，不能把该快照当成已提交正式发布。
+七个 Release 开发候选已重建，并通过 `Test-Release.ps1` 的文件集合、长度、SHA-256、SPDX 引用、锁文件/目标来源、逐依赖版本/checksum 和原生机器类型检查；`Test-Sbom-Regression.ps1` 负测也全部通过。它们都使用 Cargo.lock SHA-256 `22325345ec78e56bbe09fdc376d8411b970916e7a26feb1a7bf9325f0d5a2f67`，源码快照 SHA-256 `c89b623bb469efb2ce4e2e1c48aba0839b21b004ad78e13a47b19011843a7707`。manifest 记录首次提交 `f926556d15972ac3f6e53de91b874b62b2905f19` 和 `dirtySource=true`，因为最新 MT 回归与文档改动尚未提交。本轮候选未附证据目录，外部验证记录不被打包进候选。
 
 | target | 候选目录（均位于 `dist/`） | 清单文件数 | SPDX依赖包数 | 本地证据边界 |
 |---|---|---:|---:|---|
-| x86_64-pc-windows-msvc | `pmac-2.0.0-x86_64-pc-windows-msvc-release` | 49 | 219 | 本机原生/SDK与既有真机短测 |
-| i686-pc-windows-msvc | `pmac-2.0.0-i686-pc-windows-msvc-release` | 58 | 218 | WoW64原生/SDK |
-| aarch64-pc-windows-msvc | `pmac-2.0.0-aarch64-pc-windows-msvc-release` | 41 | 218 | 仅交叉构建，未原生运行 |
-| x86_64-unknown-linux-gnu | `pmac-2.0.0-x86_64-unknown-linux-gnu-release` | 53 | 213 | Ubuntu 24.04 WSL原生/SDK |
-| i686-unknown-linux-gnu | `pmac-2.0.0-i686-unknown-linux-gnu-release` | 40 | 212 | WSL multilib原生/C++，无SDK |
-| armv7-unknown-linux-gnueabihf | `pmac-2.0.0-armv7-unknown-linux-gnueabihf-release` | 42 | 210 | QEMU/C/C++/ABI，无物理板卡 |
-| aarch64-unknown-linux-gnu | `pmac-2.0.0-aarch64-unknown-linux-gnu-release` | 42 | 212 | QEMU/C/ABI，本地无C++样例与SDK |
+| x86_64-pc-windows-msvc | `pmac-2.0.0-x86_64-pc-windows-msvc-release` | 32 | 219 | 本机原生/SDK与旧路由真机短测 |
+| i686-pc-windows-msvc | `pmac-2.0.0-i686-pc-windows-msvc-release` | 32 | 218 | WoW64原生/Python；本轮未重跑x86 .NET |
+| aarch64-pc-windows-msvc | `pmac-2.0.0-aarch64-pc-windows-msvc-release` | 32 | 218 | 仅交叉构建，未原生运行 |
+| x86_64-unknown-linux-gnu | `pmac-2.0.0-x86_64-unknown-linux-gnu-release` | 30 | 213 | Ubuntu 24.04 WSL原生/Python/fork |
+| i686-unknown-linux-gnu | `pmac-2.0.0-i686-unknown-linux-gnu-release` | 30 | 212 | WSL multilib原生Rust，无本轮SDK |
+| armv7-unknown-linux-gnueabihf | `pmac-2.0.0-armv7-unknown-linux-gnueabihf-release` | 30 | 210 | QEMU 128通过/1项既有SFTP时序失败，无物理板卡 |
+| aarch64-unknown-linux-gnu | `pmac-2.0.0-aarch64-unknown-linux-gnu-release` | 30 | 212 | QEMU 129项Rust，本地无C++样例与SDK |
 
-汇总校验见 `build/reports/final-candidate-validation.json`。每个候选只收集对应目标的日志与摘要，不因同包包含证据而扩大验收范围。候选生成后的文档说明更新不改变manifest记录的源码快照；若Rust、C ABI、SDK、构建脚本、CI或锁文件再变更，必须重新同步验证并重建候选。
+汇总校验见 `build/reports/final-candidate-validation.json`。候选完整性通过不表示所有平台测试或真机验收通过。候选生成后的文档说明更新不改变 manifest 记录的源码快照；若 Rust、C ABI、SDK、构建脚本、CI 或锁文件再变更，必须重新同步验证并重建候选。

@@ -117,6 +117,9 @@ impl ExecutionContext {
     pub fn origin_thread(&self) -> std::thread::ThreadId {
         self.request.origin_thread()
     }
+    pub fn origin_liveness(&self) -> std::sync::Weak<()> {
+        self.request.origin_liveness().clone()
+    }
 
     pub fn mark_publish_started(&self) {
         self.request.mark_publish_started();

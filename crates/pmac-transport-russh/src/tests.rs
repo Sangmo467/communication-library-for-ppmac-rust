@@ -24,6 +24,14 @@ struct Observed {
     key_attempts: AtomicUsize,
     commands: std::sync::Mutex<Vec<String>>,
     command_channels: std::sync::Mutex<Vec<(ChannelId, String)>>,
+    next_connection: AtomicUsize,
+    open_programs: std::sync::Mutex<HashMap<(usize, ChannelId), Vec<String>>>,
+    program_lines: std::sync::Mutex<Vec<String>>,
+    gated_command: std::sync::Mutex<String>,
+    command_gate: AsyncGate,
+    max_gpascii_channels: AtomicUsize,
+    gpascii_channels: AtomicUsize,
+    closed_gpascii_channels: AtomicUsize,
     delayed_started: Notify,
     delayed_release: Notify,
     filesystem: Arc<sftp::Memory>,
@@ -79,6 +87,7 @@ impl AsyncGate {
 }
 struct TestServer {
     observed: Arc<Observed>,
+    connection_id: usize,
     accepted_key: Option<PublicKey>,
     channels: HashSet<ChannelId>,
     resetting: HashSet<ChannelId>,
@@ -132,12 +141,45 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.channels.remove(&channel) {
+            self.observed
+                .gpascii_channels
+                .fetch_sub(1, Ordering::AcqRel);
+            self.observed
+                .closed_gpascii_channels
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.buffers.remove(&channel);
+        self.streams.remove(&channel);
+        Ok(())
+    }
+
     async fn exec_request(
         &mut self,
         channel: ChannelId,
         command: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if command == b"gpascii -2" {
+            let opened = self
+                .observed
+                .gpascii_channels
+                .fetch_add(1, Ordering::AcqRel)
+                + 1;
+            let limit = self.observed.max_gpascii_channels.load(Ordering::Acquire);
+            if limit != 0 && opened > limit {
+                self.observed
+                    .gpascii_channels
+                    .fetch_sub(1, Ordering::AcqRel);
+                session.channel_failure(channel)?;
+                return Ok(());
+            }
+        }
         session.channel_success(channel)?;
         match command {
             b"gpascii -2" => {
@@ -257,7 +299,39 @@ impl server::Handler for TestServer {
                 .lock()
                 .unwrap()
                 .push((channel, command.clone()));
+            let gated = self.observed.gated_command.lock().unwrap().as_str() == command;
+            if gated {
+                self.observed.command_gate.enter().await;
+            }
+            let program_key = (self.connection_id, channel);
             match command.as_str() {
+                "open prog 1" => {
+                    self.observed
+                        .open_programs
+                        .lock()
+                        .unwrap()
+                        .insert(program_key, Vec::new());
+                    session.data(channel, b"\x06".to_vec())?;
+                }
+                "close" => {
+                    if let Some(lines) = self
+                        .observed
+                        .open_programs
+                        .lock()
+                        .unwrap()
+                        .remove(&program_key)
+                    {
+                        *self.observed.program_lines.lock().unwrap() = lines;
+                    }
+                    session.data(channel, b"\x06".to_vec())?;
+                }
+                "list prog 1" => {
+                    let lines = self.observed.program_lines.lock().unwrap().join("\r\n");
+                    session.data(
+                        channel,
+                        format!("list prog 1\r\n{lines}\r\n\x06").into_bytes(),
+                    )?;
+                }
                 "$$$" | "$$$***" => {
                     self.resetting.insert(channel);
                     self.observed.reset_gate.enter().await;
@@ -371,6 +445,22 @@ impl server::Handler for TestServer {
                         let _ = handle.data(channel, b"late\x06".to_vec()).await;
                     });
                 }
+                _ if self
+                    .observed
+                    .open_programs
+                    .lock()
+                    .unwrap()
+                    .contains_key(&program_key) =>
+                {
+                    self.observed
+                        .open_programs
+                        .lock()
+                        .unwrap()
+                        .get_mut(&program_key)
+                        .unwrap()
+                        .push(command.clone());
+                    session.data(channel, b"\x06".to_vec())?;
+                }
                 _ => {
                     let handle = session.handle();
                     tokio::spawn(async move {
@@ -434,9 +524,11 @@ impl Fixture {
                 let config = config.clone();
                 let observed = server_observed.clone();
                 let accepted_key = accepted_key.clone();
+                let connection_id = observed.next_connection.fetch_add(1, Ordering::AcqRel);
                 tokio::spawn(async move {
                     let handler = TestServer {
                         observed,
+                        connection_id,
                         accepted_key,
                         channels: HashSet::new(),
                         resetting: HashSet::new(),
@@ -704,6 +796,238 @@ fn calling_threads_use_distinct_channels_and_open_program_keeps_its_channel() {
     assert_eq!(channel("dwell 10"), owner);
     assert_eq!(channel("close"), owner);
     assert_ne!(channel("Motor[1].ServoCtrl=1"), owner);
+    drop(channels);
+    let listed = fixture
+        .run(Operation::Command(Command::raw("list prog 1").unwrap()))
+        .unwrap();
+    assert!(listed
+        .response
+        .windows(b"dwell 10".len())
+        .any(|bytes| bytes == b"dwell 10"));
+    assert!(!listed
+        .response
+        .windows(b"Motor[1].ServoCtrl=1".len())
+        .any(|bytes| bytes == b"Motor[1].ServoCtrl=1"));
+}
+
+#[test]
+fn mt06_open_and_close_response_interleavings_preserve_program_ownership() {
+    for gated in ["open prog 1", "close"] {
+        let fixture = Fixture::new(None);
+        let mut options = fixture.options();
+        options.control_pool_size = 2;
+        fixture.run(Operation::Connect(options)).unwrap();
+        fixture
+            .observed
+            .gated_command
+            .lock()
+            .unwrap()
+            .push_str(gated);
+        fixture.observed.command_gate.block();
+        std::thread::scope(|scope| {
+            let owner = scope.spawn(|| {
+                if gated == "close" {
+                    for command in ["open prog 1", "dwell 10"] {
+                        fixture
+                            .run(Operation::Command(Command::raw(command).unwrap()))
+                            .unwrap();
+                    }
+                }
+                fixture
+                    .run(Operation::Command(Command::raw(gated).unwrap()))
+                    .unwrap();
+                if gated == "open prog 1" {
+                    for command in ["dwell 10", "close"] {
+                        fixture
+                            .run(Operation::Command(Command::raw(command).unwrap()))
+                            .unwrap();
+                    }
+                }
+            });
+            fixture.observed.command_gate.wait(1);
+            fixture
+                .run(Operation::Command(
+                    Command::raw("Motor[1].ServoCtrl=1").unwrap(),
+                ))
+                .unwrap();
+            fixture.observed.command_gate.release();
+            owner.join().unwrap();
+        });
+        let listed = fixture
+            .run(Operation::Command(Command::raw("list prog 1").unwrap()))
+            .unwrap();
+        assert!(listed
+            .response
+            .windows(b"dwell 10".len())
+            .any(|bytes| bytes == b"dwell 10"));
+        assert!(!listed
+            .response
+            .windows(b"Motor[1].ServoCtrl=1".len())
+            .any(|bytes| bytes == b"Motor[1].ServoCtrl=1"));
+    }
+}
+
+#[test]
+fn mt08_channel_exhaustion_never_borrows_another_threads_channel() {
+    let fixture = Fixture::new(None);
+    fixture
+        .observed
+        .max_gpascii_channels
+        .store(1, Ordering::Release);
+    fixture.connect();
+    fixture
+        .run(Operation::Command(Command::raw("open prog 1").unwrap()))
+        .unwrap();
+    let error = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                fixture.run(Operation::Command(
+                    Command::raw("Motor[1].ServoCtrl=1").unwrap(),
+                ))
+            })
+            .join()
+            .unwrap()
+    })
+    .unwrap_err();
+    assert!(matches!(
+        error.code,
+        ErrorCode::Disconnected | ErrorCode::ConnectError
+    ));
+    assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+    assert!(!error.fatal_transport);
+    assert!(fixture.client.is_connected());
+    assert!(!fixture
+        .observed
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|command| command == "Motor[1].ServoCtrl=1"));
+    fixture
+        .run(Operation::Command(Command::raw("close").unwrap()))
+        .unwrap();
+}
+
+#[test]
+fn mt08_exited_threads_release_channels_before_new_threads_are_admitted() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+    for _ in 0..70 {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| fixture.run(Operation::Command(Command::raw("#1p").unwrap())))
+                .join()
+                .unwrap()
+                .unwrap();
+        });
+    }
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while fixture
+        .observed
+        .closed_gpascii_channels
+        .load(Ordering::Acquire)
+        < 70
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "exited-thread GPASCII channels were not closed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        fixture
+            .observed
+            .closed_gpascii_channels
+            .load(Ordering::Acquire),
+        70
+    );
+    assert_eq!(fixture.observed.gpascii_channels.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn mt08_local_channel_quota_rejects_a_live_overflow_thread_without_retiring_the_member() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+    let ready = std::sync::Barrier::new(64);
+    let release = std::sync::Barrier::new(64);
+    std::thread::scope(|scope| {
+        let fixture = &fixture;
+        for _ in 0..63 {
+            let ready = &ready;
+            let release = &release;
+            scope.spawn(move || {
+                fixture
+                    .run(Operation::Command(Command::raw("#1p").unwrap()))
+                    .unwrap();
+                ready.wait();
+                release.wait();
+            });
+        }
+        ready.wait();
+        let error = scope
+            .spawn(|| {
+                fixture.run(Operation::Command(
+                    Command::raw("Motor[1].ServoCtrl=1").unwrap(),
+                ))
+            })
+            .join()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+        assert!(!error.fatal_transport);
+        release.wait();
+    });
+    assert!(fixture.client.is_connected());
+    assert!(!fixture
+        .observed
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|command| command == "Motor[1].ServoCtrl=1"));
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+}
+
+#[test]
+fn readiness_response_budget_is_independent_of_the_business_command_budget() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+    let response = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                fixture.run_with_options(
+                    Operation::Command(Command::raw("open prog 1").unwrap()),
+                    RequestOptions {
+                        max_response_bytes: 1,
+                        timeout_ms: 10_000,
+                        ..RequestOptions::default()
+                    },
+                )
+            })
+            .join()
+            .unwrap()
+    })
+    .unwrap();
+    assert!(response.response.is_empty());
+    assert!(fixture.client.is_connected());
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
 }
 
 struct TestFile(std::path::PathBuf);

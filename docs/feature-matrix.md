@@ -29,7 +29,7 @@
 | Runtime 广播完成通知 | `pmac_runtime_wait_completion` / `pmac_runtime_wake` | 原生与SDK已测独立cursor、不丢poll→wait通知、退出唤醒；不是消费式结果队列 |
 | C++17 / C++98 | `bindings/cpp` | 本机编译/运行；RAII、请求与同步适配；显式状态NoThrow文件存在性、错误名/分类、版本/RuntimeInfo便利层已回归 |
 | C# Task/Dispose/CancellationToken | `bindings/dotnet` | 本机原生SDK烟测768同步负测+32异步提交、GC、池、通知和retryable release通过 |
-| Python bytes/asyncio/线程/fork | `bindings/python` | 17项unittest及原生SDK同规模短测通过；长期、多进程与跨平台压力不由短测代签 |
+| Python bytes/asyncio/线程/fork | `bindings/python` | 19项unittest（含Linux真实fork）及原生SDK同规模短测通过；长期、多进程与跨平台压力不由短测代签 |
 | 七个 target 的 CI/ABI/SBOM/候选打包 | `.github/workflows/ci.yml`、`scripts` | 已配置；实际已运行范围见验证状态，未把CI配置计为平台通过 |
 | RSA 依赖安全补丁 | `vendor/russh`、补丁完整性脚本 | 最小依赖/借用类型适配已记录；当前锁文件 audit/deny 通过 |
 | dpkg 安装 | 按用户范围排除 | 不交付 |

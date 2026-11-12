@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use async_trait::async_trait;
 use pmac_core::{
@@ -52,11 +52,19 @@ impl Transport for RusshTransport {
     }
 }
 
+const MAX_CONTROL_CHANNELS: usize = 64;
+const READINESS_RESPONSE_LIMIT: usize = 4096;
+
+struct ControlChannel {
+    channel: Channel,
+    owner: Weak<()>,
+}
+
 pub(crate) struct RusshSession {
     options: ConnectOptions,
     control: Arc<Connection>,
     control_channel: tokio::sync::Mutex<Option<Channel>>,
-    control_channels: tokio::sync::Mutex<HashMap<std::thread::ThreadId, Channel>>,
+    control_channels: tokio::sync::Mutex<HashMap<std::thread::ThreadId, ControlChannel>>,
     maintenance: tokio::sync::Mutex<Option<Arc<Connection>>>,
     sftp: tokio::sync::Mutex<Option<Arc<SftpSession>>>,
     persistent_shell: tokio::sync::Mutex<Option<Channel>>,
@@ -75,27 +83,44 @@ impl Session for RusshSession {
         context: &ExecutionContext,
     ) -> Result<OperationResult, Error> {
         let origin = context.origin_thread();
+        let owner = context.origin_liveness();
         let mut channels = self.control_channels.lock().await;
-        let result =
-            if let std::collections::hash_map::Entry::Vacant(entry) = channels.entry(origin) {
-                let channel = match self.control_channel.lock().await.take() {
-                    Some(channel) => Ok(channel),
-                    None => open_gpascii(&self.control, context).await,
-                };
-                channel.map(|channel| {
-                    entry.insert(channel);
-                })
-            } else {
-                Ok(())
-            };
-        let result = match result {
-            Ok(()) => {
-                let channel = channels
-                    .get_mut(&origin)
-                    .expect("thread channel initialized");
-                execute_gpascii(&self.control, channel, command, context).await
+        reclaim_exited_channels(&mut channels).await;
+        if !channels.contains_key(&origin) && channels.len() >= MAX_CONTROL_CHANNELS {
+            return Err(Error::new(
+                ErrorCode::ResourceLimit,
+                format!("per-member GPASCII thread channel limit reached ({MAX_CONTROL_CHANNELS})"),
+            ));
+        }
+        let result = match channels.entry(origin) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let channel = &mut entry.into_mut().channel;
+                execute_gpascii(
+                    &self.control,
+                    channel,
+                    command,
+                    context,
+                    context.max_response_bytes(),
+                    true,
+                )
+                .await
             }
-            Err(error) => Err(error),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let channel = match self.control_channel.lock().await.take() {
+                    Some(channel) => channel,
+                    None => open_gpascii(&self.control, context).await?,
+                };
+                let channel = &mut entry.insert(ControlChannel { channel, owner }).channel;
+                execute_gpascii(
+                    &self.control,
+                    channel,
+                    command,
+                    context,
+                    context.max_response_bytes(),
+                    true,
+                )
+                .await
+            }
         };
         if result.as_ref().is_err_and(|error| error.fatal_transport) {
             self.control.retire();
@@ -509,24 +534,62 @@ impl RusshSession {
     }
 }
 
+async fn reclaim_exited_channels(channels: &mut HashMap<std::thread::ThreadId, ControlChannel>) {
+    let exited = channels
+        .iter()
+        .filter(|(_, entry)| entry.owner.strong_count() == 0)
+        .map(|(origin, _)| *origin)
+        .collect::<Vec<_>>();
+    for origin in exited {
+        if let Some(entry) = channels.remove(&origin) {
+            let _ = entry.channel.close().await;
+        }
+    }
+}
+
+fn channel_initialization_error(mut error: Error) -> Error {
+    error.certainty = ExecutionCertainty::NotSent;
+    error.fatal_transport = false;
+    error
+}
+
 async fn open_gpascii(
     connection: &Arc<Connection>,
     context: &ExecutionContext,
 ) -> Result<Channel, Error> {
-    let mut channel = connection.open_channel().await?;
-    channel
-        .exec(true, "gpascii -2")
+    let mut channel = connection
+        .open_channel()
         .await
-        .map_err(transport_error)?;
-    let ready = Command::raw("Sys.ServoCount")?;
-    let verified = execute_gpascii(connection, &mut channel, &ready, context).await?;
-    let readiness_value = verified
-        .response
-        .split(|byte| matches!(byte, b'\r' | b'\n'))
-        .rfind(|line| !line.is_empty())
-        .ok_or_else(|| disconnected("GPASCII readiness query returned no value"))?;
-    pmac_protocol::parse_u64(readiness_value)
-        .map_err(|_| disconnected("GPASCII readiness query returned no valid counter"))?;
+        .map_err(channel_initialization_error)?;
+    let initialized = async {
+        channel
+            .exec(true, "gpascii -2")
+            .await
+            .map_err(transport_error)?;
+        let ready = Command::raw("Sys.ServoCount")?;
+        let verified = execute_gpascii(
+            connection,
+            &mut channel,
+            &ready,
+            context,
+            READINESS_RESPONSE_LIMIT,
+            false,
+        )
+        .await?;
+        let readiness_value = verified
+            .response
+            .split(|byte| matches!(byte, b'\r' | b'\n'))
+            .rfind(|line| !line.is_empty())
+            .ok_or_else(|| disconnected("GPASCII readiness query returned no value"))?;
+        pmac_protocol::parse_u64(readiness_value)
+            .map_err(|_| disconnected("GPASCII readiness query returned no valid counter"))?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = initialized {
+        let _ = channel.close().await;
+        return Err(channel_initialization_error(error));
+    }
     Ok(channel)
 }
 
@@ -535,6 +598,8 @@ async fn execute_gpascii(
     channel: &mut Channel,
     command: &Command,
     context: &ExecutionContext,
+    response_limit: usize,
+    channel_failure_retires_connection: bool,
 ) -> Result<OperationResult, Error> {
     if matches!(
         command.maintenance(),
@@ -545,11 +610,13 @@ async fn execute_gpascii(
     let mut wire = command.text().as_bytes().to_vec();
     wire.push(b'\n');
     channel.data_bytes(wire).await.map_err(transport_error)?;
-    let mut decoder = GpasciiDecoder::new(command.text().as_bytes(), context.max_response_bytes());
+    let mut decoder = GpasciiDecoder::new(command.text().as_bytes(), response_limit);
     let mut stderr = Vec::new();
     loop {
         let Some(message) = channel.wait().await else {
-            connection.retire();
+            if channel_failure_retires_connection {
+                connection.retire();
+            }
             return Err(disconnected(
                 "GPASCII channel closed before a complete response",
             ));
@@ -569,8 +636,7 @@ async fn execute_gpascii(
                         error.certainty = ExecutionCertainty::Confirmed;
                         return Err(error);
                     }
-                    if frame.body.len().saturating_add(stderr.len()) > context.max_response_bytes()
-                    {
+                    if frame.body.len().saturating_add(stderr.len()) > response_limit {
                         return Err(Error::new(
                             ErrorCode::ResourceLimit,
                             "combined GPASCII output limit exceeded",
@@ -586,13 +652,15 @@ async fn execute_gpascii(
                 }
             }
             ChannelMsg::ExtendedData { data, .. } => {
-                append_bounded(&mut stderr, &data, context.max_response_bytes())?;
+                append_bounded(&mut stderr, &data, response_limit)?;
             }
             ChannelMsg::Failure => {
                 return Err(disconnected("server rejected GPASCII exec request"))
             }
             ChannelMsg::Eof | ChannelMsg::Close => {
-                connection.retire();
+                if channel_failure_retires_connection {
+                    connection.retire();
+                }
                 return Err(disconnected(
                     "GPASCII channel ended with an incomplete response",
                 ));

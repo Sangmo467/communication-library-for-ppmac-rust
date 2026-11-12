@@ -8,6 +8,10 @@ use tokio::sync::Notify;
 use crate::budget::AdmissionPermit;
 use crate::{ConnectOptions, Error, ErrorCode, ExecutionCertainty, PoolProfile};
 
+std::thread_local! {
+    static ORIGIN_LIVENESS: Arc<()> = Arc::new(());
+}
+
 #[derive(Clone)]
 pub enum Operation {
     Connect(ConnectOptions),
@@ -142,6 +146,7 @@ pub struct Request {
     client_id: u64,
     options: RequestOptions,
     origin_thread: std::thread::ThreadId,
+    origin_liveness: std::sync::Weak<()>,
     created: Instant,
     deadline: Option<tokio::time::Instant>,
     inner: Mutex<RequestInner>,
@@ -184,6 +189,7 @@ impl Request {
             deadline: options.deadline(),
             options,
             origin_thread: std::thread::current().id(),
+            origin_liveness: ORIGIN_LIVENESS.with(Arc::downgrade),
             created: Instant::now(),
             inner: Mutex::new(RequestInner {
                 state: RequestState::Queued,
@@ -208,6 +214,9 @@ impl Request {
     }
     pub(crate) fn origin_thread(&self) -> std::thread::ThreadId {
         self.origin_thread
+    }
+    pub(crate) fn origin_liveness(&self) -> &std::sync::Weak<()> {
+        &self.origin_liveness
     }
     pub fn max_response_bytes(&self) -> usize {
         self.options.max_response_bytes

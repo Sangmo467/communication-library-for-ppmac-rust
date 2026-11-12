@@ -4,17 +4,16 @@
 
 依赖锁 SHA-256：`22325345ec78e56bbe09fdc376d8411b970916e7a26feb1a7bf9325f0d5a2f67`。工具链文件固定 Rust 1.99.1，本机 stable 工具链实际版本相同。目标 `i686-pc-windows-msvc`，MSVC 19.43.34810.0 / Visual Studio 2022。
 
-| 检查 | 最终源码实际结果 | 证据 |
+| 检查 | 当前源码实际结果 | 证据 |
 |---|---|---|
-| Rust workspace x86 | 126 通过，0 失败：core 5、FFI 11、protocol 40、testkit 35、transport 35 | `build/reports/windows-x86/rust-tests-final.log` |
-| CMake Win32 Debug/Release | 均通过，生成实际 PE I386/32 位 DLL | `cmake-build-final.log`、`cmake-build-release-native-final.log` |
-| C / C++17 / C++98 / NoThrow / ABI 探针 | Debug 与 Release 各 6/6 CTest 通过 | `ctest-final.log`、`ctest-release-final.log` |
-| C/Rust ABI | 122 个 size/align/offset/位宽值逐项一致 | `abi-c-final.txt`、`abi-rust-final.txt` |
-| Python x86 | 17 项 unittest；Debug 与 Release 生命周期烟测均通过 | `python-unittest-final.log`、`python-lifecycle-final.log`、`python-lifecycle-release-final.log` |
-| C# x86 | 现有 x86 .NET 运行时执行 net8.0 程序；Debug 与 Release 生命周期均通过 | `dotnet-lifecycle-final.log`、`dotnet-lifecycle-release-final.log` |
-| Release 原生身份 | 32 位 PE I386；5,954,560 字节；SHA-256 `0a812c8df59c44a1472d1250644bd70f20d00c40057721a6b803285e648b83be` | `build/reports/final-native-artifacts.json` |
+| Rust workspace x86 | 130 通过，0 失败：core 5、FFI 12、protocol 41、testkit 36、transport 36 | 本次WoW64命令结果；旧日志仅对应历史源码 |
+| CMake Win32 Release | 通过，生成实际 PE I386/32 位 DLL | 本次CMake构建结果 |
+| C / C++17 / C++98 / NoThrow / ABI 探针 | Release 6/6 CTest 通过；历史Debug和122项ABI对照保留 | 本次CTest结果及既有 `build/reports/windows-x86/` 记录 |
+| Python x86 | 真实Release DLL连续1025次非法 `max_file_tasks` 均返回InvalidArgument且输出ID为0，随后合法创建/关闭/释放通过 | 本次32位ctypes复测 |
+| C# x86 | 本轮未重跑；历史Debug/Release生命周期记录不代表当前源码 | 既有 `dotnet-lifecycle-*.log` 仅为历史证据 |
+| Release 原生身份 | 32 位 PE I386；5,967,872 字节；SHA-256 `7e0bbef4f1523e4662ae4427d77ed0a13a16219e4a26af3e28b4d2e7b28b09a8` | `build/reports/final-native-artifacts.json` |
 
-SDK 生命周期烟测包含每语言 768 个同步失败请求、32 个异步提交、连接池管理负测、原生完成通知、可重试 release 和 GC；这些计数不是控制器上成功执行的业务命令数。真实 SSH/SFTP/RSA 签名认证的自动化覆盖包含在 35 项 transport 测试中。
+SDK 生命周期烟测包含每语言 768 个同步失败请求、32 个异步提交、连接池管理负测、原生完成通知、可重试 release 和 GC；这些计数不是控制器上成功执行的业务命令数。当前真实 SSH/SFTP/RSA 签名认证和线程Channel亲和的自动化覆盖包含在 36 项 transport 测试中。
 
 ## 依赖安全
 

@@ -12,7 +12,7 @@
 | armv7-unknown-linux-gnueabihf | Ubuntu 24.04 + 交叉工具链/QEMU | hard-float 构建、Rust/C ABI/C++模拟执行 | ARMv7 板卡、SDK、真实尾延迟 |
 | aarch64-unknown-linux-gnu | Ubuntu 24.04 ARM64 | 原生 ARM64 Rust、C ABI/C++、Python、.NET | ARM64 板卡与真实控制器 |
 
-最终源码的本机验证已覆盖：Windows x64/x86各126项Rust及Debug/Release原生和SDK回归；Linux x64/x86各125项Rust、Release C/C++与ABI；ARMv7/ARM64 QEMU各125项Rust及Release ABI；Windows ARM64 Release交叉构建。ARMv7本地QEMU还执行了C/C++，ARM64本地QEMU执行了C；Windows ARM64没有原生运行证据。逐项范围和日志见 [验证状态](verification.md)、[Windows x86记录](platform-local-verification.md)及[Linux SDK记录](linux-sdk-verification.md)。
+当前验证已覆盖：Windows x64 132项、此前x86 130项Rust及Release原生/Python、x64 .NET回归；Linux x64 131项、此前x86和ARM64 QEMU各129项Rust，Linux x64另有Python3.12真实fork与生命周期；ARMv7 QEMU为128项通过、1项既有SFTP时序失败；Windows ARM64 Release交叉构建。新增MT01/MT06/MT08受控结果见 `build/reports/mt-controlled-validation.json`。历史C/C++、ABI和其他SDK证据不与本轮未重跑项混用。Windows ARM64没有原生运行证据。逐项范围见 [验证状态](verification.md)、[Windows x86记录](platform-local-verification.md)及[Linux SDK记录](linux-sdk-verification.md)。
 
 本轮按用户要求排除 72 小时/7 天长稳；不以缺少长稳报告单独阻断候选包。上述是本地开发验证，不是七个GitHub CI作业均已成功的证明。实际CI结果应保存在CI artifact，并关联源码提交、工具链和Cargo.lock哈希。Windows ARM32、ARM soft-float、ARMv6、musl和大端不在该矩阵。
 

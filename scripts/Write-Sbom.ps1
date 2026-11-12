@@ -18,10 +18,13 @@ try {
         $checksum = [regex]::Match($body, '(?m)^checksum = "(?<value>[^"]+)"').Groups['value'].Value
         if ($checksum) { $checksums["$name@$version"] = $checksum }
     }
+    $resolvedIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($node in $metadata.resolve.nodes) { $null = $resolvedIds.Add($node.id) }
+    $resolvedPackages = @($metadata.packages | Where-Object { $resolvedIds.Contains($_.id) })
     $identifiers = @{}
     $index = 0
-    foreach ($package in $metadata.packages) { $identifiers[$package.id] = "SPDXRef-Package-$index"; $index++ }
-    $packages = @($metadata.packages | ForEach-Object {
+    foreach ($package in $resolvedPackages) { $identifiers[$package.id] = "SPDXRef-Package-$index"; $index++ }
+    $packages = @($resolvedPackages | ForEach-Object {
         $package = $_
         $item = [ordered]@{
             SPDXID = $identifiers[$package.id]

@@ -2,7 +2,7 @@
 
 这是按 [重构实施计划](2026-11-11-rust-russh-rearchitecture.md) 建立的独立仓库。库版本为 **2.0.0 开发版，C ABI 2.1**，使用 `pmac_` 前缀，不兼容旧 API/ABI；dpkg 安装按范围排除。
 
-Windows x64/x86 已通过最终源码的 126 项 Rust 测试和 Release C/C++/.NET/Python 回归；Linux x64/x86 与 ARMv7/ARM64 已分别通过本机或 QEMU 的 125 项 Rust 测试，Windows ARM64 已完成 Release 交叉构建。显式连接池、维护屏障、故障隔离、原生完成通知及三语言 SDK 已实现。模拟运行、真实控制器短测和完整工业工况的证据分开登记，见 [验证状态](docs/verification.md)。本轮按用户要求排除 72 小时/7 天长稳，不启动后台长测试。
+Windows x64 的 132 项和 x86 此前的 130 项 Rust 测试通过，Release C/C++/Python 与 x64 .NET 回归通过；Linux x64 的 131 项、x86/ARM64 此前的各 129 项 Rust 测试通过，ARMv7/QEMU 为 128 通过、1 项既有 SFTP 时序测试失败，Windows ARM64 已完成 Release 交叉构建。严格线程—GPASCII Channel 亲和、维护屏障、故障隔离、原生完成通知及三语言 SDK 已实现。模拟运行、真实控制器短测和完整工业工况的证据分开登记，见 [验证状态](docs/verification.md)。本轮按用户要求排除 72 小时/7 天长稳，不启动后台长测试。
 
 ## 架构
 

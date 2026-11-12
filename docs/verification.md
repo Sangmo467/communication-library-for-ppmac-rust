@@ -8,18 +8,18 @@
 
 | 范围 | 已取得的证据 | 解释边界 |
 |---|---|---|
-| Rust workspace | Windows x64/x86各126项通过：core 5、ffi 11、protocol 40、testkit 35、transport-russh 35；Linux各125项通过：core 5、ffi 11、protocol 41、testkit 35、transport-russh 33；格式和Clippy检查通过 | Windows与Linux的平台条件测试数量不同；ARM模拟和原生运行按平台表分别登记 |
+| Rust workspace | 当前Windows x64为132项、Linux x64为131项全部通过；此前Windows x86和Linux x86/ARM64分别为130/129项通过，ARMv7为128通过/1项既有SFTP时序失败；Windows格式和Clippy通过 | 新增两项为受控MT06/MT08；平台条件测试数量不同，ARM模拟不代替原生验收 |
 | GPASCII/严格解析 | ACK/NAK、分包/回显、命名响应、尾帧、超长、完整数值消费、状态字和正则捕获 | 旧实际三种提取模式32例C oracle已回归；其他模式新增字节正则语义，见[模式迁移](pattern-migration.md) |
-| 核心/池 gate | 慢建连隔离、独立读成员、统一控制顺序、排队取消不发送、未知写闸门、维护屏障、revision/epoch、配额及关闭 | 确定性交错证明相应用例，不代替真实控制器所有资源竞争 |
+| 核心/池 gate | 慢建连隔离、严格线程—member/Channel亲和、open prog跨线程隔离、真实多线程并行、排队取消不发送、未知写闸门、维护屏障、revision/epoch、配额及关闭 | MT01/MT06/MT08受控通过，见 `build/reports/mt-controlled-validation.json`；不代替真实控制器资源竞争 |
 | 本地真实 SSH | 密码/加密私钥、无密码兜底、host/port known_hosts、固定指纹、GPASCII分包、stderr/退出码和取消隔离 | 本地受控服务器；旧固件算法交集仍需逐固件验证 |
 | 本地真实 SFTP | staging、流式校验、权限、不存在/无权限、空文件、写/校验/发布失败、取消、发布未知和原目标保护 | 未在用户控制器执行文件发布、磁盘满/断电或大文件吞吐测试 |
 | 原生 C/C++ | C头及C++17/C++98样例编译运行，显式status NoThrow文件查询/错误分类/元数据新增两种标准回归；C/Rust逐字段ABI探针已执行 | 当前完整平台范围以本页平台表和平台矩阵为准 |
-| Python SDK | 17项unittest通过；原生烟测768同步终态负测、32异步提交、pool管理、route、GC/fork、完成cursor和retryable release通过 | 包含8线程512请求归属的受控FakeNative回归；不是长期或跨进程压力签收 |
+| Python SDK | 当前19项unittest在Windows通过（POSIX用例跳过），Linux Python 3.12全19项通过；原生烟测768同步终态负测、32异步提交、pool管理、route、GC/fork、完成cursor和retryable release通过 | 包含8线程512请求归属的FakeNative及真实POSIX fork子进程GC回归；不是长期或跨进程压力签收 |
 | .NET SDK | 同规模原生生命周期烟测、认证参数复制、完成准入先于native提交、pool管理、route、GC、通知和retryable release通过 | 使用实际本机原生库，不是仅创建Runtime的旧烟测 |
 | 状态位迁移 | 冻结旧C++头90个访问器；Python和.NET对全零/全一/字段值/邻位隔离逐项验证；C++名称/位移/宽度静态对照 | 来源和逐项映射见legacy-symbol-matrix |
 | 安全依赖 | 最小russh vendor补丁完整性门禁及当前Cargo.lock的cargo audit/cargo deny通过 | 审计基于具体锁文件与公告库时点，不等于所有运行时行为已经证明安全 |
 
-最终Windows x64/x86与Linux x64的Debug和Release SDK生命周期均再次通过；Windows和Linux x64/x86的Release各执行6项原生样例/探针。[Windows x64最终汇总](../build/reports/windows-x64-final/summary.json)记录126项Rust、格式/Clippy、C++17/98 NoThrow和锁文件哈希；七个Release原生身份与SHA-256统一见 `build/reports/final-native-artifacts.json`，各候选包另有独立manifest。
+当前Windows x64/x86 Release各执行6项原生样例/探针并通过，Python和x64 .NET生命周期通过；Linux x64 Release Python/fork与生命周期通过。x86 .NET本轮未重跑。七个Release原生身份与SHA-256统一见 `build/reports/final-native-artifacts.json`，各候选包另有独立manifest。旧汇总中的126/125项计数仅对应当时源码，不作为当前回归计数。
 
 原生完成测试验证了独立等待者不会消费彼此通知、poll与wait之间完成不丢失、`WAIT_PENDING`不改变请求状态。shutdown测试区分了工作线程退出、子ID释放和Runtime最终release；子Request保留时release返回pending，释放后可重试。
 
@@ -45,7 +45,7 @@
 
 两lane本轮样本为600次，均落在4096样本容量内。驱动一般使用有界reservoir估计分位数，最大值是全量观测。时段和样本量不足以签收工业p99.9、黑洞检测、长期稳定性或控制器共享负载指标；也未与固定旧库基线作同条件性能比较。
 
-随后使用最新DLL完成[显式读池逐条记录](online-read-pool-2026-11-12.jsonl)：用户九条查询及 `list prog100` 全部状态0，路由均为member2/epoch1；`&1P` 返回 `X0 Y0`，list完整230字节多行，`Motor[1].Servo` 的空ACK为控制器实际响应。
+旧路由实现曾完成[显式读池逐条记录](online-read-pool-2026-11-12.jsonl)：用户九条查询及 `list prog100` 全部状态0，路由均为member2/epoch1；`&1P` 返回 `X0 Y0`，list完整230字节多行，`Motor[1].Servo` 的空ACK为控制器实际响应。该记录不冒充当前严格线程亲和版本的联机证据。
 
 `P1..8192` 的原生GetResponseAsync返回状态0、Confirmed，57.7575毫秒，64447字节、8192行，逐项索引无缺失/重复。原始值仅保存在本地忽略工件 `build/reports/online/P1-8192.json`，不复制到文档或fixture；模拟回归另验证严格P范围只读分类与8192行分包完整归属。
 
@@ -74,15 +74,15 @@
 
 | 客户端target | 当前已执行范围 | 尚缺范围 |
 |---|---|---|
-| Windows x64 / x86_64-pc-windows-msvc | 最终126项Rust；Debug/Release各6项CTest和SDK生命周期；C/Rust ABI与真实控制器短测 | 最低OS、完整故障/负载/业务验收 |
-| Windows x86 / i686-pc-windows-msvc | WoW64最终126项Rust；Debug/Release各6项CTest；122项ABI一致；Python32及.NET32生命周期通过，见[本机32位报告](platform-local-verification.md) | 最低OS、地址空间压力及32位设备工况/性能签收 |
-| Windows ARM64 / aarch64-pc-windows-msvc | 最终Release DLL交叉构建及PE ARM64机器码校验通过；尚未在ARM64主机运行 | 原生ARM64运行、ABI、SDK和设备证据 |
-| Linux x64 / x86_64-unknown-linux-gnu | Ubuntu 24.04 WSL最终125项Rust；Release五种C/C++样例、122项ABI、Python17项及Python/.NET生命周期通过，见[Linux SDK记录](linux-sdk-verification.md) | 原生独立主机与设备性能、最低内核/系统签收 |
-| Linux x86 / i686-unknown-linux-gnu | Ubuntu 24.04 WSL最终125项Rust、Release五种C/C++样例及122项ABI通过 | 独立32位系统、SDK与设备；.NET8 Linux x86路径见平台矩阵 |
-| Linux ARMv7 / armv7-unknown-linux-gnueabihf | Ubuntu 18.04交叉工具链与QEMU 8.2.2下最终125项Rust、Release五种C/C++样例、122项ABI及hard-float ELF检查通过 | 实际ARMv7客户端板卡、SDK、性能与设备工况 |
-| Linux ARM64 / aarch64-unknown-linux-gnu | Ubuntu 24.04交叉工具链与QEMU 8.2.2下最终125项Rust、Release C样例和122项ABI通过；本地未执行C++样例 | 原生客户端板卡/系统、C++、SDK、性能与设备证据 |
+| Windows x64 / x86_64-pc-windows-msvc | 当前130项Rust；Release 6项CTest和Python/.NET生命周期；C/Rust ABI与旧路由真机短测 | 最低OS、当前版本联机、完整故障/负载/业务验收 |
+| Windows x86 / i686-pc-windows-msvc | WoW64当前130项Rust、Release 6项CTest、32位Python非法配置1025次回滚通过；本轮未重跑.NET32 | 当前.NET32复测、最低OS、地址空间压力及设备工况/性能签收 |
+| Windows ARM64 / aarch64-pc-windows-msvc | 当前Release DLL交叉构建及PE ARM64机器码校验通过；尚未在ARM64主机运行 | 原生ARM64运行、ABI、SDK和设备证据 |
+| Linux x64 / x86_64-unknown-linux-gnu | Ubuntu 24.04 WSL当前129项Rust、Python3.12全19项（含真实fork）及Python生命周期通过；历史C/C++/ABI/.NET证据见[Linux SDK记录](linux-sdk-verification.md) | 当前C/C++/.NET复测、物理主机与设备性能、最低内核/系统签收 |
+| Linux x86 / i686-unknown-linux-gnu | Ubuntu 18.04 WSL当前129项Rust通过；历史Release C/C++/ABI证据保留 | 当前C/C++复测、独立32位系统、SDK与设备；.NET8 Linux x86路径见平台矩阵 |
+| Linux ARMv7 / armv7-unknown-linux-gnueabihf | 当前QEMU 8.2.2为128项Rust通过、1项既有SFTP 250ms时序测试失败；Release hard-float ELF已重建 | 当前全量测试、实际ARMv7板卡、SDK、性能与设备工况 |
+| Linux ARM64 / aarch64-unknown-linux-gnu | Ubuntu 24.04交叉工具链与QEMU 8.2.2下当前129项Rust通过，Release ELF已重建；本地未执行C++样例 | 原生客户端板卡/系统、C++、SDK、性能与设备证据 |
 
-ARMv7首次采用默认并行Rust测试调度时，testkit超时隔离用例在QEMU中超过5分钟无进展，终止后该用例单独通过；使用 `-- --test-threads=1` 后完整125项通过。测试内部的Tokio多线程并发没有被关闭，CI仅对ARMv7采用相同的串行测试调度。相关失败与成功日志均保留在 `build/reports/linux-armv7/`。
+ARMv7早期默认并行调度曾出现testkit超时；当前使用串行测试调度。本轮另一个既有SFTP用例 `deadline_during_publish_reports_publish_unknown_without_replaying` 在250ms预算内未进入publish gate，单独重跑仍失败；未把它记为通过，也未为本次GPASCII任务修改该无关测试。
 
 CI矩阵、QEMU限制和SDK运行时约束见[平台矩阵](platform-matrix.md)。配置文件存在、交叉编译成功或QEMU功能通过，都不能代替相应硬件/OS运行与性能签收。
 

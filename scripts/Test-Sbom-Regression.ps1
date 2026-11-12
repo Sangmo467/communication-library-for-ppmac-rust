@@ -53,6 +53,24 @@ try {
     $sbom | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $badTarget -Encoding utf8NoBOM
     Assert-Rejected 'wrong target' 'target mismatch' { & $validator -SbomPath $badTarget -LockPath $lock -Target $manifest.target }
 
+    $missingDependency = Join-Path $WorkDirectory 'missing-dependency.json'
+    $sbom = Get-Content -LiteralPath $sourceSbom -Raw -Encoding UTF8 | ConvertFrom-Json
+    $russh = @($sbom.packages | Where-Object { $_.name -eq 'russh' })[0]
+    if (-not $russh) { throw 'SBOM regression requires the resolved russh package' }
+    $sbom.packages = @($sbom.packages | Where-Object { $_.SPDXID -ne $russh.SPDXID })
+    $sbom.relationships = @($sbom.relationships | Where-Object { $_.spdxElementId -ne $russh.SPDXID -and $_.relatedSpdxElement -ne $russh.SPDXID })
+    $sbom | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $missingDependency -Encoding utf8NoBOM
+    Assert-Rejected 'missing resolved dependency and relationships' 'missing resolved dependency: russh@' { & $validator -SbomPath $missingDependency -LockPath $lock -Target $manifest.target }
+
+    $missingRelationship = Join-Path $WorkDirectory 'missing-relationship.json'
+    $sbom = Get-Content -LiteralPath $sourceSbom -Raw -Encoding UTF8 | ConvertFrom-Json
+    $russh = @($sbom.packages | Where-Object { $_.name -eq 'russh' })[0]
+    $edge = @($sbom.relationships | Where-Object { $_.relationshipType -eq 'DEPENDS_ON' -and $_.relatedSpdxElement -eq $russh.SPDXID })[0]
+    if (-not $edge) { throw 'SBOM regression requires a resolved relationship to russh' }
+    $sbom.relationships = @($sbom.relationships | Where-Object { $_ -ne $edge })
+    $sbom | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $missingRelationship -Encoding utf8NoBOM
+    Assert-Rejected 'missing resolved relationship' 'missing resolved dependency relationship' { & $validator -SbomPath $missingRelationship -LockPath $lock -Target $manifest.target }
+
     Assert-Rejected 'packaging stale SBOM' 'absent from Cargo.lock' {
         ./scripts/Package-Release.ps1 -Target $manifest.target -ArtifactDirectory (Join-Path $packageRoot 'native') -OutputDirectory (Join-Path $WorkDirectory 'package-rejected') -SbomPath $stale -AllowUncommitted | Out-Null
     }
