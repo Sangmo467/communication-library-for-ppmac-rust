@@ -553,23 +553,42 @@ fn channel_initialization_error(mut error: Error) -> Error {
     error
 }
 
+struct CloseChannelOnDrop(Option<Channel>);
+impl Drop for CloseChannelOnDrop {
+    fn drop(&mut self) {
+        if let Some(channel) = self.0.take() {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = channel.close().await;
+                });
+            }
+        }
+    }
+}
+
 async fn open_gpascii(
     connection: &Arc<Connection>,
     context: &ExecutionContext,
 ) -> Result<Channel, Error> {
-    let mut channel = connection
-        .open_channel()
-        .await
-        .map_err(channel_initialization_error)?;
+    context.begin_control_channel_initialization();
+    let mut channel = CloseChannelOnDrop(Some(
+        connection
+            .open_channel()
+            .await
+            .map_err(channel_initialization_error)?,
+    ));
     let initialized = async {
         channel
+            .0
+            .as_ref()
+            .expect("initializing channel")
             .exec(true, "gpascii -2")
             .await
             .map_err(transport_error)?;
         let ready = Command::raw("Sys.ServoCount")?;
         let verified = execute_gpascii(
             connection,
-            &mut channel,
+            channel.0.as_mut().expect("initializing channel"),
             &ready,
             context,
             READINESS_RESPONSE_LIMIT,
@@ -587,10 +606,12 @@ async fn open_gpascii(
     }
     .await;
     if let Err(error) = initialized {
-        let _ = channel.close().await;
+        if let Some(channel) = channel.0.take() {
+            let _ = channel.close().await;
+        }
         return Err(channel_initialization_error(error));
     }
-    Ok(channel)
+    Ok(channel.0.take().expect("initialized channel"))
 }
 
 async fn execute_gpascii(
@@ -601,6 +622,9 @@ async fn execute_gpascii(
     response_limit: usize,
     channel_failure_retires_connection: bool,
 ) -> Result<OperationResult, Error> {
+    if channel_failure_retires_connection {
+        context.finish_control_channel_initialization();
+    }
     if matches!(
         command.maintenance(),
         MaintenanceKind::Reset | MaintenanceKind::GlobalReset

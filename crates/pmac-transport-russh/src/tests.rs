@@ -305,7 +305,7 @@ impl server::Handler for TestServer {
             }
             let program_key = (self.connection_id, channel);
             match command.as_str() {
-                "open prog 1" => {
+                "open prog 1" | "open plc 1" => {
                     self.observed
                         .open_programs
                         .lock()
@@ -325,11 +325,11 @@ impl server::Handler for TestServer {
                     }
                     session.data(channel, b"\x06".to_vec())?;
                 }
-                "list prog 1" => {
+                "list prog 1" | "list plc 1" => {
                     let lines = self.observed.program_lines.lock().unwrap().join("\r\n");
                     session.data(
                         channel,
-                        format!("list prog 1\r\n{lines}\r\n\x06").into_bytes(),
+                        format!("{command}\r\n{lines}\r\n\x06").into_bytes(),
                     )?;
                 }
                 "$$$" | "$$$***" => {
@@ -864,6 +864,148 @@ fn mt06_open_and_close_response_interleavings_preserve_program_ownership() {
             .response
             .windows(b"Motor[1].ServoCtrl=1".len())
             .any(|bytes| bytes == b"Motor[1].ServoCtrl=1"));
+    }
+}
+
+#[test]
+fn queued_program_sequence_survives_owner_exit_and_interleaved_channel_reclamation() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+    fixture
+        .observed
+        .gated_command
+        .lock()
+        .unwrap()
+        .push_str("#1p");
+    fixture.observed.command_gate.block();
+    let blocker = fixture
+        .client
+        .submit(
+            fixture.runtime.next_id(),
+            Operation::Command(Command::raw("#1p").unwrap()),
+            RequestOptions::default(),
+        )
+        .unwrap();
+    fixture.observed.command_gate.wait(1);
+    let (open_sent, open_received) = std::sync::mpsc::channel();
+    let (interleave_sent, interleave_received) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let fixture = &fixture;
+        let owner = scope.spawn(move || {
+            fixture
+                .client
+                .submit(
+                    fixture.runtime.next_id(),
+                    Operation::Command(Command::raw("open plc 1").unwrap()),
+                    RequestOptions::default(),
+                )
+                .unwrap();
+            open_sent.send(()).unwrap();
+            interleave_received.recv().unwrap();
+            for command in ["P1=42", "close"] {
+                fixture
+                    .client
+                    .submit(
+                        fixture.runtime.next_id(),
+                        Operation::Command(Command::raw(command).unwrap()),
+                        RequestOptions::default(),
+                    )
+                    .unwrap();
+            }
+        });
+        let interleaved = scope.spawn(move || {
+            open_received.recv().unwrap();
+            let request = fixture
+                .client
+                .submit(
+                    fixture.runtime.next_id(),
+                    Operation::Command(Command::raw("#1p").unwrap()),
+                    RequestOptions::default(),
+                )
+                .unwrap();
+            interleave_sent.send(()).unwrap();
+            request
+        });
+        owner.join().unwrap();
+        let interleaved = interleaved.join().unwrap();
+        fixture.observed.command_gate.release();
+        fixture.run_result(blocker).unwrap();
+        fixture.run_result(interleaved).unwrap();
+    });
+    let listed = fixture
+        .run(Operation::Command(Command::raw("list plc 1").unwrap()))
+        .unwrap();
+    assert!(listed
+        .response
+        .split(|byte| matches!(byte, b'\r' | b'\n'))
+        .any(|line| line == b"P1=42"));
+    assert_eq!(
+        fixture.observed.program_lines.lock().unwrap().as_slice(),
+        ["P1=42"]
+    );
+}
+
+#[test]
+fn cancellation_and_timeout_during_channel_initialization_preserve_the_member() {
+    for cancel in [true, false] {
+        let fixture = Fixture::new(None);
+        fixture.connect();
+        fixture
+            .run(Operation::Command(Command::raw("#1p").unwrap()))
+            .unwrap();
+        fixture
+            .observed
+            .gated_command
+            .lock()
+            .unwrap()
+            .push_str("Sys.ServoCount");
+        fixture.observed.command_gate.block();
+        let request = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    fixture.client.submit(
+                        fixture.runtime.next_id(),
+                        Operation::Command(Command::raw("open plc 1").unwrap()),
+                        RequestOptions {
+                            timeout_ms: if cancel { 10_000 } else { 100 },
+                            ..RequestOptions::default()
+                        },
+                    )
+                })
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        fixture.observed.command_gate.wait(1);
+        if cancel {
+            request.cancel();
+        }
+        let error = fixture.run_result(request).unwrap_err();
+        assert_eq!(
+            error.code,
+            if cancel {
+                ErrorCode::Cancelled
+            } else {
+                ErrorCode::ExecTimeout
+            }
+        );
+        assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+        assert!(!error.fatal_transport);
+        assert!(fixture.client.is_connected());
+        fixture.observed.command_gate.release();
+        fixture
+            .run(Operation::Command(Command::raw("#1p").unwrap()))
+            .unwrap();
+        assert!(!fixture
+            .observed
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|command| command == "open plc 1"));
     }
 }
 

@@ -118,7 +118,13 @@ impl ExecutionContext {
         self.request.origin_thread()
     }
     pub fn origin_liveness(&self) -> std::sync::Weak<()> {
-        self.request.origin_liveness().clone()
+        self.request.origin_liveness()
+    }
+    pub fn begin_control_channel_initialization(&self) {
+        self.request.begin_control_channel_initialization();
+    }
+    pub fn finish_control_channel_initialization(&self) {
+        self.request.finish_control_channel_initialization();
     }
 
     pub fn mark_publish_started(&self) {

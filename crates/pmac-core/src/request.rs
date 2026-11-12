@@ -146,13 +146,13 @@ pub struct Request {
     client_id: u64,
     options: RequestOptions,
     origin_thread: std::thread::ThreadId,
-    origin_liveness: std::sync::Weak<()>,
     created: Instant,
     deadline: Option<tokio::time::Instant>,
     inner: Mutex<RequestInner>,
     completed: Condvar,
     cancellation: Cancellation,
     publish_pending: AtomicBool,
+    control_channel_initializing: AtomicBool,
     completion_signal: std::sync::OnceLock<Arc<crate::completion::CompletionSignal>>,
     completion_announced: AtomicBool,
     _permit: AdmissionPermit,
@@ -163,6 +163,7 @@ struct RequestInner {
     epoch: u64,
     member_id: u64,
     result: Option<Arc<Result<OperationResult, Error>>>,
+    origin_liveness: Option<Arc<()>>,
 }
 
 impl std::fmt::Debug for Request {
@@ -189,17 +190,18 @@ impl Request {
             deadline: options.deadline(),
             options,
             origin_thread: std::thread::current().id(),
-            origin_liveness: ORIGIN_LIVENESS.with(Arc::downgrade),
             created: Instant::now(),
             inner: Mutex::new(RequestInner {
                 state: RequestState::Queued,
                 epoch,
                 member_id: 0,
                 result: None,
+                origin_liveness: Some(ORIGIN_LIVENESS.with(Arc::clone)),
             }),
             completed: Condvar::new(),
             cancellation: Cancellation::default(),
             publish_pending: AtomicBool::new(false),
+            control_channel_initializing: AtomicBool::new(false),
             completion_signal: std::sync::OnceLock::new(),
             completion_announced: AtomicBool::new(false),
             _permit: permit,
@@ -215,8 +217,22 @@ impl Request {
     pub(crate) fn origin_thread(&self) -> std::thread::ThreadId {
         self.origin_thread
     }
-    pub(crate) fn origin_liveness(&self) -> &std::sync::Weak<()> {
-        &self.origin_liveness
+    pub(crate) fn origin_liveness(&self) -> std::sync::Weak<()> {
+        self.lock()
+            .origin_liveness
+            .as_ref()
+            .map_or_else(std::sync::Weak::new, Arc::downgrade)
+    }
+    pub(crate) fn begin_control_channel_initialization(&self) {
+        self.control_channel_initializing
+            .store(true, Ordering::Release);
+    }
+    pub(crate) fn finish_control_channel_initialization(&self) {
+        self.control_channel_initializing
+            .store(false, Ordering::Release);
+    }
+    pub(crate) fn control_channel_initializing(&self) -> bool {
+        self.control_channel_initializing.load(Ordering::Acquire)
     }
     pub fn max_response_bytes(&self) -> usize {
         self.options.max_response_bytes
@@ -368,6 +384,7 @@ impl Request {
     fn complete_locked(inner: &mut RequestInner, result: Result<OperationResult, Error>) {
         inner.result = Some(Arc::new(result));
         inner.state = RequestState::Completed;
+        inner.origin_liveness = None;
     }
 
     fn info_from(&self, inner: &RequestInner) -> RequestInfo {
@@ -476,6 +493,24 @@ mod tests {
         assert!(request.begin_send().is_err());
         assert_eq!(request.info().certainty, ExecutionCertainty::NotSent);
         assert!(!request.complete(Ok(OperationResult::default())));
+    }
+
+    #[test]
+    fn unfinished_request_owns_thread_liveness_until_terminal_completion() {
+        let (request, owner) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let request = request();
+                    let owner = request.origin_liveness();
+                    (request, owner)
+                })
+                .join()
+                .unwrap()
+        });
+        assert_eq!(owner.strong_count(), 1);
+        request.complete(Ok(OperationResult::default()));
+        assert_eq!(owner.strong_count(), 0);
+        assert!(request.result().is_some());
     }
 
     #[test]

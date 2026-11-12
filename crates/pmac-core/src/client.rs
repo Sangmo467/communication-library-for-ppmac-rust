@@ -151,6 +151,13 @@ impl Client {
         state.next_sequence = sequence
             .checked_add(1)
             .ok_or_else(|| Error::new(ErrorCode::ResourceLimit, "admission sequence exhausted"))?;
+        let request = Arc::new(Request::new(
+            request_id,
+            self.id,
+            state.epoch,
+            options,
+            permit,
+        ));
         let revision = if management {
             let mut pool = self.pool.lock();
             pool.revision = pool
@@ -159,17 +166,15 @@ impl Client {
                 .ok_or_else(|| Error::new(ErrorCode::ResourceLimit, "pool revision exhausted"))?;
             pool.revision
         } else {
-            self.pool
-                .register(sequence, class, writes, std::thread::current().id())?;
+            self.pool.register(
+                sequence,
+                class,
+                writes,
+                request.origin_thread(),
+                request.origin_liveness(),
+            )?;
             self.pool.lock().revision
         };
-        let request = Arc::new(Request::new(
-            request_id,
-            self.id,
-            state.epoch,
-            options,
-            permit,
-        ));
         request.set_completion_signal(self.completion.clone());
         self.lock_requests()
             .insert(request_id, Arc::downgrade(&request));
@@ -983,7 +988,7 @@ impl Client {
                 s.uncertain.push((id, epoch));
             }
         }
-        s.affinity.retain(|_, bound| *bound != id);
+        s.affinity.retain(|_, bound| bound.member_id != id);
         drop(s);
         self.pool.changed.notify_waiters();
         Ok(())
@@ -1099,7 +1104,7 @@ impl Client {
     }
     fn cancel_error(&self, request: &Request) -> Error {
         let error = Error::new(ErrorCode::Cancelled, "request cancelled");
-        if request.info().state == RequestState::Queued {
+        if request.info().state == RequestState::Queued || request.control_channel_initializing() {
             error
         } else {
             error.sent().fatal()
@@ -1108,6 +1113,8 @@ impl Client {
     fn timeout_error(&self, request: &Request) -> Error {
         if request.info().state == RequestState::Queued {
             Error::new(ErrorCode::QueueTimeout, "queue deadline expired")
+        } else if request.control_channel_initializing() {
+            Error::new(ErrorCode::ExecTimeout, "execution deadline expired")
         } else {
             Error::new(ErrorCode::ExecTimeout, "execution deadline expired")
                 .sent()

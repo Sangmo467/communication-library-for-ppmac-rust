@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use crate::{ConnectOptions, Error, ErrorCode, Session};
 use tokio::sync::Notify;
@@ -96,6 +96,10 @@ pub(crate) struct Member {
     pub drain: bool,
     pub last_error: ErrorCode,
 }
+pub(crate) struct ThreadAffinity {
+    pub(crate) member_id: u64,
+    owner: Weak<()>,
+}
 pub(crate) struct PoolState {
     pub revision: u64,
     pub generation: u64,
@@ -114,7 +118,7 @@ pub(crate) struct PoolState {
     pub closing: bool,
     pub last_create_error: ErrorCode,
     pending: BTreeMap<u64, Ticket>,
-    pub(crate) affinity: HashMap<std::thread::ThreadId, u64>,
+    pub(crate) affinity: HashMap<std::thread::ThreadId, ThreadAffinity>,
     quota: Vec<crate::budget::AdmissionPermit>,
 }
 pub(crate) struct Pool {
@@ -260,8 +264,10 @@ impl Pool {
         class: JobClass,
         writes: bool,
         origin_thread: std::thread::ThreadId,
+        owner: Weak<()>,
     ) -> Result<(), Error> {
         let mut s = self.lock();
+        reclaim_exited_affinity(&mut s.affinity);
         observe_health(&mut s);
         if s.closing {
             return Err(Error::new(ErrorCode::Closing, "pool is closing"));
@@ -285,8 +291,8 @@ impl Pool {
             ));
         }
         let member_id = if matches!(class, JobClass::Ordered | JobClass::ReadPool) {
-            if let Some(id) = s.affinity.get(&origin_thread) {
-                *id
+            if let Some(affinity) = s.affinity.get(&origin_thread) {
+                affinity.member_id
             } else {
                 let selected = s
                     .members
@@ -298,14 +304,23 @@ impl Pool {
                     })
                     .min_by_key(|member| {
                         (
-                            s.affinity.values().filter(|id| **id == member.id).count(),
+                            s.affinity
+                                .values()
+                                .filter(|affinity| affinity.member_id == member.id)
+                                .count(),
                             member.id,
                         )
                     })
                     .or_else(|| s.members.first())
                     .ok_or_else(|| Error::new(ErrorCode::NoReadyLane, "no GPASCII member"))?
                     .id;
-                s.affinity.insert(origin_thread, selected);
+                s.affinity.insert(
+                    origin_thread,
+                    ThreadAffinity {
+                        member_id: selected,
+                        owner,
+                    },
+                );
                 selected
             }
         } else {
@@ -533,6 +548,10 @@ impl Drop for Lease {
     }
 }
 
+fn reclaim_exited_affinity(affinity: &mut HashMap<std::thread::ThreadId, ThreadAffinity>) {
+    affinity.retain(|_, bound| bound.owner.strong_count() != 0);
+}
+
 fn observe_health(state: &mut PoolState) {
     let mut retired = Vec::new();
     for member in &mut state.members {
@@ -589,5 +608,44 @@ impl Drop for TemporaryMember {
         }
         drop(state);
         self.pool.changed.notify_waiters();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exited_thread_affinity_is_reclaimed_but_live_affinity_is_retained() {
+        let live_owner = Arc::new(());
+        let live_thread = std::thread::current().id();
+        let (exited_thread, exited_owner) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let owner = Arc::new(());
+                    (std::thread::current().id(), Arc::downgrade(&owner))
+                })
+                .join()
+                .unwrap()
+        });
+        let mut affinity = HashMap::from([
+            (
+                live_thread,
+                ThreadAffinity {
+                    member_id: 1,
+                    owner: Arc::downgrade(&live_owner),
+                },
+            ),
+            (
+                exited_thread,
+                ThreadAffinity {
+                    member_id: 2,
+                    owner: exited_owner,
+                },
+            ),
+        ]);
+        reclaim_exited_affinity(&mut affinity);
+        assert_eq!(affinity.len(), 1);
+        assert_eq!(affinity[&live_thread].member_id, 1);
     }
 }
