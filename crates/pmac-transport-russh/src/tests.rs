@@ -1093,17 +1093,17 @@ fn mt08_exited_threads_release_channels_before_new_threads_are_admitted() {
 }
 
 #[test]
-fn mt08_local_channel_quota_rejects_a_live_overflow_thread_without_retiring_the_member() {
+fn mt08_eight_channel_budget_rejects_thread_and_buffer_overflow_without_retiring_the_member() {
     let fixture = Fixture::new(None);
     fixture.connect();
     fixture
         .run(Operation::Command(Command::raw("#1p").unwrap()))
         .unwrap();
-    let ready = std::sync::Barrier::new(64);
-    let release = std::sync::Barrier::new(64);
+    let ready = std::sync::Barrier::new(8);
+    let release = std::sync::Barrier::new(8);
     std::thread::scope(|scope| {
         let fixture = &fixture;
-        for _ in 0..63 {
+        for _ in 0..7 {
             let ready = &ready;
             let release = &release;
             scope.spawn(move || {
@@ -1127,6 +1127,15 @@ fn mt08_local_channel_quota_rejects_a_live_overflow_thread_without_retiring_the_
         assert_eq!(error.code, ErrorCode::ResourceLimit);
         assert_eq!(error.certainty, ExecutionCertainty::NotSent);
         assert!(!error.fatal_transport);
+        let buffer_error = fixture
+            .run(Operation::Shell {
+                command: "gpascii -2 -i/tmp/unused.pp".into(),
+                persistent: false,
+            })
+            .unwrap_err();
+        assert_eq!(buffer_error.code, ErrorCode::ResourceLimit);
+        assert_eq!(buffer_error.certainty, ExecutionCertainty::NotSent);
+        assert!(!buffer_error.fatal_transport);
         release.wait();
     });
     assert!(fixture.client.is_connected());
