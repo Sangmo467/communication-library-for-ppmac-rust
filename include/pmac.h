@@ -96,6 +96,7 @@ PMAC_EXPORT uint32_t pmac_abi_version(void);
 PMAC_EXPORT int32_t pmac_client_create(pmac_runtime_id runtime, const pmac_client_config *config, pmac_client_id *out_id);
 PMAC_EXPORT int32_t pmac_client_close(pmac_client_id id, uint32_t close_mode, uint32_t wait_ms);
 PMAC_EXPORT int32_t pmac_client_release(pmac_client_id id);
+PMAC_EXPORT int32_t pmac_client_recovery_ids(pmac_client_id *out, size_t capacity, size_t *required);
 PMAC_EXPORT int32_t pmac_client_get_state(pmac_client_id id, pmac_state_snapshot *out_state);
 
 PMAC_EXPORT int32_t pmac_connect_submit(pmac_client_id id, const pmac_connect_options *options, pmac_request_id *out_id);

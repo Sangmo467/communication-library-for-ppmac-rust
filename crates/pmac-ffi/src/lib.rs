@@ -273,10 +273,45 @@ pub extern "C" fn pmac_client_close(id: u64, close_mode: u32, wait_ms: u32) -> i
 #[no_mangle]
 pub extern "C" fn pmac_client_release(id: u64) -> i32 {
     ffi_status(|| {
+        let (client, _) = client(id)?;
+        if client.has_unreleased_gpascii() {
+            return Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "remote GPASCII release requires confirmation before client release",
+            ));
+        }
         registry()
             .remove(id, client_kind())
             .map(|_| ())
             .ok_or_else(invalid_handle)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn pmac_client_recovery_ids(
+    out: *mut u64,
+    capacity: usize,
+    required: *mut usize,
+) -> i32 {
+    ffi_status(|| {
+        if required.is_null() {
+            return Err(Error::invalid("recovery ID count output is null"));
+        }
+        let ids = registry().recovery_clients();
+        unsafe { required.write(ids.len()) };
+        if capacity < ids.len() || out.is_null() && !ids.is_empty() {
+            return Err(Error::new(
+                ErrorCode::BufferTooSmall,
+                "recovery ID output buffer is too small",
+            ));
+        }
+        if capacity > isize::MAX as usize / size_of::<u64>() {
+            return Err(Error::invalid("recovery ID capacity overflow"));
+        }
+        for (index, id) in ids.into_iter().enumerate() {
+            unsafe { out.add(index).write(id) };
+        }
+        Ok(())
     })
 }
 

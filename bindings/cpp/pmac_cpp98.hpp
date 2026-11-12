@@ -85,7 +85,27 @@ public:
         config.max_requests = 64; config.max_file_tasks = 1; config.max_retained_bytes = 80 * 1024 * 1024;
         check(pmac_client_create(runtime.id(), &config, &id_), "client_create");
     }
-    ~Client() { if (id_) { (void)pmac_client_close(id_, 0, 1000); (void)pmac_client_release(id_); } }
+    ~Client() { (void)reset(); }
+    int32_t reset() throw() {
+        if (!id_) return PMAC_OK;
+        int32_t status = pmac_client_close(id_, 0, 1000);
+        if (status != PMAC_OK) return status;
+        status = pmac_client_release(id_);
+        if (status == PMAC_OK) id_ = 0;
+        return status;
+    }
+    static std::vector<uint64_t> pendingRecovery() {
+        for (;;) {
+            size_t required = 0;
+            int32_t status = pmac_client_recovery_ids(0, 0, &required);
+            if (status != PMAC_OK && status != PMAC_BUFFER_TOO_SMALL) return std::vector<uint64_t>();
+            std::vector<uint64_t> ids(required);
+            status = pmac_client_recovery_ids(ids.empty() ? 0 : &ids[0], ids.size(), &required);
+            if (status == PMAC_BUFFER_TOO_SMALL) continue;
+            if (status != PMAC_OK) return std::vector<uint64_t>();
+            ids.resize(required); return ids;
+        }
+    }
 
     void connect(const ConnectOptions& source) {
         pmac_connect_options options = {};

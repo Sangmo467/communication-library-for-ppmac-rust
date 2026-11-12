@@ -15,6 +15,8 @@
 Runtime、Client、Request 的高4位为类型标签，低位是永不回绕复用的序列。释放后旧 ID 永久失效；内部 Arc 保活已取得的对象引用，C 调用不解引用对象地址。
 
 - `pmac_client_close(id, 0, wait_ms)` 停止该 Client 准入，取消已接纳请求并收尾。当前仅支持 close_mode=0。
+- `pmac_client_release` 在该 owner 仍有在用、回收中或不确定 GPASCII 资源时返回 `SHUTDOWN_PENDING` 并保留 Client ID；设备核实后调用 `pmac_pool_confirm_recovery`，再重试 release。
+- `pmac_client_recovery_ids` 枚举已关闭/关闭中且仍有未归还资源的 Client ID。即使 C++ 析构已移交对象，也可据此取得保留 ID，再按设备核实结果执行受限恢复。
 - `pmac_runtime_shutdown` 停止该 Runtime 的新 Client 和新 Request 准入，关闭现有 Client，并通过受监督收尾等待 Tokio 及阻塞任务停止。
 - shutdown 超时返回 `SHUTDOWN_PENDING`，Runtime ID 仍有效，允许再次等待。超时不意味着后台任务已经退出。
 - shutdown 成功后，本地状态/完成结果仍可读取；调用方仍需释放该 Runtime 的全部 Client/Request ID。

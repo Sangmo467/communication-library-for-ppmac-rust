@@ -198,6 +198,11 @@ impl Pool {
     pub fn snapshot(&self) -> PoolSnapshot {
         let mut s = self.lock();
         observe_health(&mut s);
+        let owner_uncertain = s.options.as_ref().is_some_and(|options| {
+            options
+                .gpascii_budget
+                .owner_has_uncertain(options.gpascii_owner)
+        });
         PoolSnapshot {
             revision: s.revision,
             desired: s.profile.target_size,
@@ -226,7 +231,7 @@ impl Pool {
                 .iter()
                 .filter(|m| m.state == MemberState::Retiring)
                 .count() as u32,
-            release_uncertain: s.uncertain.len() as u32,
+            release_uncertain: s.uncertain.len().max(usize::from(owner_uncertain)) as u32,
             max_members: s.profile.max_members,
             unknown_write: s.unknown_write,
             maintenance_active: s.maintenance_active,

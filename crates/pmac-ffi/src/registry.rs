@@ -116,6 +116,19 @@ impl Registry {
             _ => false,
         })
     }
+    pub(crate) fn recovery_clients(&self) -> Vec<u64> {
+        let mut ids = self
+            .lock()
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| match entry {
+                Entry::Client { client, .. } if client.recovery_pending() => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
     pub(crate) fn remove(&self, id: u64, kind: u64) -> Option<Entry> {
         if id & KIND_MASK != kind {
             return None;

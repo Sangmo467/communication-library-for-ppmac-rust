@@ -14,6 +14,7 @@ const MAX_GPASCII_CHANNELS: usize = 8;
 #[derive(Default)]
 struct GpasciiBudgetState {
     used: usize,
+    owners: HashMap<u64, usize>,
     uncertain: HashMap<u64, usize>,
     keepalive: Option<Arc<GpasciiBudget>>,
 }
@@ -65,6 +66,7 @@ impl GpasciiBudget {
             ));
         }
         state.used += 1;
+        *state.owners.entry(owner).or_insert(0) += 1;
         state.keepalive = Some(self.clone());
         Ok(GpasciiChannelPermit {
             budget: self.clone(),
@@ -80,9 +82,28 @@ impl GpasciiBudget {
             .uncertain
             .remove(&owner)
             .unwrap_or(0);
-        self.release_usage(uncertain);
+        self.release_usage(owner, uncertain);
     }
-    fn release_usage(&self, count: usize) {
+    pub fn owner_usage(&self, owner: u64) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .owners
+            .get(&owner)
+            .copied()
+            .unwrap_or(0)
+    }
+    pub fn owner_has_uncertain(&self, owner: u64) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .uncertain
+            .contains_key(&owner)
+    }
+    fn release_usage(&self, owner: u64, count: usize) {
+        if count == 0 {
+            return;
+        }
         let mut state = self
             .state
             .lock()
@@ -91,6 +112,16 @@ impl GpasciiBudget {
             .used
             .checked_sub(count)
             .expect("GPASCII channel budget underflow");
+        let remaining = state
+            .owners
+            .get_mut(&owner)
+            .expect("released GPASCII owner is absent");
+        *remaining = remaining
+            .checked_sub(count)
+            .expect("GPASCII owner budget underflow");
+        if *remaining == 0 {
+            state.owners.remove(&owner);
+        }
         if state.used == 0 {
             state.keepalive.take();
         }
@@ -117,7 +148,7 @@ impl GpasciiChannelPermit {
         self.release_on_drop = false;
     }
     fn release_one(&self) {
-        self.budget.release_usage(1);
+        self.budget.release_usage(self.owner, 1);
     }
 }
 impl Drop for GpasciiChannelPermit {

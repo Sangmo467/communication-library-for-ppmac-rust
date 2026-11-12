@@ -274,9 +274,26 @@ public:
     }
     bool isConnected() const { return state().state == 4u; }
     void close(uint32_t waitMs = 1000) { if (id_) check(pmac_client_close(id_, 0, waitMs)); }
-    void reset() noexcept {
-        if (id_) { (void)pmac_client_close(id_, 0, 1000); (void)pmac_client_release(id_); id_ = 0; }
-        runtime_.reset();
+    int32_t reset() noexcept {
+        if (!id_) { runtime_.reset(); return PMAC_OK; }
+        int32_t status = pmac_client_close(id_, 0, 1000);
+        if (status != PMAC_OK) return status;
+        status = pmac_client_release(id_);
+        if (status == PMAC_OK) { id_ = 0; runtime_.reset(); }
+        return status;
+    }
+    static std::vector<uint64_t> pendingRecovery() {
+        for (;;) {
+            size_t required = 0;
+            int32_t status = pmac_client_recovery_ids(nullptr, 0, &required);
+            if (status != PMAC_OK && status != PMAC_BUFFER_TOO_SMALL) return {};
+            std::vector<uint64_t> ids(required);
+            status = pmac_client_recovery_ids(ids.empty() ? nullptr : ids.data(), ids.size(), &required);
+            if (status == PMAC_BUFFER_TOO_SMALL) continue;
+            if (status != PMAC_OK) return {};
+            ids.resize(required);
+            return ids;
+        }
     }
 
     void abort(const RequestOptions& o = {}) { check(pmac_abort(id_, native(o))); }

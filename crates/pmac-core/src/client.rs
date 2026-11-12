@@ -235,6 +235,16 @@ impl Client {
     pub fn pool_members(&self) -> Vec<MemberSnapshot> {
         self.pool.members()
     }
+    pub fn has_unreleased_gpascii(&self) -> bool {
+        let pool = self.pool.lock();
+        !pool.uncertain.is_empty()
+            || pool.options.as_ref().is_some_and(|options| {
+                options.gpascii_budget.owner_usage(options.gpascii_owner) != 0
+            })
+    }
+    pub fn recovery_pending(&self) -> bool {
+        self.pool.lock().closing && self.has_unreleased_gpascii()
+    }
     /// Application attests it has reconciled unknown effects and/or verified remote sessions are gone.
     pub fn confirm_recovery(&self, expected_revision: u64, flags: u32) -> Result<(), Error> {
         if flags == 0 || flags & !3 != 0 {
@@ -307,11 +317,25 @@ impl Client {
                     .lock()
                     .members
                     .iter()
-                    .filter_map(|m| m.session.clone())
+                    .filter_map(|m| m.session.clone().map(|session| (m.id, m.epoch, session)))
                     .collect::<Vec<_>>();
                 loop {
-                    let results =
-                        futures::future::join_all(sessions.iter().map(|s| s.close())).await;
+                    let results = futures::future::join_all(
+                        sessions.iter().map(|(_, _, session)| session.close()),
+                    )
+                    .await;
+                    {
+                        let mut pool = client.pool.lock();
+                        for ((id, epoch, _), result) in sessions.iter().zip(&results) {
+                            if result
+                                .as_ref()
+                                .is_err_and(|error| error.code == ErrorCode::ShutdownPending)
+                                && !pool.uncertain.contains(&(*id, *epoch))
+                            {
+                                pool.uncertain.push((*id, *epoch));
+                            }
+                        }
+                    }
                     if results.iter().all(Result::is_ok) {
                         break;
                     }

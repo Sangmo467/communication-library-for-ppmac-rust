@@ -202,8 +202,16 @@ impl Session for RusshSession {
     }
 
     async fn retire_control(&self) -> Result<(), Error> {
-        self.close_gpascii_channels().await;
-        self.control.close().await
+        let confirmed = self.close_gpascii_channels().await;
+        let result = self.control.close().await;
+        if confirmed {
+            result
+        } else {
+            Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "GPASCII channel release has not been confirmed",
+            ))
+        }
     }
 
     async fn retire_maintenance(&self) -> Result<(), Error> {
@@ -248,7 +256,7 @@ impl Session for RusshSession {
 }
 
 impl RusshSession {
-    async fn close_gpascii_channels(&self) {
+    async fn close_gpascii_channels(&self) -> bool {
         let mut channels = Vec::new();
         if let Some((channel, permit)) = self.control_channel.lock().await.take() {
             channels.push(CloseChannelOnDrop::new(
@@ -266,9 +274,11 @@ impl RusshSession {
                     CloseChannelOnDrop::new(self.control.clone(), entry.channel, entry.permit)
                 }),
         );
+        let mut confirmed = true;
         for channel in channels {
-            channel.close().await;
+            confirmed = channel.close().await && confirmed;
         }
+        confirmed
     }
 
     pub(crate) fn check_staging_capacity(&self) -> Result<(), Error> {
@@ -609,9 +619,8 @@ impl Drop for UncertainPermitOnDrop {
 async fn close_channel_confirmed(
     connection: Arc<Connection>,
     channel: Channel,
-    permit: GpasciiChannelPermit,
-) {
-    let permit = UncertainPermitOnDrop(Some(permit));
+    permit: UncertainPermitOnDrop,
+) -> bool {
     if matches!(
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -621,6 +630,9 @@ async fn close_channel_confirmed(
         Ok(true)
     ) {
         permit.release();
+        true
+    } else {
+        false
     }
 }
 
@@ -643,23 +655,22 @@ impl CloseChannelOnDrop {
             self.permit.take().expect("closing channel permit"),
         )
     }
-    async fn close(self) {
+    async fn close(self) -> bool {
         let connection = self.connection.clone();
         let (channel, permit) = self.disarm();
-        close_channel_confirmed(connection, channel, permit).await;
+        close_channel_confirmed(connection, channel, UncertainPermitOnDrop(Some(permit))).await
     }
 }
 impl Drop for CloseChannelOnDrop {
     fn drop(&mut self) {
         if let (Some(channel), Some(permit)) = (self.channel.take(), self.permit.take()) {
+            let permit = UncertainPermitOnDrop(Some(permit));
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 runtime.spawn(close_channel_confirmed(
                     self.connection.clone(),
                     channel,
                     permit,
                 ));
-            } else {
-                permit.retain_uncertain();
             }
         }
     }
@@ -928,4 +939,30 @@ pub(crate) fn sftp_error(error: russh_sftp::client::error::Error) -> Error {
 
 pub(crate) fn is_not_found(error: &russh_sftp::client::error::Error) -> bool {
     matches!(error, russh_sftp::client::error::Error::Status(status) if status.status_code == russh_sftp::protocol::StatusCode::NoSuchFile)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropping_an_unpolled_close_task_retains_uncertain_usage() {
+        let budget = ConnectOptions::new("close-cancel-test", "test").gpascii_budget;
+        let permit = UncertainPermitOnDrop(Some(budget.reserve(77).unwrap()));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let task = runtime.spawn(async move {
+            std::future::pending::<()>().await;
+            drop(permit);
+        });
+        task.abort();
+        assert!(runtime.block_on(task).is_err());
+        drop(runtime);
+        let permits = (0..7)
+            .map(|_| budget.reserve(99).unwrap())
+            .collect::<Vec<_>>();
+        assert!(budget.reserve(99).is_err());
+        drop(permits);
+        budget.confirm_remote_release(77);
+        assert!(budget.reserve(99).is_ok());
+    }
 }
