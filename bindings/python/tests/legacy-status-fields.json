@@ -1,0 +1,816 @@
+{
+  "source": "E:/PMAC/comm/include/pmac_client.hpp",
+  "sha256": "4481C052E507ACFC05AB3D6E482F13DA0ADA02E436DA438222198245EA6E972E",
+  "fields": [
+    {
+      "status": "MotorStatus",
+      "cpp": "triggerMove",
+      "python": "trigger_move",
+      "dotnet": "TriggerMove",
+      "shift": 63,
+      "width": 1,
+      "legacy_line": 76
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "homeInProgress",
+      "python": "home_in_progress",
+      "dotnet": "HomeInProgress",
+      "shift": 62,
+      "width": 1,
+      "legacy_line": 77
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "minusLimit",
+      "python": "minus_limit",
+      "dotnet": "MinusLimit",
+      "shift": 61,
+      "width": 1,
+      "legacy_line": 78
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "plusLimit",
+      "python": "plus_limit",
+      "dotnet": "PlusLimit",
+      "shift": 60,
+      "width": 1,
+      "legacy_line": 79
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "feWarn",
+      "python": "fe_warn",
+      "dotnet": "FeWarn",
+      "shift": 59,
+      "width": 1,
+      "legacy_line": 80
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "feFatal",
+      "python": "fe_fatal",
+      "dotnet": "FeFatal",
+      "shift": 58,
+      "width": 1,
+      "legacy_line": 81
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "limitStop",
+      "python": "limit_stop",
+      "dotnet": "LimitStop",
+      "shift": 57,
+      "width": 1,
+      "legacy_line": 82
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "ampFault",
+      "python": "amp_fault",
+      "dotnet": "AmpFault",
+      "shift": 56,
+      "width": 1,
+      "legacy_line": 83
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "softMinusLimit",
+      "python": "soft_minus_limit",
+      "dotnet": "SoftMinusLimit",
+      "shift": 55,
+      "width": 1,
+      "legacy_line": 84
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "softPlusLimit",
+      "python": "soft_plus_limit",
+      "dotnet": "SoftPlusLimit",
+      "shift": 54,
+      "width": 1,
+      "legacy_line": 85
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "i2tFault",
+      "python": "i2t_fault",
+      "dotnet": "I2tFault",
+      "shift": 53,
+      "width": 1,
+      "legacy_line": 86
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "triggerNotFound",
+      "python": "trigger_not_found",
+      "dotnet": "TriggerNotFound",
+      "shift": 52,
+      "width": 1,
+      "legacy_line": 87
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "ampWarn",
+      "python": "amp_warn",
+      "dotnet": "AmpWarn",
+      "shift": 51,
+      "width": 1,
+      "legacy_line": 88
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "encLoss",
+      "python": "enc_loss",
+      "dotnet": "EncLoss",
+      "shift": 50,
+      "width": 1,
+      "legacy_line": 89
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "auxFault",
+      "python": "aux_fault",
+      "dotnet": "AuxFault",
+      "shift": 49,
+      "width": 1,
+      "legacy_line": 90
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "homeComplete",
+      "python": "home_complete",
+      "dotnet": "HomeComplete",
+      "shift": 47,
+      "width": 1,
+      "legacy_line": 94
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "desVelZero",
+      "python": "des_vel_zero",
+      "dotnet": "DesVelZero",
+      "shift": 46,
+      "width": 1,
+      "legacy_line": 95
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "closedLoop",
+      "python": "closed_loop",
+      "dotnet": "ClosedLoop",
+      "shift": 45,
+      "width": 1,
+      "legacy_line": 96
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "ampEna",
+      "python": "amp_ena",
+      "dotnet": "AmpEna",
+      "shift": 44,
+      "width": 1,
+      "legacy_line": 97
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "inPos",
+      "python": "in_pos",
+      "dotnet": "InPos",
+      "shift": 43,
+      "width": 1,
+      "legacy_line": 98
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "interlockStop",
+      "python": "interlock_stop",
+      "dotnet": "InterlockStop",
+      "shift": 42,
+      "width": 1,
+      "legacy_line": 99
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "blockRequest",
+      "python": "block_request",
+      "dotnet": "BlockRequest",
+      "shift": 41,
+      "width": 1,
+      "legacy_line": 100
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "phaseFound",
+      "python": "phase_found",
+      "dotnet": "PhaseFound",
+      "shift": 40,
+      "width": 1,
+      "legacy_line": 101
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "triggerSpeedSel",
+      "python": "trigger_speed_sel",
+      "dotnet": "TriggerSpeedSel",
+      "shift": 39,
+      "width": 1,
+      "legacy_line": 104
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "gantryHomed",
+      "python": "gantry_homed",
+      "dotnet": "GantryHomed",
+      "shift": 38,
+      "width": 1,
+      "legacy_line": 105
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "spindleMotor",
+      "python": "spindle_motor",
+      "dotnet": "SpindleMotor",
+      "shift": 36,
+      "width": 2,
+      "legacy_line": 106
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "csolve",
+      "python": "csolve",
+      "dotnet": "Csolve",
+      "shift": 31,
+      "width": 1,
+      "legacy_line": 110
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "softLimit",
+      "python": "soft_limit",
+      "dotnet": "SoftLimit",
+      "shift": 30,
+      "width": 1,
+      "legacy_line": 111
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "dacLimit",
+      "python": "dac_limit",
+      "dotnet": "DacLimit",
+      "shift": 29,
+      "width": 1,
+      "legacy_line": 112
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "blDir",
+      "python": "bl_dir",
+      "dotnet": "BlDir",
+      "shift": 28,
+      "width": 1,
+      "legacy_line": 113
+    },
+    {
+      "status": "MotorStatus",
+      "cpp": "softLimitDir",
+      "python": "soft_limit_dir",
+      "dotnet": "SoftLimitDir",
+      "shift": 27,
+      "width": 1,
+      "legacy_line": 114
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "addedDwellDis",
+      "python": "added_dwell_dis",
+      "dotnet": "AddedDwellDis",
+      "shift": 0,
+      "width": 1,
+      "legacy_line": 134
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "sharpCornerStop",
+      "python": "sharp_corner_stop",
+      "dotnet": "SharpCornerStop",
+      "shift": 1,
+      "width": 1,
+      "legacy_line": 135
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "cc3Active",
+      "python": "cc3_active",
+      "dotnet": "Cc3Active",
+      "shift": 2,
+      "width": 1,
+      "legacy_line": 136
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "endDelayActive",
+      "python": "end_delay_active",
+      "dotnet": "EndDelayActive",
+      "shift": 3,
+      "width": 1,
+      "legacy_line": 137
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "ccMoveType",
+      "python": "cc_move_type",
+      "dotnet": "CcMoveType",
+      "shift": 4,
+      "width": 2,
+      "legacy_line": 138
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "ccOffReq",
+      "python": "cc_off_req",
+      "dotnet": "CcOffReq",
+      "shift": 6,
+      "width": 1,
+      "legacy_line": 139
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "ccAddedArc",
+      "python": "cc_added_arc",
+      "dotnet": "CcAddedArc",
+      "shift": 7,
+      "width": 1,
+      "legacy_line": 140
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadActive",
+      "python": "look_ahead_active",
+      "dotnet": "LookAheadActive",
+      "shift": 8,
+      "width": 1,
+      "legacy_line": 143
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadFlush",
+      "python": "look_ahead_flush",
+      "dotnet": "LookAheadFlush",
+      "shift": 9,
+      "width": 1,
+      "legacy_line": 144
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadReCalc",
+      "python": "look_ahead_recalc",
+      "dotnet": "LookAheadReCalc",
+      "shift": 10,
+      "width": 1,
+      "legacy_line": 145
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadChange",
+      "python": "look_ahead_change",
+      "dotnet": "LookAheadChange",
+      "shift": 11,
+      "width": 1,
+      "legacy_line": 146
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadStop",
+      "python": "look_ahead_stop",
+      "dotnet": "LookAheadStop",
+      "shift": 12,
+      "width": 1,
+      "legacy_line": 147
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadDir",
+      "python": "look_ahead_dir",
+      "dotnet": "LookAheadDir",
+      "shift": 13,
+      "width": 1,
+      "legacy_line": 148
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadLookBack",
+      "python": "look_ahead_look_back",
+      "dotnet": "LookAheadLookBack",
+      "shift": 14,
+      "width": 1,
+      "legacy_line": 149
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "lookAheadWrap",
+      "python": "look_ahead_wrap",
+      "dotnet": "LookAheadWrap",
+      "shift": 15,
+      "width": 1,
+      "legacy_line": 150
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "segStopReq",
+      "python": "seg_stop_req",
+      "dotnet": "SegStopReq",
+      "shift": 16,
+      "width": 1,
+      "legacy_line": 153
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "segEnabled",
+      "python": "seg_enabled",
+      "dotnet": "SegEnabled",
+      "shift": 17,
+      "width": 1,
+      "legacy_line": 154
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "segMoveDecel",
+      "python": "seg_move_decel",
+      "dotnet": "SegMoveDecel",
+      "shift": 18,
+      "width": 1,
+      "legacy_line": 155
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "segMoveAccel",
+      "python": "seg_move_accel",
+      "dotnet": "SegMoveAccel",
+      "shift": 19,
+      "width": 1,
+      "legacy_line": 156
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "segMove",
+      "python": "seg_move",
+      "dotnet": "SegMove",
+      "shift": 20,
+      "width": 2,
+      "legacy_line": 157
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "moveMode",
+      "python": "move_mode",
+      "dotnet": "MoveMode",
+      "shift": 22,
+      "width": 2,
+      "legacy_line": 158
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "ccMode",
+      "python": "cc_mode",
+      "dotnet": "CcMode",
+      "shift": 24,
+      "width": 2,
+      "legacy_line": 159
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "contMotion",
+      "python": "cont_motion",
+      "dotnet": "ContMotion",
+      "shift": 26,
+      "width": 1,
+      "legacy_line": 160
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "blockActive",
+      "python": "block_active",
+      "dotnet": "BlockActive",
+      "shift": 27,
+      "width": 1,
+      "legacy_line": 161
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "feedHold",
+      "python": "feed_hold",
+      "dotnet": "FeedHold",
+      "shift": 28,
+      "width": 2,
+      "legacy_line": 162
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "segHaltReq",
+      "python": "seg_halt_req",
+      "dotnet": "SegHaltReq",
+      "shift": 30,
+      "width": 1,
+      "legacy_line": 163
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "csolve",
+      "python": "csolve",
+      "dotnet": "Csolve",
+      "shift": 31,
+      "width": 1,
+      "legacy_line": 164
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "syncBufferError",
+      "python": "sync_buffer_error",
+      "dotnet": "SyncBufferError",
+      "shift": 32,
+      "width": 1,
+      "legacy_line": 167
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "bufferError",
+      "python": "buffer_error",
+      "dotnet": "BufferError",
+      "shift": 33,
+      "width": 1,
+      "legacy_line": 168
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "linToPvtError",
+      "python": "lin_to_pvt_error",
+      "dotnet": "LinToPvtError",
+      "shift": 34,
+      "width": 1,
+      "legacy_line": 169
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "pvtError",
+      "python": "pvt_error",
+      "dotnet": "PvtError",
+      "shift": 35,
+      "width": 1,
+      "legacy_line": 170
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "runTimeError",
+      "python": "run_time_error",
+      "dotnet": "RunTimeError",
+      "shift": 36,
+      "width": 1,
+      "legacy_line": 171
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "softLimit",
+      "python": "soft_limit",
+      "dotnet": "SoftLimit",
+      "shift": 37,
+      "width": 1,
+      "legacy_line": 172
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "radius2Error",
+      "python": "radius2_error",
+      "dotnet": "Radius2Error",
+      "shift": 38,
+      "width": 1,
+      "legacy_line": 173
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "radius1Error",
+      "python": "radius1_error",
+      "dotnet": "Radius1Error",
+      "shift": 39,
+      "width": 1,
+      "legacy_line": 174
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "timersEnabled",
+      "python": "timers_enabled",
+      "dotnet": "TimersEnabled",
+      "shift": 40,
+      "width": 1,
+      "legacy_line": 177
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "blockRequest",
+      "python": "block_request",
+      "dotnet": "BlockRequest",
+      "shift": 41,
+      "width": 1,
+      "legacy_line": 178
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "interlockStop",
+      "python": "interlock_stop",
+      "dotnet": "InterlockStop",
+      "shift": 42,
+      "width": 1,
+      "legacy_line": 179
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "inPos",
+      "python": "in_pos",
+      "dotnet": "InPos",
+      "shift": 43,
+      "width": 1,
+      "legacy_line": 180
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "ampEna",
+      "python": "amp_ena",
+      "dotnet": "AmpEna",
+      "shift": 44,
+      "width": 1,
+      "legacy_line": 181
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "closedLoop",
+      "python": "closed_loop",
+      "dotnet": "ClosedLoop",
+      "shift": 45,
+      "width": 1,
+      "legacy_line": 182
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "desVelZero",
+      "python": "des_vel_zero",
+      "dotnet": "DesVelZero",
+      "shift": 46,
+      "width": 1,
+      "legacy_line": 183
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "homeComplete",
+      "python": "home_complete",
+      "dotnet": "HomeComplete",
+      "shift": 47,
+      "width": 1,
+      "legacy_line": 184
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "timerEnabled",
+      "python": "timer_enabled",
+      "dotnet": "TimerEnabled",
+      "shift": 48,
+      "width": 1,
+      "legacy_line": 187
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "auxFault",
+      "python": "aux_fault",
+      "dotnet": "AuxFault",
+      "shift": 49,
+      "width": 1,
+      "legacy_line": 188
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "encLoss",
+      "python": "enc_loss",
+      "dotnet": "EncLoss",
+      "shift": 50,
+      "width": 1,
+      "legacy_line": 189
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "ampWarn",
+      "python": "amp_warn",
+      "dotnet": "AmpWarn",
+      "shift": 51,
+      "width": 1,
+      "legacy_line": 190
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "triggerNotFound",
+      "python": "trigger_not_found",
+      "dotnet": "TriggerNotFound",
+      "shift": 52,
+      "width": 1,
+      "legacy_line": 191
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "i2tFault",
+      "python": "i2t_fault",
+      "dotnet": "I2tFault",
+      "shift": 53,
+      "width": 1,
+      "legacy_line": 192
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "softPlusLimit",
+      "python": "soft_plus_limit",
+      "dotnet": "SoftPlusLimit",
+      "shift": 54,
+      "width": 1,
+      "legacy_line": 193
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "softMinusLimit",
+      "python": "soft_minus_limit",
+      "dotnet": "SoftMinusLimit",
+      "shift": 55,
+      "width": 1,
+      "legacy_line": 194
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "ampFault",
+      "python": "amp_fault",
+      "dotnet": "AmpFault",
+      "shift": 56,
+      "width": 1,
+      "legacy_line": 197
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "limitStop",
+      "python": "limit_stop",
+      "dotnet": "LimitStop",
+      "shift": 57,
+      "width": 1,
+      "legacy_line": 198
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "feFatal",
+      "python": "fe_fatal",
+      "dotnet": "FeFatal",
+      "shift": 58,
+      "width": 1,
+      "legacy_line": 199
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "feWarn",
+      "python": "fe_warn",
+      "dotnet": "FeWarn",
+      "shift": 59,
+      "width": 1,
+      "legacy_line": 200
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "plusLimit",
+      "python": "plus_limit",
+      "dotnet": "PlusLimit",
+      "shift": 60,
+      "width": 1,
+      "legacy_line": 201
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "minusLimit",
+      "python": "minus_limit",
+      "dotnet": "MinusLimit",
+      "shift": 61,
+      "width": 1,
+      "legacy_line": 202
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "homeInProgress",
+      "python": "home_in_progress",
+      "dotnet": "HomeInProgress",
+      "shift": 62,
+      "width": 1,
+      "legacy_line": 203
+    },
+    {
+      "status": "CoordStatus",
+      "cpp": "triggerMove",
+      "python": "trigger_move",
+      "dotnet": "TriggerMove",
+      "shift": 63,
+      "width": 1,
+      "legacy_line": 204
+    }
+  ]
+}

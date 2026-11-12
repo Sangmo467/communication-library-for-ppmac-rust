@@ -1,0 +1,10 @@
+{"command": "EncTable[1].type", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "EncTable[1].type=11"}
+{"command": "P82", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "P82=0"}
+{"command": "Motor[1].Servo", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": ""}
+{"command": "Sys.ServoCount", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "Sys.ServoCount=569801"}
+{"command": "Sys.pushm", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "Sys.pushm=$d0dad000"}
+{"command": "ECAT[0].Enable", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "ECAT[0].Enable=0"}
+{"command": "Sys.Udata[100].a", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "Sys.Udata[100].a=$d0dad190"}
+{"command": "#1P", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "0"}
+{"command": "&1P", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "X0 Y0"}
+{"command": "list prog 100", "status": 0, "route": "RequestRoute(member_id=2, epoch=1)", "response": "if(P8198==1)\n{\nR0=P8193R1=P8196R2=P8197R3=P8192R4=P8194R5=P8195call100001\n}\nelseif(P8198==2)\n{\nR0=P8193R1=P8196R2=P8197R3=P8192R4=P8194R5=P8195call100002\n}\nelse\n{\nR0=P8193R1=P8196R2=P8197R3=P8192R4=P8194R5=P8195call100003\n}\nreturn"}

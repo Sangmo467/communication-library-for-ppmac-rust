@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-12",
+  "host": "192.168.0.200",
+  "host_key_sha256": "YL7MDB+AYW97zd8lruhXYxgP4MPmhFqUj9X9+gfHS9E",
+  "client_target": "x86_64-pc-windows-msvc",
+  "tests": [
+    {
+      "elapsed_seconds": 8.5429566,
+      "status": "CONFIRMED",
+      "command": "ecat reset",
+      "response": "Stopping ACONTIS communication; Starting ACONTIS communication; Restarting ACONTIS stack; Network Adapter Ecat Type: 1; ECAT License for 16 axis"
+    },
+    {
+      "resent": false,
+      "post_reconnect_query": "Sys.ServoCount",
+      "interpretation": "Reset phenomenon observed; original command completion not confirmed",
+      "budget_seconds": 60,
+      "post_reconnect_response": "Sys.ServoCount=70173",
+      "command": "$$$***",
+      "status": "EXEC_TIMEOUT"
+    },
+    {
+      "elapsed_seconds": 0.0017144,
+      "status": "CONFIRMED",
+      "response_bytes": 230,
+      "command": "list prog 100"
+    },
+    {
+      "status": "CONFIRMED_AFTER_FIX",
+      "command": "&1P",
+      "direct_gpascii_response": "X-0.3333282470703125 Y-5",
+      "fix_retest_pending": false,
+      "native_retest_response": "X0 Y0"
+    }
+  ],
+  "long_soak": "excluded by user"
+}

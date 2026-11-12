@@ -1,0 +1,41 @@
+[workspace]
+members = [
+    "crates/pmac-protocol",
+    "crates/pmac-core",
+    "crates/pmac-transport-russh",
+    "crates/pmac-ffi",
+    "crates/pmac-testkit",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+repository = ""
+
+[workspace.dependencies]
+async-trait = "0.1"
+futures = "0.3"
+md5 = "0.7"
+proptest = "1"
+rand = "0.9"
+regex = "1"
+russh = "=0.65.1"
+russh-sftp = "=3.0.1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+zeroize = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
+
+[patch.crates-io]
+# Keep RSA support while applying the documented RUSTSEC-2023-0071 dependency fix.
+russh = { path = "vendor/russh" }

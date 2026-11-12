@@ -1,0 +1,19 @@
+[package]
+name = "pmac-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "pmac"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+pmac-core = { version = "=2.0.0", path = "../pmac-core" }
+pmac-protocol = { version = "=2.0.0", path = "../pmac-protocol" }
+pmac-transport-russh = { version = "=2.0.0", path = "../pmac-transport-russh" }
+zeroize.workspace = true
+
+[dev-dependencies]
+pmac-testkit = { version = "=2.0.0", path = "../pmac-testkit" }

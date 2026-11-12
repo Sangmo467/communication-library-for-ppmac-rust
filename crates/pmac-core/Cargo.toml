@@ -1,0 +1,14 @@
+[package]
+name = "pmac-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+pmac-protocol = { version = "=2.0.0", path = "../pmac-protocol" }
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true

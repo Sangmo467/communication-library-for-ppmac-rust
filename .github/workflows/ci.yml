@@ -1,0 +1,161 @@
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          components: clippy,rustfmt
+      - name: Verify minimal dependency patch
+        shell: pwsh
+        run: ./scripts/Test-DependencyPatch.ps1
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - name: SDK deterministic tests and soak-driver self-test
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $PWD 'bindings/python'
+          python -B -m unittest discover -s bindings/python/tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Python unit tests failed' }
+          python -B scripts/soak.py --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Soak-driver self-test failed' }
+
+  targets:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-pc-windows-msvc, os: windows-2022, cmake_arch: x64, sdk: true, python_arch: x64 }
+          - { target: i686-pc-windows-msvc, os: windows-2022, cmake_arch: Win32, sdk: true, python_arch: x86 }
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm, cmake_arch: ARM64, sdk: true, python_arch: arm64 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, sdk: true, python_arch: x64 }
+          - { target: i686-unknown-linux-gnu, os: ubuntu-24.04, cross32: true, sdk: false, python_arch: x64 }
+          - { target: armv7-unknown-linux-gnueabihf, os: ubuntu-24.04, qemu: true, sdk: false, python_arch: x64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, sdk: true, python_arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm -L /usr/arm-linux-gnueabihf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          targets: ${{ matrix.target }}
+      - if: matrix.cross32
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
+      - if: matrix.qemu
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf qemu-user
+      - if: matrix.qemu != true
+        run: cargo test --workspace --locked --target ${{ matrix.target }}
+      - name: Run ARMv7 tests with serialized test scheduling under QEMU
+        if: matrix.qemu
+        run: cargo test --workspace --locked --target ${{ matrix.target }} -- --test-threads=1
+      - name: Build and exercise C ABI and C++ adapters
+        shell: pwsh
+        run: |
+          $arguments = @('-S','.','-B','build/native','-DCMAKE_BUILD_TYPE=Release','-DPMAC_RUST_TARGET=${{ matrix.target }}')
+          if ('${{ matrix.cmake_arch }}') { $arguments += @('-A','${{ matrix.cmake_arch }}') }
+          if ('${{ matrix.cross32 }}' -eq 'true') { $arguments += @('-DCMAKE_C_FLAGS=-m32','-DCMAKE_CXX_FLAGS=-m32') }
+          if ('${{ matrix.qemu }}' -eq 'true') {
+            $arguments += @('-DCMAKE_SYSTEM_NAME=Linux','-DCMAKE_SYSTEM_PROCESSOR=arm','-DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc','-DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++','-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-arm;-L;/usr/arm-linux-gnueabihf')
+          }
+          cmake @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
+          cmake --build build/native --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
+          New-Item -ItemType Directory -Path build/reports -Force | Out-Null
+          ctest --test-dir build/native -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Native smoke tests failed' }
+          ctest --test-dir build/native -C Release -V -R pmac_abi_layout | Set-Content -Encoding utf8NoBOM build/reports/abi-layout.txt
+          if ($LASTEXITCODE -ne 0) { throw 'C ABI layout probe failed' }
+          cargo run -p pmac-ffi --example abi_layout --release --locked --target '${{ matrix.target }}' | Set-Content -Encoding utf8NoBOM build/reports/abi-rust.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Rust ABI layout probe failed' }
+          ./scripts/Compare-Abi.ps1 -CLayoutPath build/reports/abi-layout.txt -RustLayoutPath build/reports/abi-rust.txt
+      - if: matrix.sdk
+        uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - if: matrix.sdk || matrix.target == 'i686-pc-windows-msvc'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.python_arch }}
+      - name: Install separate Windows x86 .NET runtime
+        if: matrix.target == 'i686-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile build/dotnet-install.ps1
+          ./build/dotnet-install.ps1 -Runtime dotnet -Channel 8.0 -Architecture x86 -InstallDir build/dotnet-x86 -NoPath
+      - name: SDK smoke tests
+        if: matrix.sdk || matrix.target == 'i686-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $native = Join-Path $PWD 'target/${{ matrix.target }}/release'
+          $env:PATH = "$native$([IO.Path]::PathSeparator)$env:PATH"
+          $env:LD_LIBRARY_PATH = "$native$([IO.Path]::PathSeparator)$env:LD_LIBRARY_PATH"
+          $env:PMAC_LIBRARY = Join-Path $native $(if ($IsWindows) { 'pmac.dll' } else { 'libpmac.so' })
+          $env:PYTHONPATH = Join-Path $PWD 'bindings/python'
+          python -B examples/python/minimal.py
+          if ($LASTEXITCODE -ne 0) { throw 'Python smoke test failed' }
+          python -B examples/python/lifecycle.py
+          if ($LASTEXITCODE -ne 0) { throw 'Python lifecycle stress failed' }
+          if ('${{ matrix.sdk }}' -eq 'true') {
+            if ('${{ matrix.target }}' -eq 'i686-pc-windows-msvc') {
+              dotnet build examples/dotnet/Pmac.Smoke.csproj --nologo
+              if ($LASTEXITCODE -ne 0) { throw '.NET x86-compatible assembly build failed' }
+              ./build/dotnet-x86/dotnet.exe examples/dotnet/bin/Debug/net8.0/Pmac.Smoke.dll
+            } else {
+              dotnet run --project examples/dotnet/Pmac.Smoke.csproj --nologo
+            }
+            if ($LASTEXITCODE -ne 0) { throw '.NET smoke test failed' }
+          }
+      - name: Produce candidate and traceable manifest
+        shell: pwsh
+        run: |
+          ./scripts/Write-Sbom.ps1 -Target '${{ matrix.target }}'
+          $package = ./scripts/Package-Release.ps1 -Target '${{ matrix.target }}' -EvidenceDirectory build/reports
+          ./scripts/Test-Release.ps1 -PackageDirectory $package
+          ./scripts/Test-Sbom-Regression.ps1 -PackageDirectory $package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pmac-${{ matrix.target }}-candidate
+          path: dist/
+          if-no-files-found: error
+
+  dependency-security:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: '1.99.1' }
+      - name: Install audit tools
+        run: |
+          cargo install --locked cargo-audit --version 0.23.0
+          cargo install --locked cargo-deny --version 0.20.2
+      - name: Verify minimal dependency patch
+        shell: pwsh
+        run: ./scripts/Test-DependencyPatch.ps1
+      - name: Audit locked dependencies, licenses and sources
+        shell: pwsh
+        run: ./scripts/Invoke-Security.ps1
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-report
+          path: build/reports/security/
+          if-no-files-found: warn
