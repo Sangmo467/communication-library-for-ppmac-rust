@@ -269,23 +269,136 @@ C++ 异常提供 `status()`、`requestId()`、`certainty()`；.NET 的 `PmacExce
 
 ## 6. 运动、PLC 与状态查询
 
-常用操作：
+本节函数通过已连接的 Client 同步发送 GPASCII 命令。控制操作成功表示协议已确认；运动是否到位、程序是否完成和 PLC 是否处于期望状态，需要继续查询。以下使用 Python 名称；C ABI 加 `pmac_` 前缀，C++17 使用 camelCase，.NET 使用 PascalCase，详细 C 签名见第 10.6、10.7 节。
 
-- `abort`：中止；网络请求不能替代硬件急停。
-- `coord_enable`、`coord_exec_prog`、`coord_hold`、`coord_run`。
-- `plc_enable`、`plc_disable`。
-- `motor_kill`、`motor_enable`、`motor_jog_stop`、`motor_abs_jog`、`motor_inc_jog`。
+### 6.1 参数、返回和错误
 
-常用查询：
+| 参数 | 说明 |
+|---|---|
+| `n` / `motor` | 电机编号。电机命令和 `#n` 状态查询由库校验为 0～255；设备实际可用编号取决于配置 |
+| `n` / `coord` | 坐标系编号。`&n` 命令和状态查询由库校验为 0～127；实际范围取决于设备配置 |
+| `n` / `plc` | PLC 编号。启用与禁用命令由库校验为 0～31 |
+| `p` / `program` | 要启动的运动程序编号，必须为正整数 |
+| `value` / `position` / `distance` | `double` 浮点值；绝对 jog 为目标位置，增量 jog 为相对位移；须为有限值，单位和缩放由控制器配置决定 |
+| 请求选项 | Python 可传 `timeout_ms=5000`；C++、.NET 和 C 使用对应的请求选项对象或结构 |
 
-- `coord_status`、`motor_status`；
-- `motor_position`、`motor_desired_position`、`motor_velocity`、`motor_position_error`；
-- `servo_error_count`、`phase_error_count`、`servo_count`、`phase_time`、`servo_time`；
-- `abort_all_flag`、`plc_running`、`coord_prog_running`、`motor_closed_loop`、`coord_motor_enabled`。
+控制操作的 Python 返回值为 `None`，C++17/.NET 返回 `void`；C 返回 `PMAC_OK` 或负状态码。查询在 Python/C++/.NET 返回解析后的数值或布尔值；C 返回状态码并通过 `out` 输出值。失败会在高级绑定抛出异常。超时或取消后应检查执行确定性；如果可能已经执行，先查询设备，不要盲目重复运动命令。
 
-C++ 使用 camelCase，.NET 使用 PascalCase，Python 使用 snake_case。C++ 和 Python 的状态对象提供命名字段；.NET 的 `MotorStatus` / `CoordStatus` 值对象也提供对应属性。数值 helper 会拒绝 NaN、Inf、溢出和歧义目标。
+### 6.2 电机命令
 
-GPASCII ACK 只说明命令交互得到确认。运动到位、程序结束、PLC 实际状态和故障消除必须读取相应控制器状态，并由应用安全逻辑判断。
+| Python 方法 | 对应 GPASCII | 含义、参数与结果 |
+|---|---|---|
+| `motor_enable(n)` | `#n j/`（实际格式 `#nj/`） | 对电机 `n` 发送使能命令；成功无数据返回 |
+| `motor_kill(n)` | `#nkill` | 对电机 `n` 发送 kill；成功无数据返回 |
+| `motor_jog_stop(n)` | `#njog/` | 停止电机 `n` 的 jog；成功无数据返回 |
+| `motor_abs_jog(n, value)` | `#njog=value` | 以 `value` 为绝对目标位置，发送 jog 命令 |
+| `motor_inc_jog(n, value)` | `#njog:value` | 以 `value` 为相对位移，发送增量 jog 命令 |
+| `abort()` | `&*adisable` | 发送全局 abort/disable 命令，成功无数据返回 |
+
+例如 `motor_abs_jog(1, 25.0)` 针对电机 1，`motor_inc_jog(1, -2.0)` 请求负方向增量 2 个控制器位置单位。命令的速度、加减速、限位及允许的运动范围取决于控制器配置。网络 Abort、Kill 和 JogStop 不能替代硬件安全链路。
+
+### 6.3 坐标系和 PLC 命令
+
+| Python 方法 | 对应 GPASCII | 含义与结果 |
+|---|---|---|
+| `coord_enable(n)` | `&nenable` | 对坐标系 `n` 发送 enable；成功无数据返回 |
+| `coord_exec_prog(n, p)` | `&n begin p run` | 在坐标系 `n` 启动程序 `p`；成功表示命令已确认，不表示程序已运行结束 |
+| `coord_hold(n)` | `&nhold` | 向坐标系 `n` 发送 hold；成功无数据返回 |
+| `coord_run(n)` | `&nrun` | 向坐标系 `n` 发送 run；成功无数据返回 |
+| `plc_enable(n)` | `enable plc n` | 启用 PLC `n`；成功无数据返回 |
+| `plc_disable(n)` | `disable plc n` | 禁用 PLC `n`；成功无数据返回 |
+
+例如 `coord_exec_prog(1, 10)` 发送 `&1 begin 10 run`。可使用 `coord_prog_running(1)` 查询程序活动标志；`plc_running(2)` 查询 PLC 2 的活动标志。查询值是一次采样，实际任务的完成条件还应由应用定义。
+
+### 6.4 电机位置、速度和状态
+
+| Python 方法 | 查询 | 返回值和用途 |
+|---|---|---|
+| `motor_position(n)` | `#np` | `float`：实际位置 |
+| `motor_desired_position(n)` | `#nd` | `float`：期望位置 |
+| `motor_velocity(n)` | `#nv` | `float`：速度 |
+| `motor_position_error(n)` | `#nf` | `float`：位置误差 |
+| `motor_status(n)` | `#n?` | Python 返回 `MotorStatus`；C ABI 返回 `uint64_t` 位字段；C++17/.NET 方法返回原始 64 位值 |
+| `motor_closed_loop(n)` | 先读 `Motor[n].ClosedLoop`，为真时再读 `Motor[n].AmpEna` | 布尔值：两项均为真时才为真；两个读取不是原子快照 |
+
+例如位置和误差可分别用于显示和监测跟随情况；速度和位置的单位由设备配置决定。不能把单次读取当作多轴同时刻快照。`motor_closed_loop` 的两个读取可能发生在不同时间；如状态正在变化，应在应用中考虑这一点。
+
+### 6.5 坐标系、PLC 和系统状态
+
+| Python 方法 | 查询 | 返回值和用途 |
+|---|---|---|
+| `coord_status(n)` | `&n?` | Python 返回 `CoordStatus`；C ABI、C++17 和 .NET 返回原始 64 位状态值 |
+| `coord_prog_running(n)` | `Coord[n].ProgActive` | `bool`：坐标系程序活动标志 |
+| `coord_motor_enabled(n)` | `Coord[n].AmpEna` | `bool`：坐标系电机使能标志 |
+| `plc_running(n)` | `Plc[n].Active` | `bool`：PLC 活动标志 |
+| `abort_all_flag()` | `Sys.AbortAll` | `bool`：全局 abort 标志 |
+| `servo_error_count()` | `Sys.ServoErrorCtr` | 整数：伺服错误计数 |
+| `phase_error_count()` | `Sys.PhaseErrorCtr` | 整数：相位错误计数 |
+| `servo_count()` | `Sys.ServoCount` | 整数：伺服计数 |
+| `servo_time()` | `Sys.ServoTime` | `float`：伺服周期时间，单位以控制器定义为准 |
+| `phase_time()` | `Sys.PhaseTime` | `float`：相位周期时间，单位以控制器定义为准 |
+
+数值解析失败会返回解析错误，不会把无效响应当作零。状态标志接口分别查询，不构成原子快照。
+
+### 6.6 状态位解释
+
+`motor_status` 和 `coord_status` 保留完整 64 位。下面列出常用位，位号从最低位 0 开始；实际含义应结合控制器版本及配置核对。
+
+| 位 | 名称 | 含义 |
+|---:|---|---|
+| 63 | `trigger_move` | 触发运动相关状态 |
+| 62 | `home_in_progress` | 回零进行中 |
+| 61 / 60 | `minus_limit` / `plus_limit` | 负 / 正硬限位状态 |
+| 59 / 58 | `fe_warn` / `fe_fatal` | 跟随误差警告 / 严重错误 |
+| 57 / 56 | `limit_stop` / `amp_fault` | 限位停止 / 放大器故障 |
+| 55 / 54 | `soft_minus_limit` / `soft_plus_limit` | 负 / 正软限位状态 |
+| 53 / 50 | `i2t_fault` / `enc_loss` | I²t 故障 / 编码器丢失 |
+| 47 / 46 | `home_complete` / `des_vel_zero` | 回零完成 / 期望速度为零 |
+| 45 / 44 | `closed_loop` / `amp_ena` | 闭环 / 放大器使能状态位 |
+| 43 / 42 | `in_pos` / `interlock_stop` | 到位 / 联锁停止状态位 |
+
+Python 状态对象的命名字段及两位字段定义见 `pmac/status.py`；C++ 的状态辅助类型见 `pmac_status.hpp`。坐标系还有 `feed_hold`、`move_mode` 等两位字段，不能按单个布尔位处理。不同绑定的状态方法返回类型以第 6.4、6.5 节为准。
+
+### 6.7 调用示例
+
+以下代码假定 `client` 已连接，且应用已确认目标、单位和运行条件。示例使用只读查询：
+
+```python
+position = client.motor_position(1, timeout_ms=5000)
+velocity = client.motor_velocity(1, timeout_ms=5000)
+closed_loop = client.motor_closed_loop(1, timeout_ms=5000)
+plc_active = client.plc_running(2, timeout_ms=5000)
+program_active = client.coord_prog_running(1, timeout_ms=5000)
+print(position, velocity, closed_loop, plc_active, program_active)
+```
+
+需要控制设备时，方法调用形式如下；实际执行前由应用确认设备状态、行程和运动许可：
+
+```python
+# client.motor_enable(1, timeout_ms=5000)
+# client.motor_abs_jog(1, 25.0, timeout_ms=5000)
+# client.motor_inc_jog(1, -2.0, timeout_ms=5000)
+# client.motor_jog_stop(1, timeout_ms=5000)
+# client.motor_kill(1, timeout_ms=5000)
+# client.coord_enable(1, timeout_ms=5000)
+# client.coord_exec_prog(1, 10, timeout_ms=5000)
+# client.coord_hold(1, timeout_ms=5000)
+# client.coord_run(1, timeout_ms=5000)
+# client.plc_enable(2, timeout_ms=5000)
+# client.plc_disable(2, timeout_ms=5000)
+# client.abort(timeout_ms=5000)
+```
+
+C ABI 调用需检查状态码后再使用输出：
+
+```c
+double position = 0.0;
+uint32_t active = 0;
+int32_t status = pmac_motor_position(client, 1, &request_options, &position);
+if (status == PMAC_OK)
+    status = pmac_plc_running(client, 2, &request_options, &active);
+/* 仅在 status == PMAC_OK 时使用 position 和 active。 */
+```
 
 ## 7. 常见状态与处理
 
