@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use async_trait::async_trait;
 use pmac_core::{
-    ConnectOptions, Error, ErrorCode, ExecutionCertainty, ExecutionContext, OperationResult,
-    Session, Transport,
+    ConnectOptions, Error, ErrorCode, ExecutionCertainty, ExecutionContext, GpasciiChannelPermit,
+    OperationResult, Session, Transport,
 };
 use pmac_protocol::{
     Command, GpasciiDecoder, MaintenanceKind, ResetDecoder, ResetEvent, ShellDecoder, ShellEvent,
@@ -33,8 +33,9 @@ impl Transport for RusshTransport {
                 "each pool member uses one SSH connection",
             ));
         }
+        let permit = options.gpascii_budget.reserve()?;
         let control = connect(options, context).await?;
-        let channel = open_gpascii(&control, context).await?;
+        let channel = open_gpascii(&control, context, permit).await?;
         Ok(Arc::new(RusshSession {
             options: options.clone(),
             control,
@@ -45,7 +46,6 @@ impl Transport for RusshTransport {
             persistent_shell: tokio::sync::Mutex::new(None),
             nonce: format!("{:016x}", rand::rng().random::<u64>()),
             sequence: Mutex::new(0),
-            gpascii_usage: Mutex::new(1),
             closed: AtomicBool::new(false),
             maintenance_retired: AtomicBool::new(false),
             owned_staging: Mutex::new(BTreeSet::new()),
@@ -53,71 +53,24 @@ impl Transport for RusshTransport {
     }
 }
 
-const MAX_GPASCII_CHANNELS: usize = 8;
 const READINESS_RESPONSE_LIMIT: usize = 4096;
 
 struct ControlChannel {
     channel: Channel,
     owner: Weak<()>,
-}
-
-struct GpasciiChannelPermit<'a> {
-    usage: &'a Mutex<usize>,
-    release_on_drop: bool,
-}
-impl<'a> GpasciiChannelPermit<'a> {
-    fn reserve(usage: &'a Mutex<usize>) -> Result<Self, Error> {
-        let mut used = usage
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *used >= MAX_GPASCII_CHANNELS {
-            return Err(Error::new(
-                ErrorCode::ResourceLimit,
-                format!("per-member GPASCII channel limit reached ({MAX_GPASCII_CHANNELS})"),
-            ));
-        }
-        *used += 1;
-        drop(used);
-        Ok(Self {
-            usage,
-            release_on_drop: true,
-        })
-    }
-    fn existing(usage: &'a Mutex<usize>) -> Self {
-        Self {
-            usage,
-            release_on_drop: true,
-        }
-    }
-    fn keep(mut self) {
-        self.release_on_drop = false;
-    }
-}
-impl Drop for GpasciiChannelPermit<'_> {
-    fn drop(&mut self) {
-        if self.release_on_drop {
-            let mut used = self
-                .usage
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *used = used
-                .checked_sub(1)
-                .expect("GPASCII channel budget underflow");
-        }
-    }
+    permit: GpasciiChannelPermit,
 }
 
 pub(crate) struct RusshSession {
     options: ConnectOptions,
     control: Arc<Connection>,
-    control_channel: tokio::sync::Mutex<Option<Channel>>,
+    control_channel: tokio::sync::Mutex<Option<(Channel, GpasciiChannelPermit)>>,
     control_channels: tokio::sync::Mutex<HashMap<std::thread::ThreadId, ControlChannel>>,
     maintenance: tokio::sync::Mutex<Option<Arc<Connection>>>,
     sftp: tokio::sync::Mutex<Option<Arc<SftpSession>>>,
     persistent_shell: tokio::sync::Mutex<Option<Channel>>,
     pub(crate) nonce: String,
     sequence: Mutex<u64>,
-    gpascii_usage: Mutex<usize>,
     closed: AtomicBool,
     maintenance_retired: AtomicBool,
     owned_staging: Mutex<BTreeSet<(bool, String)>>,
@@ -134,7 +87,7 @@ impl Session for RusshSession {
         let owner = context.origin_liveness();
         context.begin_control_channel_initialization();
         let mut channels = self.control_channels.lock().await;
-        reclaim_exited_channels(&self.gpascii_usage, &mut channels).await;
+        reclaim_exited_channels(&mut channels);
         let result = match channels.entry(origin) {
             std::collections::hash_map::Entry::Occupied(entry) => {
                 let channel = &mut entry.into_mut().channel;
@@ -150,17 +103,19 @@ impl Session for RusshSession {
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let (channel, permit) = match self.control_channel.lock().await.take() {
-                    Some(channel) => (channel, None),
+                    Some(channel) => channel,
                     None => {
-                        let permit = GpasciiChannelPermit::reserve(&self.gpascii_usage)?;
-                        let channel = open_gpascii(&self.control, context).await?;
-                        (channel, Some(permit))
+                        let permit = self.options.gpascii_budget.reserve()?;
+                        open_gpascii(&self.control, context, permit).await?
                     }
                 };
-                let channel = &mut entry.insert(ControlChannel { channel, owner }).channel;
-                if let Some(permit) = permit {
-                    permit.keep();
-                }
+                let channel = &mut entry
+                    .insert(ControlChannel {
+                        channel,
+                        owner,
+                        permit,
+                    })
+                    .channel;
                 execute_gpascii(
                     &self.control,
                     channel,
@@ -244,7 +199,9 @@ impl Session for RusshSession {
     }
 
     async fn retire_control(&self) -> Result<(), Error> {
-        self.control.close().await
+        let result = self.control.close().await;
+        self.retain_gpascii_uncertain().await;
+        result
     }
 
     async fn retire_maintenance(&self) -> Result<(), Error> {
@@ -289,6 +246,22 @@ impl Session for RusshSession {
 }
 
 impl RusshSession {
+    async fn retain_gpascii_uncertain(&self) {
+        if let Some((_channel, permit)) = self.control_channel.lock().await.take() {
+            permit.retain_uncertain();
+        }
+        let channels = self
+            .control_channels
+            .lock()
+            .await
+            .drain()
+            .map(|(_, entry)| entry)
+            .collect::<Vec<_>>();
+        for entry in channels {
+            entry.permit.retain_uncertain();
+        }
+    }
+
     pub(crate) fn check_staging_capacity(&self) -> Result<(), Error> {
         if self
             .owned_staging
@@ -479,11 +452,6 @@ impl RusshSession {
         command: &str,
         context: &ExecutionContext,
     ) -> Result<OperationResult, Error> {
-        let _gpascii_permit = if command == "gpascii -2" || command.starts_with("gpascii -2 -i") {
-            Some(GpasciiChannelPermit::reserve(&self.gpascii_usage)?)
-        } else {
-            None
-        };
         let connection = self.maintenance_connection(context).await?;
         let mut channel = connection.open_channel().await?;
         channel.exec(true, command).await.map_err(transport_error)?;
@@ -589,10 +557,7 @@ impl RusshSession {
     }
 }
 
-async fn reclaim_exited_channels(
-    usage: &Mutex<usize>,
-    channels: &mut HashMap<std::thread::ThreadId, ControlChannel>,
-) {
+fn reclaim_exited_channels(channels: &mut HashMap<std::thread::ThreadId, ControlChannel>) {
     let exited = channels
         .iter()
         .filter(|(_, entry)| entry.owner.strong_count() == 0)
@@ -600,8 +565,7 @@ async fn reclaim_exited_channels(
         .collect::<Vec<_>>();
     for origin in exited {
         if let Some(entry) = channels.remove(&origin) {
-            let _permit = GpasciiChannelPermit::existing(usage);
-            CloseChannelOnDrop(Some(entry.channel)).close().await;
+            drop(CloseChannelOnDrop::new(entry.channel, entry.permit));
         }
     }
 }
@@ -612,21 +576,37 @@ fn channel_initialization_error(mut error: Error) -> Error {
     error
 }
 
-struct CloseChannelOnDrop(Option<Channel>);
+struct CloseChannelOnDrop {
+    channel: Option<Channel>,
+    permit: Option<GpasciiChannelPermit>,
+}
 impl CloseChannelOnDrop {
-    async fn close(mut self) {
-        if let Some(channel) = self.0.take() {
-            let _ = channel.close().await;
+    fn new(channel: Channel, permit: GpasciiChannelPermit) -> Self {
+        Self {
+            channel: Some(channel),
+            permit: Some(permit),
         }
+    }
+    fn disarm(mut self) -> (Channel, GpasciiChannelPermit) {
+        (
+            self.channel.take().expect("closing channel"),
+            self.permit.take().expect("closing channel permit"),
+        )
     }
 }
 impl Drop for CloseChannelOnDrop {
     fn drop(&mut self) {
-        if let Some(channel) = self.0.take() {
+        if let (Some(channel), Some(permit)) = (self.channel.take(), self.permit.take()) {
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 runtime.spawn(async move {
-                    let _ = channel.close().await;
+                    if channel.close().await.is_ok() {
+                        permit.release();
+                    } else {
+                        permit.retain_uncertain();
+                    }
                 });
+            } else {
+                permit.retain_uncertain();
             }
         }
     }
@@ -635,17 +615,19 @@ impl Drop for CloseChannelOnDrop {
 async fn open_gpascii(
     connection: &Arc<Connection>,
     context: &ExecutionContext,
-) -> Result<Channel, Error> {
+    permit: GpasciiChannelPermit,
+) -> Result<(Channel, GpasciiChannelPermit), Error> {
     context.begin_control_channel_initialization();
-    let mut channel = CloseChannelOnDrop(Some(
+    let mut channel = CloseChannelOnDrop::new(
         connection
             .open_channel()
             .await
             .map_err(channel_initialization_error)?,
-    ));
+        permit,
+    );
     let initialized = async {
         channel
-            .0
+            .channel
             .as_ref()
             .expect("initializing channel")
             .exec(true, "gpascii -2")
@@ -654,7 +636,7 @@ async fn open_gpascii(
         let ready = Command::raw("Sys.ServoCount")?;
         let verified = execute_gpascii(
             connection,
-            channel.0.as_mut().expect("initializing channel"),
+            channel.channel.as_mut().expect("initializing channel"),
             &ready,
             context,
             READINESS_RESPONSE_LIMIT,
@@ -672,12 +654,9 @@ async fn open_gpascii(
     }
     .await;
     if let Err(error) = initialized {
-        if let Some(channel) = channel.0.take() {
-            let _ = channel.close().await;
-        }
         return Err(channel_initialization_error(error));
     }
-    Ok(channel.0.take().expect("initialized channel"))
+    Ok(channel.disarm())
 }
 
 async fn execute_gpascii(

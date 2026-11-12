@@ -16,6 +16,9 @@ pub use request::{
     RequestState, WaitOutcome,
 };
 pub use runtime::Runtime;
-pub use transport::{ConnectOptions, ExecutionContext, HostKeyPolicy, Session, Transport};
+pub use transport::{
+    ConnectOptions, ExecutionContext, GpasciiBudget, GpasciiChannelPermit, HostKeyPolicy, Session,
+    Transport,
+};
 
 pub use pool::{MemberSnapshot, MemberState, PoolProfile, PoolSnapshot};

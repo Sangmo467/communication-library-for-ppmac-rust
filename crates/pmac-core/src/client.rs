@@ -1,5 +1,6 @@
 use crate::budget::Budget;
 use crate::pool::{JobClass, Lease, MaintenanceBlock, Member, Pool};
+use crate::transport::GpasciiBudget;
 use crate::{
     ConnectOptions, Error, ErrorCode, ExecutionCertainty, ExecutionContext, MemberSnapshot,
     MemberState, Operation, OperationResult, PoolProfile, PoolSnapshot, Request, RequestOptions,
@@ -260,6 +261,9 @@ impl Client {
             s.unknown_write = false;
         }
         if flags & 2 != 0 {
+            if let Some(options) = &s.options {
+                options.gpascii_budget.confirm_remote_release();
+            }
             s.uncertain.clear();
         }
         drop(s);
@@ -382,12 +386,6 @@ impl Client {
             })
             .await??;
         request.bind_member(lease.member_id, lease.epoch);
-        let mut temporary_member = if matches!(&operation, Operation::BufferUpload { .. }) {
-            Some(self.pool.reserve_temporary(sequence)?)
-        } else {
-            None
-        };
-        let mut auxiliary_started = false;
         let shell_guard = if matches!(class, JobClass::Shell) {
             Some(self.drive(request, self.shell_lock.lock()).await?)
         } else {
@@ -440,7 +438,6 @@ impl Client {
                 } => {
                     lease.session.upload(&local, &remote, &context).await?;
                     let command = format!("gpascii -2 -i{}", shell_quote(&remote)?);
-                    auxiliary_started = true;
                     let loaded = lease.session.shell(&command, false, &context).await?;
                     if loaded.exit_code != Some(0)
                         || !String::from_utf8_lossy(&loaded.response)
@@ -497,11 +494,6 @@ impl Client {
             .as_ref()
             .err()
             .is_some_and(|e| e.certainty == ExecutionCertainty::MayHaveExecuted);
-        if uncertain && auxiliary_started {
-            if let Some(temporary) = &mut temporary_member {
-                temporary.mark_uncertain();
-            }
-        }
         if writes && uncertain {
             self.pool.lock().unknown_write = true;
         }
@@ -551,7 +543,6 @@ impl Client {
             }
             self.lock_state().last_valid_response_unix_ms = now;
         }
-        drop(temporary_member);
         drop(file_guard);
         drop(shell_guard);
         drop(lease);
@@ -696,6 +687,7 @@ impl Client {
                 ));
             }
             options.control_pool_size = 1;
+            options.gpascii_budget = Arc::new(GpasciiBudget::new());
             s.options = Some(options);
         }
         self.pool.set_profile(profile)?;

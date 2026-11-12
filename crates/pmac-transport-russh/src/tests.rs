@@ -186,6 +186,11 @@ impl server::Handler for TestServer {
                 self.channels.insert(channel);
                 session.data(channel, b"STDIN Open for ASCII Input\r\n".to_vec())?;
             }
+            command if command.starts_with(b"gpascii -2 -i") => {
+                session.data(channel, b"EOF\r\n".to_vec())?;
+                session.exit_status_request(channel, 0)?;
+                session.close(channel)?;
+            }
             command if command.starts_with(b"/bin/mv -T -- ") => {
                 let command = String::from_utf8_lossy(command);
                 let args = sftp::quoted_args(&command[13..]);
@@ -1093,62 +1098,66 @@ fn mt08_exited_threads_release_channels_before_new_threads_are_admitted() {
 }
 
 #[test]
-fn mt08_eight_channel_budget_rejects_thread_and_buffer_overflow_without_retiring_the_member() {
-    let fixture = Fixture::new(None);
-    fixture.connect();
-    fixture
-        .run(Operation::Command(Command::raw("#1p").unwrap()))
-        .unwrap();
-    let ready = std::sync::Barrier::new(8);
-    let release = std::sync::Barrier::new(8);
-    std::thread::scope(|scope| {
-        let fixture = &fixture;
-        for _ in 0..7 {
-            let ready = &ready;
-            let release = &release;
-            scope.spawn(move || {
-                fixture
-                    .run(Operation::Command(Command::raw("#1p").unwrap()))
-                    .unwrap();
-                ready.wait();
-                release.wait();
-            });
-        }
-        ready.wait();
-        let error = scope
-            .spawn(|| {
-                fixture.run(Operation::Command(
-                    Command::raw("Motor[1].ServoCtrl=1").unwrap(),
-                ))
-            })
-            .join()
+fn mt08_eight_channel_budget_is_global_and_does_not_reject_buffer_upload() {
+    for members in [1, 2] {
+        let fixture = Fixture::new(None);
+        let mut options = fixture.options();
+        options.control_pool_size = members;
+        fixture.run(Operation::Connect(options)).unwrap();
+        fixture
+            .run(Operation::Command(Command::raw("#1p").unwrap()))
+            .unwrap();
+        let source = TestFile::new(b"open plc 1\nP1=42\nclose\n");
+        let ready = std::sync::Barrier::new(8);
+        let release = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let fixture = &fixture;
+            let source = &source;
+            for _ in 0..7 {
+                let ready = &ready;
+                let release = &release;
+                scope.spawn(move || {
+                    fixture
+                        .run(Operation::Command(Command::raw("#1p").unwrap()))
+                        .unwrap();
+                    ready.wait();
+                    release.wait();
+                });
+            }
+            ready.wait();
+            let error = scope
+                .spawn(|| {
+                    fixture.run(Operation::Command(
+                        Command::raw("Motor[1].ServoCtrl=1").unwrap(),
+                    ))
+                })
+                .join()
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::ResourceLimit);
+            assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+            assert!(!error.fatal_transport);
+            fixture
+                .run(Operation::BufferUpload {
+                    local: source.0.to_string_lossy().into_owned(),
+                    remote: "/owned-buffer.pp".into(),
+                    cleanup_remote: true,
+                })
+                .unwrap();
+            release.wait();
+        });
+        assert!(fixture.client.is_connected());
+        assert!(!fixture
+            .observed
+            .commands
+            .lock()
             .unwrap()
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::ResourceLimit);
-        assert_eq!(error.certainty, ExecutionCertainty::NotSent);
-        assert!(!error.fatal_transport);
-        let buffer_error = fixture
-            .run(Operation::Shell {
-                command: "gpascii -2 -i/tmp/unused.pp".into(),
-                persistent: false,
-            })
-            .unwrap_err();
-        assert_eq!(buffer_error.code, ErrorCode::ResourceLimit);
-        assert_eq!(buffer_error.certainty, ExecutionCertainty::NotSent);
-        assert!(!buffer_error.fatal_transport);
-        release.wait();
-    });
-    assert!(fixture.client.is_connected());
-    assert!(!fixture
-        .observed
-        .commands
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|command| command == "Motor[1].ServoCtrl=1"));
-    fixture
-        .run(Operation::Command(Command::raw("#1p").unwrap()))
-        .unwrap();
+            .iter()
+            .any(|command| command == "Motor[1].ServoCtrl=1"));
+        fixture
+            .run(Operation::Command(Command::raw("#1p").unwrap()))
+            .unwrap();
+    }
 }
 
 #[test]

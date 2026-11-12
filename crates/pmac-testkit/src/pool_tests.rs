@@ -960,10 +960,10 @@ fn initial_prepare_reports_service_ready_after_minimum_capacity_is_verified() {
 }
 
 #[test]
-fn buffer_load_reserves_an_additional_gpascii_service_slot_before_upload() {
+fn buffer_load_does_not_require_an_additional_gpascii_service_slot() {
     let fixture = Fixture::new();
     fixture.prepare(1, 1);
-    let error = fixture
+    let result = fixture
         .finish(fixture.submit(
             Operation::BufferUpload {
                 local: "mock-source".into(),
@@ -972,20 +972,10 @@ fn buffer_load_reserves_an_additional_gpascii_service_slot_before_upload() {
             },
             options(),
         ))
-        .unwrap_err();
-    assert_eq!(error.code, ErrorCode::ResourceLimit);
-    assert_eq!(error.certainty, ExecutionCertainty::NotSent);
-    assert_eq!(
-        *fixture
-            .transport
-            .member(0)
-            .maintenance_gate
-            .entered
-            .lock()
-            .unwrap(),
-        0,
-        "capacity rejection must precede staging/upload or buffer execution"
-    );
+        .unwrap();
+    assert_eq!(result.response, b"EOF");
+    assert_eq!(result.exit_code, Some(0));
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
 }
 
 #[test]

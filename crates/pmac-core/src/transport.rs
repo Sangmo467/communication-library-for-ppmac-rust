@@ -8,6 +8,92 @@ use zeroize::Zeroizing;
 
 use crate::{Error, ErrorCode, OperationResult, Request};
 
+const MAX_GPASCII_CHANNELS: usize = 8;
+
+#[derive(Default)]
+struct GpasciiBudgetState {
+    used: usize,
+    uncertain: usize,
+}
+
+#[doc(hidden)]
+#[derive(Default)]
+pub struct GpasciiBudget {
+    state: std::sync::Mutex<GpasciiBudgetState>,
+}
+impl GpasciiBudget {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+    pub fn reserve(self: &Arc<Self>) -> Result<GpasciiChannelPermit, Error> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.used >= MAX_GPASCII_CHANNELS {
+            return Err(Error::new(
+                ErrorCode::ResourceLimit,
+                "controller GPASCII channel limit reached (8)",
+            ));
+        }
+        state.used += 1;
+        drop(state);
+        Ok(GpasciiChannelPermit {
+            budget: self.clone(),
+            release_on_drop: true,
+        })
+    }
+    pub fn confirm_remote_release(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.used = state
+            .used
+            .checked_sub(state.uncertain)
+            .expect("GPASCII release confirmation exceeds uncertain usage");
+        state.uncertain = 0;
+    }
+}
+
+pub struct GpasciiChannelPermit {
+    budget: Arc<GpasciiBudget>,
+    release_on_drop: bool,
+}
+impl GpasciiChannelPermit {
+    pub fn release(mut self) {
+        self.release_one();
+        self.release_on_drop = false;
+    }
+    pub fn retain_uncertain(mut self) {
+        let mut state = self
+            .budget
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.uncertain += 1;
+        self.release_on_drop = false;
+    }
+    fn release_one(&self) {
+        let mut state = self
+            .budget
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.used = state
+            .used
+            .checked_sub(1)
+            .expect("GPASCII channel budget underflow");
+    }
+}
+impl Drop for GpasciiChannelPermit {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            self.release_one();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ConnectOptions {
     pub host: String,
@@ -23,6 +109,8 @@ pub struct ConnectOptions {
     pub keepalive_interval: Duration,
     pub keepalive_max: u32,
     pub control_pool_size: u8,
+    #[doc(hidden)]
+    pub gpascii_budget: Arc<GpasciiBudget>,
 }
 
 impl std::fmt::Debug for ConnectOptions {
@@ -54,6 +142,7 @@ impl ConnectOptions {
             keepalive_interval: Duration::from_secs(1),
             keepalive_max: 3,
             control_pool_size: 1,
+            gpascii_budget: Arc::new(GpasciiBudget::new()),
         }
     }
 
@@ -201,4 +290,28 @@ pub trait Session: Send + Sync + 'static {
         Ok(())
     }
     async fn close(&self) -> Result<(), Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ExecutionCertainty;
+
+    #[test]
+    fn gpascii_budget_is_bounded_and_uncertain_release_requires_confirmation() {
+        let budget = Arc::new(GpasciiBudget::new());
+        let mut permits = (0..8)
+            .map(|_| budget.reserve().unwrap())
+            .collect::<Vec<_>>();
+        let error = budget.reserve().err().unwrap();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+        drop(permits.pop());
+        permits.push(budget.reserve().unwrap());
+        permits.pop().unwrap().retain_uncertain();
+        assert!(budget.reserve().is_err());
+        budget.confirm_remote_release();
+        permits.push(budget.reserve().unwrap());
+        assert_eq!(permits.len(), 8);
+    }
 }

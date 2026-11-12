@@ -108,7 +108,6 @@ pub(crate) struct PoolState {
     pub options: Option<ConnectOptions>,
     pub uncertain: Vec<(u64, u64)>,
     pub creating: u32,
-    pub temporary: u32,
     pub running: usize,
     pub maintenance_active: bool,
     pub maintenance_failed: bool,
@@ -136,7 +135,6 @@ impl Pool {
                 options: None,
                 uncertain: Vec::new(),
                 creating: 0,
-                temporary: 0,
                 running: 0,
                 maintenance_active: false,
                 maintenance_failed: false,
@@ -343,34 +341,6 @@ impl Pool {
             },
         );
         Ok(())
-    }
-    pub fn reserve_temporary(self: &Arc<Self>, sequence: u64) -> Result<TemporaryMember, Error> {
-        let mut state = self.lock();
-        let occupied = state
-            .members
-            .iter()
-            .filter(|m| {
-                matches!(
-                    m.state,
-                    MemberState::Ready | MemberState::Busy | MemberState::Retiring
-                )
-            })
-            .count()
-            + state.uncertain.len()
-            + state.creating as usize
-            + state.temporary as usize;
-        if occupied >= state.profile.max_members as usize {
-            return Err(Error::new(
-                ErrorCode::ResourceLimit,
-                "buffer loading requires a reserved additional GPASCII service slot",
-            ));
-        }
-        state.temporary += 1;
-        Ok(TemporaryMember {
-            pool: self.clone(),
-            sequence,
-            uncertain: false,
-        })
     }
     pub fn maintenance_pending(&self) -> bool {
         let state = self.lock();
@@ -585,28 +555,6 @@ impl MaintenanceBlock {
 impl Drop for MaintenanceBlock {
     fn drop(&mut self) {
         self.pool.lock().maintenance_blocked = false;
-        self.pool.changed.notify_waiters();
-    }
-}
-
-pub(crate) struct TemporaryMember {
-    pool: Arc<Pool>,
-    sequence: u64,
-    uncertain: bool,
-}
-impl TemporaryMember {
-    pub fn mark_uncertain(&mut self) {
-        self.uncertain = true;
-    }
-}
-impl Drop for TemporaryMember {
-    fn drop(&mut self) {
-        let mut state = self.pool.lock();
-        state.temporary = state.temporary.saturating_sub(1);
-        if self.uncertain {
-            state.uncertain.push((0, self.sequence));
-        }
-        drop(state);
         self.pool.changed.notify_waiters();
     }
 }
