@@ -8,8 +8,8 @@ use pmac_core::{
     OperationResult, Session, Transport,
 };
 use pmac_protocol::{
-    Command, GpasciiDecoder, MaintenanceKind, ResetDecoder, ResetEvent, ShellDecoder, ShellEvent,
-    ShellMarkers, ShellStderrDecoder, RESET_READINESS_PROBE,
+    Command, DartTransfer, GpasciiDecoder, MaintenanceKind, ResetDecoder, ResetEvent, ShellDecoder,
+    ShellEvent, ShellMarkers, ShellStderrDecoder, RESET_READINESS_PROBE,
 };
 use rand::Rng;
 use russh::ChannelMsg;
@@ -44,6 +44,7 @@ impl Transport for RusshTransport {
             maintenance: tokio::sync::Mutex::new(None),
             sftp: tokio::sync::Mutex::new(None),
             persistent_shell: tokio::sync::Mutex::new(None),
+            dart: tokio::sync::Mutex::new(None),
             nonce: format!("{:016x}", rand::rng().random::<u64>()),
             sequence: Mutex::new(0),
             closed: AtomicBool::new(false),
@@ -69,6 +70,7 @@ pub(crate) struct RusshSession {
     maintenance: tokio::sync::Mutex<Option<Arc<Connection>>>,
     sftp: tokio::sync::Mutex<Option<Arc<SftpSession>>>,
     persistent_shell: tokio::sync::Mutex<Option<Channel>>,
+    dart: tokio::sync::Mutex<Option<crate::dart::DartConnection>>,
     pub(crate) nonce: String,
     sequence: Mutex<u64>,
     closed: AtomicBool,
@@ -134,6 +136,49 @@ impl Session for RusshSession {
             self.control.retire();
         }
         result
+    }
+
+    async fn dart_connect(
+        &self,
+        context: &ExecutionContext,
+    ) -> Result<OperationResult, Error> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::new(ErrorCode::Closing, "session is closed"));
+        }
+        let mut slot = self.dart.lock().await;
+        if slot.is_some() {
+            return Ok(OperationResult::default());
+        }
+        let connection = crate::dart::connect(self, &self.options.host, context).await?;
+        if self.closed.load(Ordering::Acquire) {
+            crate::dart::disconnect(connection).await?;
+            return Err(Error::new(ErrorCode::Closing, "session closed during DART connect"));
+        }
+        *slot = Some(connection);
+        Ok(OperationResult::default())
+    }
+
+    async fn dart_disconnect(
+        &self,
+        _context: &ExecutionContext,
+    ) -> Result<OperationResult, Error> {
+        self.close_dart().await?;
+        Ok(OperationResult::default())
+    }
+
+    async fn dart(
+        &self,
+        transfer: DartTransfer,
+        _context: &ExecutionContext,
+    ) -> Result<OperationResult, Error> {
+        let mut slot = self.dart.lock().await;
+        let connection = slot.as_mut().ok_or_else(|| {
+            Error::new(
+                ErrorCode::Disconnected,
+                "DART is not connected; call DartConnect first",
+            )
+        })?;
+        crate::dart::transfer(connection, transfer).await
     }
 
     async fn shell(
@@ -202,10 +247,11 @@ impl Session for RusshSession {
     }
 
     async fn retire_control(&self) -> Result<(), Error> {
+        let dart = self.close_dart().await;
         let confirmed = self.close_gpascii_channels().await;
         let result = self.control.close().await;
         if confirmed {
-            result
+            result.and(dart)
         } else {
             Err(Error::new(
                 ErrorCode::ShutdownPending,
@@ -256,6 +302,15 @@ impl Session for RusshSession {
 }
 
 impl RusshSession {
+    async fn close_dart(&self) -> Result<(), Error> {
+        let connection = self.dart.lock().await.take();
+        if let Some(connection) = connection {
+            crate::dart::disconnect(connection).await
+        } else {
+            Ok(())
+        }
+    }
+
     async fn close_gpascii_channels(&self) -> bool {
         let mut channels = Vec::new();
         if let Some((channel, permit)) = self.control_channel.lock().await.take() {

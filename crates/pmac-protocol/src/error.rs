@@ -34,4 +34,6 @@ pub enum ProtocolError {
     ShellProtocol(String),
     #[error("regular expression error: {0}")]
     Regex(String),
+    #[error("invalid DART transfer: {0}")]
+    Dart(String),
 }

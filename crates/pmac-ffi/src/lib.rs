@@ -2,6 +2,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod business;
+mod dart;
 mod helpers;
 mod pool;
 mod registry;

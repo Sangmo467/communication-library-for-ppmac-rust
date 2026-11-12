@@ -221,6 +221,7 @@ class Request:
     def __exit__(self, *args):
         self.release()
 
+
 class _CompletionPump:
     def __init__(self, lib, runtime_id, capacity):
         if capacity < 1:
@@ -405,6 +406,7 @@ class Runtime:
 
     def __exit__(self, *args):
         self.shutdown()
+
 def _finalize_client(lib, client_id, created_pid):
     if os.getpid() != created_pid:
         return
@@ -464,6 +466,39 @@ class Client:
         with self.get_response_async(command, **kwargs) as request:
             request.wait()
             return request.response() if not pattern else request.match(pattern)
+
+    def dart_connect_async(self, **kwargs):
+        native = options(kwargs); request = C.c_uint64()
+        check(self.lib.pmac_dart_connect_async(self._check(), N.byref(native), N.byref(request)), "DART connect submit")
+        return Request(self.runtime, request.value)
+
+    def dart_connect(self, **kwargs):
+        with self.dart_connect_async(**kwargs) as request: request.wait()
+
+    def dart_disconnect_async(self, **kwargs):
+        native = options(kwargs); request = C.c_uint64()
+        check(self.lib.pmac_dart_disconnect_async(self._check(), N.byref(native), N.byref(request)), "DART disconnect submit")
+        return Request(self.runtime, request.value)
+
+    def dart_disconnect(self, **kwargs):
+        with self.dart_disconnect_async(**kwargs) as request: request.wait()
+
+    def dart_get_async(self, command, address, length, **kwargs):
+        native = options(kwargs); request = C.c_uint64()
+        check(self.lib.pmac_dart_get_async(self._check(), command, address, length, N.byref(native), N.byref(request)), "DART get submit")
+        return Request(self.runtime, request.value)
+
+    def dart_get(self, command, address, length, **kwargs):
+        with self.dart_get_async(command, address, length, **kwargs) as request:
+            request.wait(); return request.response()
+
+    def dart_set_async(self, command, address, data, **kwargs):
+        view, buffer = N.view(data); native = options(kwargs); request = C.c_uint64()
+        check(self.lib.pmac_dart_set_async(self._check(), command, address, view.data, view.len, N.byref(native), N.byref(request)), "DART set submit")
+        return Request(self.runtime, request.value)
+
+    def dart_set(self, command, address, data, **kwargs):
+        with self.dart_set_async(command, address, data, **kwargs) as request: request.wait()
 
     def shell_async(self, command, persistent=True, **kwargs):
         view, buffer = N.view(command); native = options(kwargs); request = C.c_uint64()

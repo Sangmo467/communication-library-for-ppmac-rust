@@ -88,6 +88,7 @@ int main() {
 
 ## 文档
 
+- [DART 接口指南](docs/dart-api.md)：连接、数据类型及各语言接口。
 - [使用手册](docs/user-manual.md)：四种语言接入、请求、连接池、业务操作、恢复和关闭。
 - [构建与安装](docs/build-and-install.md)：原生库、CMake 安装和各语言加载方式。
 - [认证与主机身份校验](docs/authentication.md)：密码、私钥、known_hosts 与固定指纹。

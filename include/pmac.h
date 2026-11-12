@@ -26,6 +26,20 @@ extern "C" {
 #define PMAC_RECOVERY_CONFIRM_UNKNOWN_WRITES 1u
 #define PMAC_RECOVERY_CONFIRM_REMOTE_RELEASE 2u
 
+#define PMAC_DART_GET_USHM_CHAR 0x10u
+#define PMAC_DART_SET_USHM_CHAR 0x11u
+#define PMAC_DART_GET_USHM_INT 0x40u
+#define PMAC_DART_SET_USHM_INT 0x41u
+#define PMAC_DART_GET_USHM_FLOAT 0xf0u
+#define PMAC_DART_SET_USHM_FLOAT 0xf1u
+#define PMAC_DART_GET_USHM_DOUBLE 0x80u
+#define PMAC_DART_SET_USHM_DOUBLE 0x81u
+#define PMAC_DART_GET_P_VARIABLE 0x90u
+#define PMAC_DART_SET_P_VARIABLE 0x91u
+#define PMAC_DART_MAX_DATA_BYTES 524288u
+#define PMAC_DART_USHM_BYTES 1048576u
+#define PMAC_DART_MAX_P_INDEX 65535u
+
 #define PMAC_OK 0
 #define PMAC_INVALID_ARGUMENT -1
 #define PMAC_INVALID_HANDLE -2
@@ -103,6 +117,11 @@ PMAC_EXPORT int32_t pmac_connect_submit(pmac_client_id id, const pmac_connect_op
 PMAC_EXPORT int32_t pmac_command_submit(pmac_client_id id, const uint8_t *command, size_t command_len, const pmac_request_options *options, pmac_request_id *out_id);
 /* Asynchronous GetResponse; use pmac_request_wait/copy_response or copy_match. */
 PMAC_EXPORT int32_t pmac_get_response_async(pmac_client_id id, const uint8_t *command, size_t command_len, const pmac_request_options *options, pmac_request_id *out_id);
+/* DART payload values use host-native endian; the transport encodes big-endian wire data. */
+PMAC_EXPORT int32_t pmac_dart_connect_async(pmac_client_id id, const pmac_request_options *options, pmac_request_id *out_id);
+PMAC_EXPORT int32_t pmac_dart_disconnect_async(pmac_client_id id, const pmac_request_options *options, pmac_request_id *out_id);
+PMAC_EXPORT int32_t pmac_dart_get_async(pmac_client_id id, uint32_t command, uint32_t address, size_t data_len, const pmac_request_options *options, pmac_request_id *out_id);
+PMAC_EXPORT int32_t pmac_dart_set_async(pmac_client_id id, uint32_t command, uint32_t address, const uint8_t *data, size_t data_len, const pmac_request_options *options, pmac_request_id *out_id);
 PMAC_EXPORT int32_t pmac_shell_submit(pmac_client_id id, const uint8_t *command, size_t command_len, uint32_t persistent, const pmac_request_options *options, pmac_request_id *out_id);
 PMAC_EXPORT int32_t pmac_upload_submit(pmac_client_id id, const uint8_t *local, size_t local_len, const uint8_t *remote, size_t remote_len, const pmac_request_options *options, pmac_request_id *out_id);
 PMAC_EXPORT int32_t pmac_download_submit(pmac_client_id id, const uint8_t *remote, size_t remote_len, const uint8_t *local, size_t local_len, const pmac_request_options *options, pmac_request_id *out_id);

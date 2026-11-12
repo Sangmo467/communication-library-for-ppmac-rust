@@ -34,6 +34,10 @@ internal static class NativeMethods
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_connect_submit(ulong id, ref ConnectOptions options, out ulong request);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_command_submit(ulong id, IntPtr command, UIntPtr length, ref RequestOptions options, out ulong request);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_get_response_async(ulong id, IntPtr command, UIntPtr length, ref RequestOptions options, out ulong request);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_dart_connect_async(ulong id, ref RequestOptions options, out ulong request);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_dart_disconnect_async(ulong id, ref RequestOptions options, out ulong request);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_dart_get_async(ulong id, uint command, uint address, UIntPtr length, ref RequestOptions options, out ulong request);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_dart_set_async(ulong id, uint command, uint address, IntPtr data, UIntPtr length, ref RequestOptions options, out ulong request);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_shell_submit(ulong id, IntPtr command, UIntPtr length, uint persistent, ref RequestOptions options, out ulong request);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_upload_submit(ulong id, IntPtr local, UIntPtr localLength, IntPtr remote, UIntPtr remoteLength, ref RequestOptions options, out ulong request);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_download_submit(ulong id, IntPtr remote, UIntPtr remoteLength, IntPtr local, UIntPtr localLength, ref RequestOptions options, out ulong request);

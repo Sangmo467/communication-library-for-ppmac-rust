@@ -436,10 +436,23 @@ impl Client {
         request.mark_awaiting();
         let context = ExecutionContext::new(request.clone());
         let reset = matches!(&operation,Operation::Command(c) if matches!(c.maintenance(),MaintenanceKind::Reset|MaintenanceKind::GlobalReset));
-        let control = matches!(&operation, Operation::Command(_));
+        let control = matches!(
+            &operation,
+            Operation::Command(_)
+                | Operation::DartConnect
+                | Operation::DartDisconnect
+                | Operation::Dart(_)
+        );
+        let dart = matches!(
+            &operation,
+            Operation::DartConnect | Operation::DartDisconnect | Operation::Dart(_)
+        );
         let operation_future = async {
             match operation {
                 Operation::Command(command) => lease.session.command(&command, &context).await,
+                Operation::DartConnect => lease.session.dart_connect(&context).await,
+                Operation::DartDisconnect => lease.session.dart_disconnect(&context).await,
+                Operation::Dart(transfer) => lease.session.dart(transfer, &context).await,
                 Operation::Shell {
                     command,
                     persistent,
@@ -523,15 +536,16 @@ impl Client {
             self.pool.lock().unknown_write = true;
         }
         let broken = result.as_ref().err().is_some_and(|e| {
-            e.fatal_transport
-                || (uncertain
-                    && matches!(
-                        e.code,
-                        ErrorCode::Cancelled
-                            | ErrorCode::ExecTimeout
-                            | ErrorCode::Internal
-                            | ErrorCode::Disconnected
-                    ))
+            (!dart || e.fatal_transport)
+                && (e.fatal_transport
+                    || (uncertain
+                        && matches!(
+                            e.code,
+                            ErrorCode::Cancelled
+                                | ErrorCode::ExecTimeout
+                                | ErrorCode::Internal
+                                | ErrorCode::Disconnected
+                        )))
         });
         if reset {
             self.retire_device().await;
@@ -1207,6 +1221,8 @@ fn classify(operation: &Operation, read_pool: bool) -> Result<(JobClass, bool), 
                 writes,
             ))
         }
+        Operation::DartConnect | Operation::DartDisconnect => Ok((JobClass::Ordered, false)),
+        Operation::Dart(transfer) => Ok((JobClass::Ordered, transfer.command().is_write())),
         Operation::BufferUpload { .. } => Ok((JobClass::Maintenance, true)),
         Operation::Shell { .. } => Ok((JobClass::Shell, true)),
         Operation::Upload { .. } | Operation::FileRemove { .. } => Ok((JobClass::File, true)),

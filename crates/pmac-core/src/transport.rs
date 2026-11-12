@@ -4,7 +4,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use pmac_protocol::Command;
+use pmac_protocol::{Command, DartTransfer};
 use zeroize::Zeroizing;
 
 use crate::{Error, ErrorCode, OperationResult, Request};
@@ -322,6 +322,34 @@ pub trait Session: Send + Sync + 'static {
         command: &Command,
         context: &ExecutionContext,
     ) -> Result<OperationResult, Error>;
+    async fn dart_connect(
+        &self,
+        _context: &ExecutionContext,
+    ) -> Result<OperationResult, Error> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this transport does not provide DART TCP",
+        ))
+    }
+    async fn dart_disconnect(
+        &self,
+        _context: &ExecutionContext,
+    ) -> Result<OperationResult, Error> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this transport does not provide DART TCP",
+        ))
+    }
+    async fn dart(
+        &self,
+        _transfer: DartTransfer,
+        _context: &ExecutionContext,
+    ) -> Result<OperationResult, Error> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this transport does not provide DART TCP",
+        ))
+    }
     async fn shell(
         &self,
         command: &str,

@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use pmac_protocol::Command;
+use pmac_protocol::{Command, DartTransfer};
 use tokio::sync::Notify;
 
 use crate::budget::AdmissionPermit;
@@ -28,6 +28,9 @@ pub enum Operation {
     },
     RepairMaintenance,
     Command(Command),
+    DartConnect,
+    DartDisconnect,
+    Dart(DartTransfer),
     Shell {
         command: String,
         persistent: bool,
@@ -60,8 +63,11 @@ impl Operation {
             Self::PoolResize(_)
             | Self::PoolRepair { .. }
             | Self::PoolDrain { .. }
-            | Self::RepairMaintenance => 0,
+            | Self::RepairMaintenance
+            | Self::DartConnect
+            | Self::DartDisconnect => 0,
             Self::Command(command) => command.text().len(),
+            Self::Dart(transfer) => transfer.data().len(),
             Self::Shell { command, .. } => command.len(),
             Self::Upload { local, remote }
             | Self::Download { local, remote }
