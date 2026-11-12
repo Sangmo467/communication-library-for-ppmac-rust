@@ -76,7 +76,7 @@ struct RuntimeOwner {
             config.struct_size = sizeof(config); config.abi_version = PMAC_ABI_VERSION; config.worker_threads = workers;
             check(pmac_runtime_create(&config, &id));
         }
-        ~RuntimeOwner() { if (id) { if (pmac_runtime_shutdown(id, 1000) == PMAC_OK) (void)pmac_runtime_release(id); } }
+        ~RuntimeOwner() { detail::runtimeCleanup(id, detail::nativeRuntimeApi()); }
         uint64_t id = 0;
         static void check(int32_t status) { if (status != PMAC_OK) throw Error(status, 0, 0, "PMAC runtime error"); }
     };

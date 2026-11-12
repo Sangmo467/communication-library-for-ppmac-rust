@@ -215,6 +215,9 @@ impl ExecutionContext {
     pub fn finish_control_channel_initialization(&self) {
         self.request.finish_control_channel_initialization();
     }
+    pub fn mark_gpascii_resource_attempted(&self) {
+        self.request.mark_gpascii_resource_attempted();
+    }
 
     pub fn mark_publish_started(&self) {
         self.request.mark_publish_started();

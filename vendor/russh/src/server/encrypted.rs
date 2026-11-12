@@ -1448,8 +1448,8 @@ impl Session {
                     return Ok(());
                 }
                 if let Some(ref mut enc) = self.common.encrypted {
-                    // Reply with CHANNEL_CLOSE per RFC 4254 Section 5.3.
-                    enc.close(channel_num)?;
+                    enc.byte(channel_num, msg::CHANNEL_CLOSE)?;
+                    enc.channels.remove(&channel_num);
                 }
                 // Forward the close to the channel before removing it, so that
                 // consumers waiting on `Channel::wait()` receive an explicit

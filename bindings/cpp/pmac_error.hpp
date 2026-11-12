@@ -75,6 +75,29 @@ inline ErrorCategory errorCategory(int32_t status) {
 inline bool isTransportError(int32_t status) { return errorCategory(status) == TransportError; }
 
 namespace detail {
+struct RuntimeApi {
+    int32_t (*shutdown)(pmac_runtime_id, uint32_t);
+    int32_t (*release)(pmac_runtime_id);
+};
+
+inline void runtimeCleanup(pmac_runtime_id id, const RuntimeApi& api) throw() {
+    if (!id) return;
+    for (;;) {
+        int32_t status = api.shutdown(id, 1000);
+        if (status == PMAC_OK) {
+            status = api.release(id);
+            if (status != PMAC_SHUTDOWN_PENDING) return;
+        } else if (status != PMAC_SHUTDOWN_PENDING) {
+            return;
+        }
+    }
+}
+
+inline RuntimeApi nativeRuntimeApi() {
+    const RuntimeApi api = {pmac_runtime_shutdown, pmac_runtime_release};
+    return api;
+}
+
 struct FileExistsApi {
     int32_t (*submit)(pmac_client_id, const uint8_t*, size_t, const pmac_request_options*, pmac_request_id*);
     int32_t (*wait)(pmac_request_id, uint32_t, pmac_request_info*);

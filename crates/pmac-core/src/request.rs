@@ -153,6 +153,7 @@ pub struct Request {
     cancellation: Cancellation,
     publish_pending: AtomicBool,
     control_channel_initializing: AtomicBool,
+    gpascii_resource_attempted: AtomicBool,
     completion_signal: std::sync::OnceLock<Arc<crate::completion::CompletionSignal>>,
     completion_announced: AtomicBool,
     _permit: AdmissionPermit,
@@ -202,6 +203,7 @@ impl Request {
             cancellation: Cancellation::default(),
             publish_pending: AtomicBool::new(false),
             control_channel_initializing: AtomicBool::new(false),
+            gpascii_resource_attempted: AtomicBool::new(false),
             completion_signal: std::sync::OnceLock::new(),
             completion_announced: AtomicBool::new(false),
             _permit: permit,
@@ -233,6 +235,17 @@ impl Request {
     }
     pub(crate) fn control_channel_initializing(&self) -> bool {
         self.control_channel_initializing.load(Ordering::Acquire)
+    }
+    pub(crate) fn reset_gpascii_resource_attempted(&self) {
+        self.gpascii_resource_attempted
+            .store(false, Ordering::Release);
+    }
+    pub(crate) fn mark_gpascii_resource_attempted(&self) {
+        self.gpascii_resource_attempted
+            .store(true, Ordering::Release);
+    }
+    pub(crate) fn gpascii_resource_attempted(&self) -> bool {
+        self.gpascii_resource_attempted.load(Ordering::Acquire)
     }
     pub fn max_response_bytes(&self) -> usize {
         self.options.max_response_bytes

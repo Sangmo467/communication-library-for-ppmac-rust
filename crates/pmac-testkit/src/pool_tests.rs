@@ -192,6 +192,7 @@ struct IndependentTransport {
     gated_attempt: AtomicUsize,
     attempts: AtomicUsize,
     panic_attempt: AtomicUsize,
+    fail_attempt: AtomicUsize,
 }
 #[async_trait]
 impl Transport for IndependentTransport {
@@ -210,6 +211,12 @@ impl Transport for IndependentTransport {
         }
         if self.panic_attempt.load(Ordering::Acquire) == attempt {
             panic!("injected connect future panic");
+        }
+        if self.fail_attempt.load(Ordering::Acquire) == attempt {
+            return Err(Error::new(
+                ErrorCode::ConnectError,
+                "injected pre-channel connection failure",
+            ));
         }
         let session = Arc::new(PoolSession::new(attempt));
         self.sessions.lock().unwrap().push(session.clone());
@@ -772,7 +779,7 @@ fn cancel_during_old_session_cleanup_does_not_leak_creating_capacity() {
 }
 
 #[test]
-fn panicking_connect_future_releases_capacity_and_records_failed_member() {
+fn panicking_pre_channel_connect_releases_capacity_and_records_failed_member() {
     let fixture = Fixture::new();
     fixture.prepare(1, 4);
     fixture.transport.panic_attempt.store(2, Ordering::Release);
@@ -784,7 +791,7 @@ fn panicking_connect_future_releases_capacity_and_records_failed_member() {
     assert_eq!(snapshot.creating, 0);
     assert_eq!(snapshot.failed, 1);
     assert_eq!(snapshot.ready, 1);
-    assert_eq!(snapshot.release_uncertain, 1);
+    assert_eq!(snapshot.release_uncertain, 0);
     fixture.finish(fixture.command("#1p", false)).unwrap();
 }
 
@@ -957,6 +964,28 @@ fn initial_prepare_reports_service_ready_after_minimum_capacity_is_verified() {
     assert_eq!(snapshot.ready, 1);
     assert_eq!(snapshot.creating, 1);
     assert_eq!(snapshot.desired, 2);
+}
+
+#[test]
+fn pre_channel_connection_failure_allows_immediate_explicit_repair() {
+    let fixture = Fixture::new();
+    fixture.transport.fail_attempt.store(1, Ordering::Release);
+    let error = fixture
+        .finish(fixture.submit(
+            Operation::PoolPrepare {
+                options: ConnectOptions::new("mock", "test"),
+                profile: profile(1, 1),
+            },
+            options(),
+        ))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ConnectError);
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
+    fixture
+        .finish(fixture.submit(Operation::PoolRepair { member_id: 1 }, options()))
+        .unwrap();
+    assert_eq!(fixture.client.pool_snapshot().ready, 1);
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
 }
 
 #[test]

@@ -1062,18 +1062,28 @@ fn mt08_exited_threads_release_channels_before_new_threads_are_admitted() {
     fixture
         .run(Operation::Command(Command::raw("#1p").unwrap()))
         .unwrap();
+    let run = || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match fixture.run(Operation::Command(Command::raw("#1p").unwrap())) {
+                Ok(_) => break,
+                Err(error)
+                    if error.code == ErrorCode::ResourceLimit
+                        && error.certainty == ExecutionCertainty::NotSent =>
+                {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("unexpected channel command failure: {error:?}"),
+            }
+        }
+    };
     for _ in 0..70 {
         std::thread::scope(|scope| {
-            scope
-                .spawn(|| fixture.run(Operation::Command(Command::raw("#1p").unwrap())))
-                .join()
-                .unwrap()
-                .unwrap();
+            scope.spawn(run).join().unwrap();
         });
     }
-    fixture
-        .run(Operation::Command(Command::raw("#1p").unwrap()))
-        .unwrap();
+    run();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while fixture
         .observed
@@ -1095,6 +1105,79 @@ fn mt08_exited_threads_release_channels_before_new_threads_are_admitted() {
         70
     );
     assert_eq!(fixture.observed.gpascii_channels.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn cloned_connect_options_share_one_budget_across_clients() {
+    let fixture = Fixture::new(None);
+    let options = fixture.options();
+    fixture.run(Operation::Connect(options.clone())).unwrap();
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+    let second = fixture
+        .runtime
+        .create_client(Arc::new(RusshTransport), ClientConfig::default())
+        .unwrap();
+    let connected = second
+        .submit(
+            fixture.runtime.next_id(),
+            Operation::Connect(options),
+            RequestOptions::default(),
+        )
+        .unwrap();
+    fixture.run_result(connected).unwrap();
+    let clients = [fixture.client.clone(), second.clone()];
+    let ready = std::sync::Barrier::new(8);
+    let release = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        let clients = &clients;
+        let fixture = &fixture;
+        let second = &second;
+        for index in 0..7 {
+            let ready = &ready;
+            let release = &release;
+            scope.spawn(move || {
+                let request = clients[index % 2]
+                    .submit(
+                        fixture.runtime.next_id(),
+                        Operation::Command(Command::raw("#1p").unwrap()),
+                        RequestOptions::default(),
+                    )
+                    .unwrap();
+                fixture.run_result(request).unwrap();
+                ready.wait();
+                release.wait();
+            });
+        }
+        ready.wait();
+        let error = scope
+            .spawn(|| {
+                let request = second
+                    .submit(
+                        fixture.runtime.next_id(),
+                        Operation::Command(Command::raw("Motor[2].ServoCtrl=1").unwrap()),
+                        RequestOptions::default(),
+                    )
+                    .unwrap();
+                fixture.run_result(request)
+            })
+            .join()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+        release.wait();
+    });
+    assert!(fixture.client.is_connected());
+    assert!(second.is_connected());
+    assert!(!fixture
+        .observed
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|command| command == "Motor[2].ServoCtrl=1"));
 }
 
 #[test]

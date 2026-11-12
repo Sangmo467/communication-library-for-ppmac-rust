@@ -1,6 +1,5 @@
 use crate::budget::Budget;
 use crate::pool::{JobClass, Lease, MaintenanceBlock, Member, Pool};
-use crate::transport::GpasciiBudget;
 use crate::{
     ConnectOptions, Error, ErrorCode, ExecutionCertainty, ExecutionContext, MemberSnapshot,
     MemberState, Operation, OperationResult, PoolProfile, PoolSnapshot, Request, RequestOptions,
@@ -687,7 +686,6 @@ impl Client {
                 ));
             }
             options.control_pool_size = 1;
-            options.gpascii_budget = Arc::new(GpasciiBudget::new());
             s.options = Some(options);
         }
         self.pool.set_profile(profile)?;
@@ -751,6 +749,7 @@ impl Client {
         revision: u64,
     ) -> Result<(), Error> {
         self.check_revision(revision)?;
+        request.reset_gpascii_resource_attempted();
         request.begin_send()?;
         request.mark_awaiting();
         let _block = if id == 1 {
@@ -889,7 +888,9 @@ impl Client {
             Err(error) => {
                 let mut s = self.pool.lock();
                 s.last_create_error = error.code;
-                s.uncertain.push((id, epoch));
+                if request.gpascii_resource_attempted() && !s.uncertain.contains(&(id, epoch)) {
+                    s.uncertain.push((id, epoch));
+                }
                 if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
                     m.epoch = epoch;
                     m.state = MemberState::Failed;

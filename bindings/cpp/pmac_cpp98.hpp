@@ -35,9 +35,6 @@ struct Options {
         value.timeout_ms = timeout_ms; value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (read_pool ? PMAC_REQUEST_READ_POOL : 0u); value.max_response_bytes = max_response_bytes;
         return value;
     }
-    pmac_request_options* nativePtr() const { native_cache = native(); return &native_cache; }
-private:
-    mutable pmac_request_options native_cache;
 };
 
 struct ConnectOptions {
@@ -65,7 +62,7 @@ public:
         config.struct_size = sizeof(config); config.abi_version = PMAC_ABI_VERSION; config.worker_threads = workers;
         check(pmac_runtime_create(&config, &id_), "runtime_create");
     }
-    ~Runtime() { if (id_) { if (pmac_runtime_shutdown(id_, 1000) == PMAC_OK) (void)pmac_runtime_release(id_); } }
+    ~Runtime() { pmac::detail::runtimeCleanup(id_, pmac::detail::nativeRuntimeApi()); }
     uint64_t id() const { return id_; }
     static const char* version() { return pmac_version_string(); }
     static uint32_t versionNumber() { return pmac_version_number(); }

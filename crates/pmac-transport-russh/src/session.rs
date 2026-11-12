@@ -87,7 +87,7 @@ impl Session for RusshSession {
         let owner = context.origin_liveness();
         context.begin_control_channel_initialization();
         let mut channels = self.control_channels.lock().await;
-        reclaim_exited_channels(&mut channels);
+        reclaim_exited_channels(&self.control, &mut channels);
         let result = match channels.entry(origin) {
             std::collections::hash_map::Entry::Occupied(entry) => {
                 let channel = &mut entry.into_mut().channel;
@@ -557,7 +557,10 @@ impl RusshSession {
     }
 }
 
-fn reclaim_exited_channels(channels: &mut HashMap<std::thread::ThreadId, ControlChannel>) {
+fn reclaim_exited_channels(
+    connection: &Arc<Connection>,
+    channels: &mut HashMap<std::thread::ThreadId, ControlChannel>,
+) {
     let exited = channels
         .iter()
         .filter(|(_, entry)| entry.owner.strong_count() == 0)
@@ -565,7 +568,11 @@ fn reclaim_exited_channels(channels: &mut HashMap<std::thread::ThreadId, Control
         .collect::<Vec<_>>();
     for origin in exited {
         if let Some(entry) = channels.remove(&origin) {
-            drop(CloseChannelOnDrop::new(entry.channel, entry.permit));
+            drop(CloseChannelOnDrop::new(
+                connection.clone(),
+                entry.channel,
+                entry.permit,
+            ));
         }
     }
 }
@@ -576,13 +583,29 @@ fn channel_initialization_error(mut error: Error) -> Error {
     error
 }
 
+struct UncertainPermitOnDrop(Option<GpasciiChannelPermit>);
+impl UncertainPermitOnDrop {
+    fn release(mut self) {
+        self.0.take().expect("pending channel permit").release();
+    }
+}
+impl Drop for UncertainPermitOnDrop {
+    fn drop(&mut self) {
+        if let Some(permit) = self.0.take() {
+            permit.retain_uncertain();
+        }
+    }
+}
+
 struct CloseChannelOnDrop {
+    connection: Arc<Connection>,
     channel: Option<Channel>,
     permit: Option<GpasciiChannelPermit>,
 }
 impl CloseChannelOnDrop {
-    fn new(channel: Channel, permit: GpasciiChannelPermit) -> Self {
+    fn new(connection: Arc<Connection>, channel: Channel, permit: GpasciiChannelPermit) -> Self {
         Self {
+            connection,
             channel: Some(channel),
             permit: Some(permit),
         }
@@ -597,16 +620,21 @@ impl CloseChannelOnDrop {
 impl Drop for CloseChannelOnDrop {
     fn drop(&mut self) {
         if let (Some(channel), Some(permit)) = (self.channel.take(), self.permit.take()) {
+            let permit = UncertainPermitOnDrop(Some(permit));
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let connection = self.connection.clone();
                 runtime.spawn(async move {
-                    if channel.close().await.is_ok() {
+                    if matches!(
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            connection.close_channel(channel),
+                        )
+                        .await,
+                        Ok(true)
+                    ) {
                         permit.release();
-                    } else {
-                        permit.retain_uncertain();
                     }
                 });
-            } else {
-                permit.retain_uncertain();
             }
         }
     }
@@ -617,8 +645,10 @@ async fn open_gpascii(
     context: &ExecutionContext,
     permit: GpasciiChannelPermit,
 ) -> Result<(Channel, GpasciiChannelPermit), Error> {
+    context.mark_gpascii_resource_attempted();
     context.begin_control_channel_initialization();
     let mut channel = CloseChannelOnDrop::new(
+        connection.clone(),
         connection
             .open_channel()
             .await

@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use russh::client::{self, Handle};
 use russh::keys::{
     PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyBase64, PublicKeyOrCertificate,
 };
+use russh::ChannelId;
 use russh::Disconnect;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
@@ -12,10 +14,25 @@ use tokio::net::TcpStream;
 use pmac_core::{ConnectOptions, Error, ErrorCode, ExecutionContext, HostKeyPolicy};
 
 pub(crate) type Channel = russh::Channel<client::Msg>;
+type CloseEvents = Arc<Mutex<HashMap<ChannelId, tokio::sync::oneshot::Sender<()>>>>;
+
+struct CloseEventRegistration {
+    channel: ChannelId,
+    events: CloseEvents,
+}
+impl Drop for CloseEventRegistration {
+    fn drop(&mut self) {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.channel);
+    }
+}
 
 pub(crate) struct Connection {
     pub(crate) handle: Arc<Handle<ClientHandler>>,
     healthy: Arc<AtomicBool>,
+    close_events: CloseEvents,
 }
 
 impl Connection {
@@ -35,6 +52,25 @@ impl Connection {
             .channel_open_session()
             .await
             .map_err(transport_error)
+    }
+
+    pub(crate) async fn close_channel(&self, channel: Channel) -> bool {
+        let id = channel.id();
+        let (confirmed, receiver) = tokio::sync::oneshot::channel();
+        let previous = self
+            .close_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, confirmed);
+        assert!(previous.is_none(), "duplicate channel close registration");
+        let _registration = CloseEventRegistration {
+            channel: id,
+            events: self.close_events.clone(),
+        };
+        if channel.close().await.is_err() {
+            return false;
+        }
+        receiver.await.is_ok()
     }
 
     pub(crate) async fn close(&self) -> Result<(), Error> {
@@ -63,6 +99,7 @@ impl Connection {
 pub(crate) struct ClientHandler {
     verifier: HostKeyVerifier,
     healthy: Arc<AtomicBool>,
+    close_events: CloseEvents,
 }
 
 enum HostKeyVerifier {
@@ -92,6 +129,22 @@ impl client::Handler for ClientHandler {
             self.healthy.store(false, Ordering::Release);
         }
         Ok(accepted)
+    }
+
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let confirmed = self
+            .close_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&channel);
+        if let Some(confirmed) = confirmed {
+            let _ = confirmed.send(());
+        }
+        Ok(())
     }
 }
 
@@ -138,9 +191,11 @@ pub(crate) async fn connect(
         ..client::Config::default()
     });
     let healthy = Arc::new(AtomicBool::new(true));
+    let close_events = CloseEvents::default();
     let handler = ClientHandler {
         verifier,
         healthy: healthy.clone(),
+        close_events: close_events.clone(),
     };
     let mut handle = client::connect_stream(config, stream, handler)
         .await
@@ -193,6 +248,7 @@ pub(crate) async fn connect(
     Ok(Arc::new(Connection {
         handle: Arc::new(handle),
         healthy,
+        close_events,
     }))
 }
 

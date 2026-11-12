@@ -44,6 +44,26 @@ int32_t release(pmac_request_id request) {
     ++releases;
     return PMAC_OK;
 }
+int32_t runtimeShutdown(pmac_runtime_id id, uint32_t) {
+    assert(id == 23);
+    static bool pending = true;
+    ++waits;
+    if (pending) { pending = false; return PMAC_SHUTDOWN_PENDING; }
+    return PMAC_OK;
+}
+int32_t runtimeRelease(pmac_runtime_id id) {
+    assert(id == 23);
+    static bool pending = true;
+    ++releases;
+    if (pending) { pending = false; return PMAC_SHUTDOWN_PENDING; }
+    return PMAC_OK;
+}
+void run_runtime_cleanup_regression() {
+    const pmac::detail::RuntimeApi api = {runtimeShutdown, runtimeRelease};
+    waits = releases = 0;
+    pmac::detail::runtimeCleanup(23, api);
+    assert(waits == 3 && releases == 2);
+}
 void reset(const char* value, int32_t status) {
     response = value;
     admission_status = PMAC_OK;
@@ -96,6 +116,7 @@ void run_decoder_regressions() {
 
 int main() {
     run_decoder_regressions();
+    run_runtime_cleanup_regression();
     for (int status = 0; status >= PMAC_SUPERSEDED; --status)
         assert(std::strcmp(pmac::statusName(status), "PMAC_UNKNOWN_STATUS") != 0);
     assert(std::strcmp(pmac::statusName(99), "PMAC_UNKNOWN_STATUS") == 0);

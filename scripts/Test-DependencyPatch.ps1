@@ -28,4 +28,4 @@ $pkcs8 = Get-Content -LiteralPath (Join-Path $vendor 'src/keys/format/pkcs8.rs')
 $restoredPkcs8 = $pkcs8.Replace('let sk = &pkcs1::RsaPrivateKeyRef::try_from(pki.private_key)?;', 'let sk = &pkcs1::RsaPrivateKey::try_from(pki.private_key)?;')
 $restoredPkcs8Hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($restoredPkcs8))).ToLowerInvariant()
 if ($restoredPkcs8Hash -ne $patch.upstreamPkcs8Sha256) { throw 'Unexpected change to RSA key decoding source' }
-Write-Output "Vendored russh provenance passed: $($expected.Count) official files; only three manifest pins and one borrowed ASN.1 type alias differ"
+Write-Output "Vendored russh provenance passed: $($expected.Count) recorded files; manifest, ASN.1 and channel-close patches match"

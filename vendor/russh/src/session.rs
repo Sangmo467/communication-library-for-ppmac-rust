@@ -289,7 +289,6 @@ impl Encrypted {
             channel.pending_close = true;
         } else {
             self.byte(channel, msg::CHANNEL_CLOSE)?;
-            self.channels.remove(&channel);
         }
         Ok(())
     }
