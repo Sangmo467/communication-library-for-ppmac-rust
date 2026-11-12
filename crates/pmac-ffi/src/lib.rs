@@ -10,6 +10,7 @@ mod tests;
 mod types;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 use std::time::Duration;
 
 use pmac_core::{Error, ErrorCode, Operation};
@@ -76,6 +77,120 @@ pub extern "C" fn pmac_runtime_release(id: u64) -> i32 {
             .remove(id, runtime_kind())
             .map(|_| ())
             .ok_or_else(invalid_handle)
+    })
+}
+
+struct CleanupAttempt {
+    runtime: Arc<pmac_core::Runtime>,
+    completed: bool,
+}
+impl CleanupAttempt {
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+impl Drop for CleanupAttempt {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.runtime.allow_cleanup_retry();
+        }
+    }
+}
+
+fn cleanup_workers() -> &'static std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> {
+    static WORKERS: std::sync::OnceLock<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>> =
+        std::sync::OnceLock::new();
+    WORKERS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn reap_finished_cleanup_workers() {
+    let mut running = Vec::new();
+    let mut workers = cleanup_workers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for worker in workers.drain(..) {
+        if worker.is_finished() {
+            let _ = worker.join();
+        } else {
+            running.push(worker);
+        }
+    }
+    *workers = running;
+}
+
+#[no_mangle]
+pub extern "C" fn pmac_runtime_cleanup(id: u64) -> i32 {
+    ffi_status(|| {
+        reap_finished_cleanup_workers();
+        let runtime = registry().runtime(id).ok_or_else(invalid_handle)?;
+        if !runtime.schedule_cleanup() {
+            return Ok(());
+        }
+        let worker_runtime = runtime.clone();
+        let worker = std::thread::Builder::new()
+            .name("pmac-cleanup".into())
+            .spawn(move || {
+                let mut attempt = CleanupAttempt {
+                    runtime: worker_runtime,
+                    completed: false,
+                };
+                loop {
+                    match attempt.runtime.shutdown_clients(1_000) {
+                        Ok(()) => {}
+                        Err(error) if error.code == ErrorCode::ShutdownPending => continue,
+                        Err(_) => return,
+                    }
+                    match pmac_runtime_release(id) {
+                        status
+                            if status == ErrorCode::Ok as i32
+                                || status == ErrorCode::InvalidHandle as i32 =>
+                        {
+                            attempt.complete();
+                            break;
+                        }
+                        status if status == ErrorCode::ShutdownPending as i32 => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        _ => return,
+                    }
+                }
+            });
+        match worker {
+            Ok(worker) => {
+                cleanup_workers()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(worker);
+                Ok(())
+            }
+            Err(error) => {
+                runtime.allow_cleanup_retry();
+                Err(Error::internal(format!(
+                    "failed to start runtime cleanup: {error}"
+                )))
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn pmac_runtime_cleanup_wait() -> i32 {
+    ffi_status(|| loop {
+        let workers = cleanup_workers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect::<Vec<_>>();
+        if workers.is_empty() {
+            return Ok(());
+        }
+        let mut failed = false;
+        for worker in workers {
+            failed |= worker.join().is_err();
+        }
+        if failed {
+            return Err(Error::internal("runtime cleanup worker panicked"));
+        }
     })
 }
 

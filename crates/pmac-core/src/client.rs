@@ -241,7 +241,7 @@ impl Client {
             return Err(Error::invalid("unknown recovery acknowledgement flags"));
         }
         let mut s = self.pool.lock();
-        if s.closing {
+        if s.closing && flags & 2 == 0 {
             return Err(Error::new(ErrorCode::Closing, "pool is closing"));
         }
         if s.revision != expected_revision {
@@ -261,7 +261,9 @@ impl Client {
         }
         if flags & 2 != 0 {
             if let Some(options) = &s.options {
-                options.gpascii_budget.confirm_remote_release();
+                options
+                    .gpascii_budget
+                    .confirm_remote_release(options.gpascii_owner);
             }
             s.uncertain.clear();
         }
@@ -686,6 +688,9 @@ impl Client {
                 ));
             }
             options.control_pool_size = 1;
+            options.gpascii_budget =
+                crate::transport::GpasciiBudget::shared(&options.host, options.port);
+            options.gpascii_owner = crate::transport::GpasciiBudget::allocate_owner()?;
             s.options = Some(options);
         }
         self.pool.set_profile(profile)?;

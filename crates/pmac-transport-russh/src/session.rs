@@ -33,7 +33,7 @@ impl Transport for RusshTransport {
                 "each pool member uses one SSH connection",
             ));
         }
-        let permit = options.gpascii_budget.reserve()?;
+        let permit = options.gpascii_budget.reserve(options.gpascii_owner)?;
         let control = connect(options, context).await?;
         let channel = open_gpascii(&control, context, permit).await?;
         Ok(Arc::new(RusshSession {
@@ -105,7 +105,10 @@ impl Session for RusshSession {
                 let (channel, permit) = match self.control_channel.lock().await.take() {
                     Some(channel) => channel,
                     None => {
-                        let permit = self.options.gpascii_budget.reserve()?;
+                        let permit = self
+                            .options
+                            .gpascii_budget
+                            .reserve(self.options.gpascii_owner)?;
                         open_gpascii(&self.control, context, permit).await?
                     }
                 };
@@ -199,9 +202,8 @@ impl Session for RusshSession {
     }
 
     async fn retire_control(&self) -> Result<(), Error> {
-        let result = self.control.close().await;
-        self.retain_gpascii_uncertain().await;
-        result
+        self.close_gpascii_channels().await;
+        self.control.close().await
     }
 
     async fn retire_maintenance(&self) -> Result<(), Error> {
@@ -246,19 +248,26 @@ impl Session for RusshSession {
 }
 
 impl RusshSession {
-    async fn retain_gpascii_uncertain(&self) {
-        if let Some((_channel, permit)) = self.control_channel.lock().await.take() {
-            permit.retain_uncertain();
+    async fn close_gpascii_channels(&self) {
+        let mut channels = Vec::new();
+        if let Some((channel, permit)) = self.control_channel.lock().await.take() {
+            channels.push(CloseChannelOnDrop::new(
+                self.control.clone(),
+                channel,
+                permit,
+            ));
         }
-        let channels = self
-            .control_channels
-            .lock()
-            .await
-            .drain()
-            .map(|(_, entry)| entry)
-            .collect::<Vec<_>>();
-        for entry in channels {
-            entry.permit.retain_uncertain();
+        channels.extend(
+            self.control_channels
+                .lock()
+                .await
+                .drain()
+                .map(|(_, entry)| {
+                    CloseChannelOnDrop::new(self.control.clone(), entry.channel, entry.permit)
+                }),
+        );
+        for channel in channels {
+            channel.close().await;
         }
     }
 
@@ -597,6 +606,24 @@ impl Drop for UncertainPermitOnDrop {
     }
 }
 
+async fn close_channel_confirmed(
+    connection: Arc<Connection>,
+    channel: Channel,
+    permit: GpasciiChannelPermit,
+) {
+    let permit = UncertainPermitOnDrop(Some(permit));
+    if matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            connection.close_channel(channel),
+        )
+        .await,
+        Ok(true)
+    ) {
+        permit.release();
+    }
+}
+
 struct CloseChannelOnDrop {
     connection: Arc<Connection>,
     channel: Option<Channel>,
@@ -616,25 +643,23 @@ impl CloseChannelOnDrop {
             self.permit.take().expect("closing channel permit"),
         )
     }
+    async fn close(self) {
+        let connection = self.connection.clone();
+        let (channel, permit) = self.disarm();
+        close_channel_confirmed(connection, channel, permit).await;
+    }
 }
 impl Drop for CloseChannelOnDrop {
     fn drop(&mut self) {
         if let (Some(channel), Some(permit)) = (self.channel.take(), self.permit.take()) {
-            let permit = UncertainPermitOnDrop(Some(permit));
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                let connection = self.connection.clone();
-                runtime.spawn(async move {
-                    if matches!(
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(2),
-                            connection.close_channel(channel),
-                        )
-                        .await,
-                        Ok(true)
-                    ) {
-                        permit.release();
-                    }
-                });
+                runtime.spawn(close_channel_confirmed(
+                    self.connection.clone(),
+                    channel,
+                    permit,
+                ));
+            } else {
+                permit.retain_uncertain();
             }
         }
     }

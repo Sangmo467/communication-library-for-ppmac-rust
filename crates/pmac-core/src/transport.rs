@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,8 +14,10 @@ const MAX_GPASCII_CHANNELS: usize = 8;
 #[derive(Default)]
 struct GpasciiBudgetState {
     used: usize,
-    uncertain: usize,
+    uncertain: HashMap<u64, usize>,
+    keepalive: Option<Arc<GpasciiBudget>>,
 }
+type GpasciiBudgetRegistry = std::sync::Mutex<HashMap<(String, u16), Weak<GpasciiBudget>>>;
 
 #[doc(hidden)]
 #[derive(Default)]
@@ -22,10 +25,35 @@ pub struct GpasciiBudget {
     state: std::sync::Mutex<GpasciiBudgetState>,
 }
 impl GpasciiBudget {
+    pub(crate) fn shared(host: &str, port: u16) -> Arc<Self> {
+        static REGISTRY: std::sync::OnceLock<GpasciiBudgetRegistry> = std::sync::OnceLock::new();
+        let registry = REGISTRY.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        let key = (host.to_ascii_lowercase(), port);
+        let mut registry = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = registry.get(&key).and_then(Weak::upgrade) {
+            return existing;
+        }
+        let budget = Arc::new(Self::new());
+        registry.insert(key, Arc::downgrade(&budget));
+        budget
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }
-    pub fn reserve(self: &Arc<Self>) -> Result<GpasciiChannelPermit, Error> {
+    pub(crate) fn allocate_owner() -> Result<u64, Error> {
+        static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT_OWNER
+            .try_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |owner| owner.checked_add(1),
+            )
+            .map_err(|_| Error::new(ErrorCode::ResourceLimit, "GPASCII owner ID space exhausted"))
+    }
+    pub fn reserve(self: &Arc<Self>, owner: u64) -> Result<GpasciiChannelPermit, Error> {
         let mut state = self
             .state
             .lock()
@@ -37,27 +65,41 @@ impl GpasciiBudget {
             ));
         }
         state.used += 1;
-        drop(state);
+        state.keepalive = Some(self.clone());
         Ok(GpasciiChannelPermit {
             budget: self.clone(),
+            owner,
             release_on_drop: true,
         })
     }
-    pub fn confirm_remote_release(&self) {
+    pub fn confirm_remote_release(&self, owner: u64) {
+        let uncertain = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .uncertain
+            .remove(&owner)
+            .unwrap_or(0);
+        self.release_usage(uncertain);
+    }
+    fn release_usage(&self, count: usize) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.used = state
             .used
-            .checked_sub(state.uncertain)
-            .expect("GPASCII release confirmation exceeds uncertain usage");
-        state.uncertain = 0;
+            .checked_sub(count)
+            .expect("GPASCII channel budget underflow");
+        if state.used == 0 {
+            state.keepalive.take();
+        }
     }
 }
 
 pub struct GpasciiChannelPermit {
     budget: Arc<GpasciiBudget>,
+    owner: u64,
     release_on_drop: bool,
 }
 impl GpasciiChannelPermit {
@@ -71,19 +113,11 @@ impl GpasciiChannelPermit {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.uncertain += 1;
+        *state.uncertain.entry(self.owner).or_insert(0) += 1;
         self.release_on_drop = false;
     }
     fn release_one(&self) {
-        let mut state = self
-            .budget
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.used = state
-            .used
-            .checked_sub(1)
-            .expect("GPASCII channel budget underflow");
+        self.budget.release_usage(1);
     }
 }
 impl Drop for GpasciiChannelPermit {
@@ -111,6 +145,8 @@ pub struct ConnectOptions {
     pub control_pool_size: u8,
     #[doc(hidden)]
     pub gpascii_budget: Arc<GpasciiBudget>,
+    #[doc(hidden)]
+    pub gpascii_owner: u64,
 }
 
 impl std::fmt::Debug for ConnectOptions {
@@ -143,6 +179,7 @@ impl ConnectOptions {
             keepalive_max: 3,
             control_pool_size: 1,
             gpascii_budget: Arc::new(GpasciiBudget::new()),
+            gpascii_owner: 0,
         }
     }
 
@@ -304,17 +341,44 @@ mod tests {
     fn gpascii_budget_is_bounded_and_uncertain_release_requires_confirmation() {
         let budget = Arc::new(GpasciiBudget::new());
         let mut permits = (0..8)
-            .map(|_| budget.reserve().unwrap())
+            .map(|_| budget.reserve(1).unwrap())
             .collect::<Vec<_>>();
-        let error = budget.reserve().err().unwrap();
+        let error = budget.reserve(2).err().unwrap();
         assert_eq!(error.code, ErrorCode::ResourceLimit);
         assert_eq!(error.certainty, ExecutionCertainty::NotSent);
         drop(permits.pop());
-        permits.push(budget.reserve().unwrap());
+        permits.push(budget.reserve(1).unwrap());
         permits.pop().unwrap().retain_uncertain();
-        assert!(budget.reserve().is_err());
-        budget.confirm_remote_release();
-        permits.push(budget.reserve().unwrap());
+        assert!(budget.reserve(2).is_err());
+        budget.confirm_remote_release(2);
+        assert!(budget.reserve(2).is_err());
+        budget.confirm_remote_release(1);
+        permits.push(budget.reserve(2).unwrap());
         assert_eq!(permits.len(), 8);
+    }
+
+    #[test]
+    fn uncertain_budget_outlives_external_owners_until_confirmation() {
+        let owner = GpasciiBudget::allocate_owner().unwrap();
+        let budget = GpasciiBudget::shared("budget-lifetime-test", 32_000);
+        let permits = (0..8)
+            .map(|_| budget.reserve(owner).unwrap())
+            .collect::<Vec<_>>();
+        for permit in permits {
+            permit.retain_uncertain();
+        }
+        drop(budget);
+        let budget = GpasciiBudget::shared("BUDGET-LIFETIME-TEST", 32_000);
+        assert!(budget.reserve(owner + 1).is_err());
+        budget.confirm_remote_release(owner);
+        assert!(budget.reserve(owner + 1).is_ok());
+    }
+
+    #[test]
+    fn budget_owner_tokens_are_process_unique() {
+        assert_ne!(
+            GpasciiBudget::allocate_owner().unwrap(),
+            GpasciiBudget::allocate_owner().unwrap()
+        );
     }
 }

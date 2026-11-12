@@ -6,6 +6,8 @@ use pmac_testkit::MockTransport;
 use super::*;
 use crate::registry::Entry;
 
+static CLEANUP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn new_runtime() -> u64 {
     let mut runtime = 0;
     assert_eq!(
@@ -109,6 +111,41 @@ fn runtime_release_requires_shutdown_and_explicit_client_id_release() {
     );
     assert_eq!(pmac_client_release(client), ErrorCode::Ok as i32);
     assert_eq!(pmac_runtime_release(runtime), ErrorCode::Ok as i32);
+}
+
+#[test]
+fn cleanup_supervisor_retains_runtime_until_child_handles_are_released() {
+    let _lock = CLEANUP_TEST_LOCK.lock().unwrap();
+    let runtime = new_runtime();
+    let client = mock_client(runtime);
+    assert_eq!(pmac_runtime_cleanup(runtime), ErrorCode::Ok as i32);
+    assert_eq!(pmac_runtime_cleanup(runtime), ErrorCode::Ok as i32);
+    assert!(registry().runtime(runtime).is_some());
+    assert_eq!(pmac_client_close(client, 0, 1_000), ErrorCode::Ok as i32);
+    assert_eq!(pmac_client_release(client), ErrorCode::Ok as i32);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while registry().runtime(runtime).is_some() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(pmac_runtime_cleanup_wait(), ErrorCode::Ok as i32);
+}
+
+#[test]
+fn completed_cleanup_handles_are_reaped_during_normal_scheduling() {
+    let _lock = CLEANUP_TEST_LOCK.lock().unwrap();
+    for _ in 0..24 {
+        let runtime = new_runtime();
+        assert_eq!(pmac_runtime_cleanup(runtime), ErrorCode::Ok as i32);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while registry().runtime(runtime).is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+    assert!(cleanup_workers().lock().unwrap().len() <= 1);
+    assert_eq!(pmac_runtime_cleanup_wait(), ErrorCode::Ok as i32);
+    assert!(cleanup_workers().lock().unwrap().is_empty());
 }
 
 #[test]

@@ -285,10 +285,20 @@ impl Encrypted {
     }
 
     pub fn close(&mut self, channel: ChannelId) -> Result<(), crate::Error> {
+        if self
+            .channels
+            .get(&channel)
+            .is_some_and(|channel| channel.close_sent)
+        {
+            return Ok(());
+        }
         if let Some(channel) = self.has_pending_data_mut(channel) {
             channel.pending_close = true;
         } else {
             self.byte(channel, msg::CHANNEL_CLOSE)?;
+            if let Some(channel) = self.channels.get_mut(&channel) {
+                channel.close_sent = true;
+            }
         }
         Ok(())
     }
@@ -782,6 +792,7 @@ impl Encrypted {
                     pending_data: std::collections::VecDeque::new(),
                     pending_eof: false,
                     pending_close: false,
+                    close_sent: false,
                 });
                 return ChannelId(self.last_channel_id.0);
             }
@@ -911,6 +922,7 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            close_sent: false,
         }
     }
 
@@ -965,7 +977,22 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            close_sent: false,
         }
+    }
+
+    #[test]
+    fn close_is_sent_once_and_channel_survives_until_peer_confirmation() {
+        let channel_id = ChannelId(10);
+        let mut encrypted = test_encrypted();
+        encrypted.channels.insert(
+            channel_id,
+            test_ready_channel(channel_id, 42),
+        );
+        encrypted.close(channel_id).unwrap();
+        encrypted.close(channel_id).unwrap();
+        assert_eq!(packet_types(&encrypted.write), vec![msg::CHANNEL_CLOSE]);
+        assert!(encrypted.channels[&channel_id].close_sent);
     }
 
     // flush_pending (single-channel path)

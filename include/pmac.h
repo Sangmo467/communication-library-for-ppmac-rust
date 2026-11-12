@@ -86,6 +86,8 @@ PMAC_EXPORT int32_t pmac_runtime_wait_completion(pmac_runtime_id id, uint64_t *c
 PMAC_EXPORT int32_t pmac_runtime_wake(pmac_runtime_id id);
 PMAC_EXPORT int32_t pmac_runtime_shutdown(pmac_runtime_id id, uint32_t wait_ms);
 PMAC_EXPORT int32_t pmac_runtime_release(pmac_runtime_id id);
+PMAC_EXPORT int32_t pmac_runtime_cleanup(pmac_runtime_id id);
+PMAC_EXPORT int32_t pmac_runtime_cleanup_wait(void);
 PMAC_EXPORT int32_t pmac_get_runtime_info(pmac_runtime_info *out_info);
 PMAC_EXPORT const char *pmac_version_string(void);
 PMAC_EXPORT uint32_t pmac_version_number(void);

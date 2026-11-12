@@ -19,6 +19,8 @@ Runtime、Client、Request 的高4位为类型标签，低位是永不回绕复�
 - shutdown 超时返回 `SHUTDOWN_PENDING`，Runtime ID 仍有效，允许再次等待。超时不意味着后台任务已经退出。
 - shutdown 成功后，本地状态/完成结果仍可读取；调用方仍需释放该 Runtime 的全部 Client/Request ID。
 - `pmac_runtime_release` 只有在 shutdown 已完成、全部 Client 关闭且所有子 ID 已释放后成功。否则返回 `SHUTDOWN_PENDING` 并保留 ID。
+- `pmac_runtime_cleanup` 启动一次性清理监督者并立即返回；监督者持有 Runtime，等待后台停止和子 ID 后续释放后完成 release。C++ 析构使用该入口，不在调用线程永久等待。
+- `pmac_runtime_cleanup_wait` join 已安排的清理监督线程。动态卸载 DLL/so 前，停止新 Runtime/清理准入并调用该接口等待全部监督线程退出；仅删除 Runtime ID 不是卸载屏障。
 - SDK Dispose/shutdown 同样保留 pending 的 Runtime ID。先释放仍保有的请求结果/Client，再重试；GC/finalizer 不替代显式完成关闭。
 
 C 的典型收尾顺序：shutdown 并等待成功 → 读取所需终态/结果 → release Request/Client → release Runtime。关闭后不再提交新业务；卸载 DLL/so 前须完成这些步骤，并确保没有调用线程仍在执行 C 入口。
@@ -68,7 +70,7 @@ profile 要求 `1 <= min_ready <= target_size <= max_members <= 255`，连接预
 
 维护屏障等待已接纳工作的边界，待执行/执行中的维护阻止相关新业务准入并返回 `MAINTENANCE_ACTIVE`。控制故障仅退役对应成员；维护故障隔离维护面。默认恢复为应用手动 repair，不因流量或失败自动扩容、重连或重放。
 
-`MAY_HAVE_EXECUTED` 的写操作保留恢复闸门，后续冲突操作报告 `RECOVERY_REQUIRED`。应用核对设备状态后才可设置 `PMAC_RECOVERY_CONFIRM_UNKNOWN_WRITES`。`PMAC_RECOVERY_CONFIRM_REMOTE_RELEASE` 是应用确认远端不确定会话已释放的独立声明，用于归还配额；关闭本地 socket 不构成此证明。
+`MAY_HAVE_EXECUTED` 的写操作保留恢复闸门，后续冲突操作报告 `RECOVERY_REQUIRED`。应用核对设备状态后才可设置 `PMAC_RECOVERY_CONFIRM_UNKNOWN_WRITES`。`PMAC_RECOVERY_CONFIRM_REMOTE_RELEASE` 是应用确认远端不确定会话已释放的独立声明，用于归还配额；关闭本地 socket 不构成此证明。正常 Session 关闭先逐 Channel 等待远端 Close；若仍有不确定记录，Closed Client 可在其自身 ID 尚未释放时确认该 owner 的旧通道，不能确认其他 Client 的记录。
 
 成员状态值：Ready=0、Busy=1、Failed=2、Retiring=3、ReleaseUncertain=4、Creating=5、Drained=6。不要仅凭 ready_count 回升自动清除未知写结果。
 

@@ -43,11 +43,12 @@
 |---|---|---|
 | Cargo.toml | `00f0172e07ff5a538feeb9fb37448f2769045060bd8ae799bc2cfee333596ab0` | `1da2a0a51aac0fede21418e4884fb9003cf51b4dab951ffa0fb9220a2bb0374e` |
 | src/keys/format/pkcs8.rs | `69db6690bcedeaabac613859967b6ddc8ea156b41c9a0a4ca0b36614487c99d3` | `7ccc19246d8cfa769b6e8adfe975c23e2e7eafd3b3e58da76299c8592bd03ded` |
-| src/session.rs | `fa836a54dd8ecd73fe68d76a3e7f2bf878c38e6cb511a986982c5f972e279e9e` | `f874feef1f52fbb3c64ccb458ca4dc4ea4a370687abcfa40b5e7313db4d120d2` |
-| src/client/encrypted.rs | `4366e6b81d60f8a124b5865bd8f86b8dbf028d1b6639d12566a4184ff71eb2a7` | `3944b49e3f32b0e8db5893a5bff529be6b35e88153edb65ff9252d625a39e0fa` |
-| src/server/encrypted.rs | `4c9e355ed91aad60225a6e17cf8ea5a9ded4b118cb711050f135b72e82cd6b0f` | `23ae52ff7ae8899a721d2e5d1b77c70fd71e8a5df4c7f88c95e46956a9c8d7d8` |
+| src/lib_inner.rs | `226342a2066612f1b1affc059a7eeb44f0716943fa8613e49cf91e28074bf485` | `7c8d96b0567c0b2f33b2e6c8b3d304c87b23117b8f55f538baf30ba25762367d` |
+| src/session.rs | `fa836a54dd8ecd73fe68d76a3e7f2bf878c38e6cb511a986982c5f972e279e9e` | `1d27d2230a76c73aede5e2a2b5021f89ecedd7ad72c4bc1400019e388937da6b` |
+| src/client/encrypted.rs | `4366e6b81d60f8a124b5865bd8f86b8dbf028d1b6639d12566a4184ff71eb2a7` | `50131d8637dff20b861302ca4c6ebbbd316a05150c8646ad4676333bc75be986` |
+| src/server/encrypted.rs | `4c9e355ed91aad60225a6e17cf8ea5a9ded4b118cb711050f135b72e82cd6b0f` | `b8015c081505b7b9d866353b4d5b2e6d78d7b70a856e20da9769d88234eced89` |
 
-Close 生命周期补丁让本地发送 Close 后保留加密通道记录，直到对端 Close 到达；client/server 收到对端 Close 时回复并移除记录。这样 `channel_close` 回调可作为远端释放确认，避免本地消息入队被误当成 GPASCII 已退出。
+Close 生命周期补丁记录 `close_sent`，本端实际发送后保留通道记录直到对端 Close 到达；client/server 只在本端尚未发送时回复，再移除记录。这样可避免重复 Close，并让 `channel_close` 回调作为远端释放确认，而不是把本地消息入队误当成 GPASCII 已退出。
 
 根 Cargo.toml 通过 `[patch.crates-io] russh = { path = "vendor/russh" }` 使用补丁；根 Cargo.lock 锁定稳定 RSA/PKCS1 和上游 ssh-key rc.12。vendor 中原包 Cargo.lock 保持原样用于来源核对，不是本工作区构建或审计使用的锁文件。
 

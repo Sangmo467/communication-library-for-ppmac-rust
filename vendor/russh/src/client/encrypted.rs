@@ -530,7 +530,13 @@ impl Session {
                     return Ok(());
                 }
                 if let Some(ref mut enc) = self.common.encrypted {
-                    enc.byte(channel_num, msg::CHANNEL_CLOSE)?;
+                    if enc
+                        .channels
+                        .get(&channel_num)
+                        .is_some_and(|channel| !channel.close_sent)
+                    {
+                        enc.byte(channel_num, msg::CHANNEL_CLOSE)?;
+                    }
                     enc.channels.remove(&channel_num);
                 }
                 // Forward the close to the channel before removing it, so that
@@ -854,6 +860,7 @@ impl Session {
                     pending_data: std::collections::VecDeque::new(),
                     pending_eof: false,
                     pending_close: false,
+                    close_sent: false,
                 };
 
                 let (channel, channel_ref) = Channel::new(

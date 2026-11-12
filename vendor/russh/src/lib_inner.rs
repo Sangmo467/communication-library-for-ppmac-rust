@@ -512,6 +512,7 @@ pub(crate) struct ChannelParams {
     pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
     pending_eof: bool,
     pending_close: bool,
+    close_sent: bool,
 }
 
 impl ChannelParams {

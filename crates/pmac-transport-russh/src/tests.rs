@@ -1108,10 +1108,9 @@ fn mt08_exited_threads_release_channels_before_new_threads_are_admitted() {
 }
 
 #[test]
-fn cloned_connect_options_share_one_budget_across_clients() {
+fn independent_connect_options_share_one_controller_budget_across_clients() {
     let fixture = Fixture::new(None);
-    let options = fixture.options();
-    fixture.run(Operation::Connect(options.clone())).unwrap();
+    fixture.run(Operation::Connect(fixture.options())).unwrap();
     fixture
         .run(Operation::Command(Command::raw("#1p").unwrap()))
         .unwrap();
@@ -1122,7 +1121,7 @@ fn cloned_connect_options_share_one_budget_across_clients() {
     let connected = second
         .submit(
             fixture.runtime.next_id(),
-            Operation::Connect(options),
+            Operation::Connect(fixture.options()),
             RequestOptions::default(),
         )
         .unwrap();

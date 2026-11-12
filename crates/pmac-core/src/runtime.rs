@@ -1,4 +1,5 @@
 use crate::{Client, ClientConfig, ClientState, Error, ErrorCode, Transport};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 use tokio::runtime::Builder;
@@ -20,6 +21,7 @@ pub struct Runtime {
     shutdown: Mutex<ShutdownState>,
     shutdown_changed: Condvar,
     admission: Arc<Mutex<bool>>,
+    cleanup_scheduled: AtomicBool,
 }
 impl Runtime {
     pub fn new(worker_threads: usize) -> Result<Arc<Self>, Error> {
@@ -48,7 +50,14 @@ impl Runtime {
             }),
             admission: Arc::new(Mutex::new(false)),
             shutdown_changed: Condvar::new(),
+            cleanup_scheduled: AtomicBool::new(false),
         }))
+    }
+    pub fn schedule_cleanup(&self) -> bool {
+        !self.cleanup_scheduled.swap(true, Ordering::AcqRel)
+    }
+    pub fn allow_cleanup_retry(&self) {
+        self.cleanup_scheduled.store(false, Ordering::Release);
     }
     pub fn create_client(
         self: &Arc<Self>,
@@ -247,5 +256,19 @@ impl Runtime {
         self.shutdown
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_cleanup_scheduling_can_be_retried() {
+        let runtime = Runtime::new(1).unwrap();
+        assert!(runtime.schedule_cleanup());
+        assert!(!runtime.schedule_cleanup());
+        runtime.allow_cleanup_retry();
+        assert!(runtime.schedule_cleanup());
     }
 }

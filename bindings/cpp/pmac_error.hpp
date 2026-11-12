@@ -76,25 +76,15 @@ inline bool isTransportError(int32_t status) { return errorCategory(status) == T
 
 namespace detail {
 struct RuntimeApi {
-    int32_t (*shutdown)(pmac_runtime_id, uint32_t);
-    int32_t (*release)(pmac_runtime_id);
+    int32_t (*cleanup)(pmac_runtime_id);
 };
 
 inline void runtimeCleanup(pmac_runtime_id id, const RuntimeApi& api) throw() {
-    if (!id) return;
-    for (;;) {
-        int32_t status = api.shutdown(id, 1000);
-        if (status == PMAC_OK) {
-            status = api.release(id);
-            if (status != PMAC_SHUTDOWN_PENDING) return;
-        } else if (status != PMAC_SHUTDOWN_PENDING) {
-            return;
-        }
-    }
+    if (id) (void)api.cleanup(id);
 }
 
 inline RuntimeApi nativeRuntimeApi() {
-    const RuntimeApi api = {pmac_runtime_shutdown, pmac_runtime_release};
+    const RuntimeApi api = {pmac_runtime_cleanup};
     return api;
 }
 
