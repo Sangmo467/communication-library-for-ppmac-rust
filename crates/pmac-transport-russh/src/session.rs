@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use async_trait::async_trait;
@@ -45,6 +45,7 @@ impl Transport for RusshTransport {
             sftp: tokio::sync::Mutex::new(None),
             persistent_shell: tokio::sync::Mutex::new(None),
             dart: tokio::sync::Mutex::new(None),
+            dart_port: AtomicU16::new(0),
             nonce: format!("{:016x}", rand::rng().random::<u64>()),
             sequence: Mutex::new(0),
             closed: AtomicBool::new(false),
@@ -71,6 +72,7 @@ pub(crate) struct RusshSession {
     sftp: tokio::sync::Mutex<Option<Arc<SftpSession>>>,
     persistent_shell: tokio::sync::Mutex<Option<Channel>>,
     dart: tokio::sync::Mutex<Option<crate::dart::DartConnection>>,
+    dart_port: AtomicU16,
     pub(crate) nonce: String,
     sequence: Mutex<u64>,
     closed: AtomicBool,
@@ -154,6 +156,7 @@ impl Session for RusshSession {
             crate::dart::disconnect(connection).await?;
             return Err(Error::new(ErrorCode::Closing, "session closed during DART connect"));
         }
+        self.dart_port.store(connection.port, Ordering::Release);
         *slot = Some(connection);
         Ok(OperationResult::default())
     }
@@ -162,6 +165,7 @@ impl Session for RusshSession {
         &self,
         _context: &ExecutionContext,
     ) -> Result<OperationResult, Error> {
+        self.dart_port.store(0, Ordering::Release);
         self.close_dart().await?;
         Ok(OperationResult::default())
     }
@@ -172,13 +176,23 @@ impl Session for RusshSession {
         _context: &ExecutionContext,
     ) -> Result<OperationResult, Error> {
         let mut slot = self.dart.lock().await;
-        let connection = slot.as_mut().ok_or_else(|| {
-            Error::new(
-                ErrorCode::Disconnected,
-                "DART is not connected; call DartConnect first",
-            )
-        })?;
-        crate::dart::transfer(connection, transfer).await
+        // Own the socket across the await. If the request is cancelled or times out,
+        // dropping this future also drops the possibly desynchronized connection.
+        let mut connection = match slot.take() {
+            Some(connection) => connection,
+            None => {
+                let port = self.dart_port.load(Ordering::Acquire);
+                if port == 0 {
+                    return Err(Error::new(ErrorCode::Disconnected, "DART is not connected; call DartConnect first"));
+                }
+                crate::dart::connect_port(&self.options.host, port).await?
+            }
+        };
+        let result = crate::dart::transfer(&mut connection, transfer).await;
+        if result.is_ok() {
+            *slot = Some(connection);
+        }
+        result
     }
 
     async fn shell(

@@ -62,6 +62,7 @@ impl DartBudget {
 pub(crate) struct DartConnection {
     stream: TcpStream,
     _permit: DartConnectionPermit,
+    pub(crate) port: u16,
 }
 
 pub(crate) async fn connect(
@@ -70,6 +71,10 @@ pub(crate) async fn connect(
     context: &ExecutionContext,
 ) -> Result<DartConnection, Error> {
     let port = discover(session, context).await?;
+    connect_port(host, port).await
+}
+
+pub(crate) async fn connect_port(host: &str, port: u16) -> Result<DartConnection, Error> {
     let budget = DartBudget::shared(host);
     let permit = budget.reserve()?;
     let stream = TcpStream::connect((host, port)).await.map_err(|error| {
@@ -87,6 +92,7 @@ pub(crate) async fn connect(
     Ok(DartConnection {
         stream,
         _permit: permit,
+        port,
     })
 }
 

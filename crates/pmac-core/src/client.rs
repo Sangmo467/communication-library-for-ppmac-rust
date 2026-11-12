@@ -447,6 +447,7 @@ impl Client {
             &operation,
             Operation::DartConnect | Operation::DartDisconnect | Operation::Dart(_)
         );
+        let dart_transfer = matches!(&operation, Operation::Dart(_));
         let operation_future = async {
             match operation {
                 Operation::Command(command) => lease.session.command(&command, &context).await,
@@ -536,7 +537,8 @@ impl Client {
             self.pool.lock().unknown_write = true;
         }
         let broken = result.as_ref().err().is_some_and(|e| {
-            (!dart || e.fatal_transport)
+            !(dart_transfer && matches!(e.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout))
+                && (!dart || e.fatal_transport)
                 && (e.fatal_transport
                     || (uncertain
                         && matches!(
