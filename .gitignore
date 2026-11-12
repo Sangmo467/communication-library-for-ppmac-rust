@@ -1,0 +1,17 @@
+/target/
+/build/
+/dist/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+bin/
+obj/
+TestResults/
+/.gitnexus/
+/docs/tmp/

@@ -1,0 +1,21 @@
+[package]
+name = "pmac-transport-russh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+md5.workspace = true
+pmac-core = { version = "=2.0.0", path = "../pmac-core" }
+pmac-protocol = { version = "=2.0.0", path = "../pmac-protocol" }
+rand.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
+sha2.workspace = true
+tempfile = "3"
+tokio.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
