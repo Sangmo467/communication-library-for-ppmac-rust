@@ -335,3 +335,186 @@ GPASCII ACK 只说明命令交互得到确认。运动到位、程序结束、PL
 - 出现 `NO_READY_LANE` 时检查成员状态和池容量，不要让多个线程绕过 Channel 配额。
 - 发生写操作超时、断线或取消交错时，先保存 request ID、route、status 和 certainty，再决定恢复动作。
 - 网络 Abort/Kill/JogStop 不是安全认证功能；机械安全必须由独立、经过验收的安全链路保证。
+
+## 10. API 函数参考
+
+本节以 `include/pmac.h` 的 C ABI 名称为基准，覆盖公开函数。C++17、.NET 和 Python 将同一操作封装为对象方法；对应名称及示例见前文和第 10.8 节。C++98 只提供该适配层实际声明的同步接口。签名中的精确类型、结构布局和平台导出约定以头文件为准。
+
+### 10.1 通用参数和返回约定
+
+| 参数 | 含义 |
+|---|---|
+| `id` / `runtime` | 对应 Runtime、Client 或 Request 的有效 ID，具体类型由函数签名决定 |
+| `config` | 配置结构；按头文件设置 `struct_size` 和 `abi_version`，其余保留字段置零 |
+| `options` | 连接或请求选项；请求选项的超时、无限等待、响应上限和只读池标志见第 3.1 节 |
+| `out_id` | 输出新创建对象或已提交请求的 ID；成功后由调用方负责释放 |
+| `command`、`command_len` | 命令字节指针及字节数，不依赖 NUL 终止 |
+| `local`、`remote` 及对应 `_len` | 本地或控制器路径的字节指针和字节数；上传和下载的参数顺序不同 |
+| `out`、`capacity`、`required` | 输出缓冲区、容量和实际所需长度；按各函数的单位分配空间，字节复制接口使用字节数 |
+| `wait_ms` | 本次等待上限，单位毫秒；请求执行期限由请求选项单独控制 |
+| `motor` / `coord` / `plc` / `program` | 控制器中的电机、坐标系、PLC 或程序编号 |
+
+除版本查询函数外，表中 C 函数直接返回 `int32_t` 状态：`PMAC_OK` 表示该次调用成功；负值表示错误或尚未完成，详见第 7 节。异步提交返回成功只表示请求已接纳，最终操作状态须等待 Request。调用前检查指针与长度、结构大小和 ABI，调用后只在成功或相应契约允许时使用输出。C++/.NET/Python 通常把失败转换为异常，实际数据作为返回值；同步无结果操作通常返回 `void` / `None`。
+
+### 10.2 Runtime 和 Client
+
+| 函数 | 用途和参数 | 输出 / 返回 |
+|---|---|---|
+| `pmac_runtime_create(config, out_id)` | 创建运行时；`worker_threads` 指定工作线程数 | 状态；`out_id` 为 Runtime ID |
+| `pmac_runtime_wait_completion(id, cursor, wait_ms)` | 等待完成通知；`cursor` 是调用方保存的通知游标 | 状态；游标由函数更新，通知后仍需查询具体请求 |
+| `pmac_runtime_wake(id)` | 唤醒完成通知等待者 | 状态 |
+| `pmac_runtime_shutdown(id, wait_ms)` | 请求关闭并在给定时间内等待 | 状态；未完成可返回 `SHUTDOWN_PENDING` 并重试 |
+| `pmac_runtime_release(id)` | 释放已关闭且无未释放子对象的 Runtime | 状态 |
+| `pmac_runtime_cleanup(id)` | 将 Runtime 清理交给清理监督者 | 状态；按关闭契约处理仍存在的对象 |
+| `pmac_runtime_cleanup_wait()` | 等待清理监督线程退出 | 状态 |
+| `pmac_get_runtime_info(out_info)` | 查询运行时 ABI、版本、能力和指针宽度 | 状态及 `pmac_runtime_info` |
+| `pmac_version_string()` | 查询版本字符串 | 指向库管理的只读字符串指针；调用方不释放 |
+| `pmac_version_number()` / `pmac_abi_version()` | 查询数值版本 / ABI 版本 | `uint32_t` 版本号 |
+| `pmac_client_create(runtime, config, out_id)` | 在 Runtime 下创建客户端；配置请求、文件任务及保留字节上限 | 状态及 Client ID |
+| `pmac_client_close(id, close_mode, wait_ms)` | 关闭客户端；`close_mode` 按头文件和 ABI 契约使用 | 状态；未完成时保留 ID 并重试 |
+| `pmac_client_release(id)` | 释放已完成关闭的客户端 ID | 状态 |
+| `pmac_client_recovery_ids(out, capacity, required)` | 枚举仍有待确认释放记录的客户端；容量单位为 ID 数 | 状态及所需 ID 数 |
+| `pmac_client_get_state(id, out_state)` | 查询连接、关闭状态、epoch、最后响应时间和活动请求数 | 状态及 `pmac_state_snapshot` |
+
+### 10.3 请求和结果
+
+| 函数 | 用途和参数 | 输出 / 返回 |
+|---|---|---|
+| `pmac_connect_submit(id, options, out_id)` | 以 `pmac_connect_options` 提交 SSH 和 GPASCII 连接 | 状态及 Request ID |
+| `pmac_command_submit(id, command, command_len, options, out_id)` | 提交 GPASCII 命令 | 状态及 Request ID；响应由 Request 读取 |
+| `pmac_get_response_async(id, command, command_len, options, out_id)` | 提交 GPASCII 响应请求；模式提取在结果阶段执行 | 状态及 Request ID |
+| `pmac_request_wait(id, wait_ms, out_info)` | 等待或轮询请求；`out_info` 接收状态、确定性和结果长度 | 状态；`WAIT_PENDING` 表示本次等待结束但请求未终止 |
+| `pmac_request_cancel(id)` | 请求取消；不保证远端未执行 | 状态；仍需等待终态并检查 certainty |
+| `pmac_request_copy_response(id, out, capacity, required)` | 复制标准响应；可先查询所需大小 | 状态及所需字节数 |
+| `pmac_request_copy_stderr(id, out, capacity, required)` | 复制 Shell stderr | 状态及所需字节数 |
+| `pmac_request_copy_error(id, out_info, out, capacity, required)` | 获取结构化错误及错误文本 | 状态、错误信息及所需文本字节数 |
+| `pmac_request_copy_match(id, pattern, pattern_len, group, out, capacity, required)` | 用 `pattern` 和从 0 开始的捕获组 `group` 提取已完成响应 | 状态及所需结果字节数；规则见[模式说明](pattern-migration.md) |
+| `pmac_request_get_route(id, member_id, epoch)` | 获取请求使用的连接池成员及连接 epoch | 状态及两个 `uint64_t` 输出 |
+| `pmac_request_release(id)` | 释放 Request ID 和结果资源 | 状态；释放后不能继续读取该 ID |
+
+典型流程：提交并检查状态 → 保存 ID → `pmac_request_wait` 直到终态 → 查询需要的结果或错误 → `pmac_request_release`。输出缓冲不足时按 `required` 重新分配，再对同一个 Request 复制；这不会重新发送设备命令。
+### 10.4 DART 二进制接口
+
+先调用 `pmac_connect_submit` 并等待 SSH/GPASCII 连接成功，再建立 DART。命令、元素类型、地址和字节序见 [DART 接口指南](dart-api.md)。每个函数的直接返回值均是提交状态，操作结果通过 `out_id` 对应的 Request 取得。
+
+| 函数 | 参数含义 | Request 结果 |
+|---|---|---|
+| `pmac_dart_connect_async(id, options, out_id)` | `id` 为 Client；`options` 为请求选项 | 等待成功后 DART 可用 |
+| `pmac_dart_disconnect_async(id, options, out_id)` | 关闭 DART 连接 | 等待关闭结果 |
+| `pmac_dart_get_async(id, command, address, data_len, options, out_id)` | `command` 为读取命令；`address` 为 USHM 字节偏移或 P 编号；`data_len` 为字节数 | 响应是主机原生字节序的二进制数据 |
+| `pmac_dart_set_async(id, command, address, data, data_len, options, out_id)` | `command` 为写入命令；`data` 指向主机原生字节序数据，`data_len` 为字节数 | 完整确认后成功；不确定写入需核对，不能盲目重放 |
+
+例：读取 P1～P100 使用 `PMAC_DART_GET_P_VARIABLE`、`address=1`、`data_len=100 * sizeof(double)`。长度非零、不得超过 `PMAC_DART_MAX_DATA_BYTES`，且须为元素字节宽度的整数倍；USHM 范围和 P 编号还须满足头文件常量限制。数据通道故障后后续新请求可重连；显式断开后需重新连接。
+
+### 10.5 Shell、文件和连接池
+
+以下 `*_submit` / `*_async` 均返回提交状态，并通过 `out_id` 输出 Request ID；等待后通过 Request 取操作结果。
+
+| 函数 | 用途、参数和完成结果 |
+|---|---|
+| `pmac_shell_submit(id, command, command_len, persistent, options, out_id)` | 执行 Shell；`persistent` 非零使用持久会话，零使用隔离 exec。Request 含 stdout、stderr 和可选退出码 |
+| `pmac_upload_submit(id, local, local_len, remote, remote_len, options, out_id)` | 本地文件上传到远端路径；等待发布结果 |
+| `pmac_download_submit(id, remote, remote_len, local, local_len, options, out_id)` | 远端文件下载到本地路径；注意路径参数顺序与上传相反 |
+| `pmac_buffer_upload_submit(id, local, local_len, remote, remote_len, cleanup_remote, options, out_id)` | 上传并加载程序 buffer；`cleanup_remote` 非零时加载后清理远端文件 |
+| `pmac_file_exists_submit(id, remote, remote_len, options, out_id)` | 判断远端文件是否存在；响应为单字节 ASCII `0` 或 `1` |
+| `pmac_file_remove_submit(id, remote, remote_len, options, out_id)` | 删除指定远端文件；等待操作结果 |
+| `pmac_pool_prepare_async(id, connect, profile, out_id)` | 根据连接选项和池配置准备池；等待管理请求完成 |
+| `pmac_pool_resize_async(id, profile, out_id)` | 按新配置调整目标池大小 |
+| `pmac_pool_repair_async(id, member_id, options, out_id)` | 修复指定的失败或已排空成员；`member_id=0` 选择目标范围内所有符合条件的成员 |
+| `pmac_pool_drain_async(id, member_id, options, out_id)` | 排空指定成员；`member_id=0` 选择除控制成员外的所有成员 |
+| `pmac_pool_repair_maintenance_async(id, options, out_id)` | 修复维护连接 |
+| `pmac_pool_get_state(id, out_state)` | 同步取得池 revision、成员计数和恢复状态；直接返回状态码 |
+| `pmac_pool_get_members(id, out_members, capacity, required)` | 同步复制成员快照；容量和所需数量以成员个数计 |
+| `pmac_pool_confirm_recovery(id, expected_revision, flags)` | 核对设备后按当前 revision 确认恢复；`flags` 选择未知写入和/或远端释放确认；直接返回状态码 |
+
+`pmac_pool_profile` 包含 `target_size`、`max_members`、`min_ready` 和 `connect_timeout_ms`。文件路径由指针和对应长度共同指定；上传发布不确定时先检查远端文件，不应自动重试。
+
+### 10.6 运动控制
+
+本节函数为同步 C helper：`id` 是 Client，`options` 是请求选项，直接返回状态码，不返回 Request ID。编号参数分别表示目标坐标系、电机、PLC 或程序；`position` 和 `distance` 是控制器单位下的有限浮点值。
+
+| 函数 | 作用和附加参数 | 成功返回 |
+|---|---|---|
+| `pmac_abort(id, options)` | 发送全局 abort | `PMAC_OK` |
+| `pmac_coord_enable(id, coord, options)` | 启用指定坐标系 | `PMAC_OK` |
+| `pmac_coord_exec_prog(id, coord, program, options)` | 在 `coord` 执行 `program` | `PMAC_OK` |
+| `pmac_coord_hold(id, coord, options)` / `pmac_coord_run(id, coord, options)` | 暂停 / 运行指定坐标系 | `PMAC_OK` |
+| `pmac_plc_enable(id, plc, options)` / `pmac_plc_disable(id, plc, options)` | 启用 / 禁用 PLC | `PMAC_OK` |
+| `pmac_motor_kill(id, motor, options)` | 对电机发送 kill | `PMAC_OK` |
+| `pmac_motor_enable(id, motor, options)` | 启用电机 | `PMAC_OK` |
+| `pmac_motor_jog_stop(id, motor, options)` | 停止指定电机 jog | `PMAC_OK` |
+| `pmac_motor_abs_jog(id, motor, position, options)` | 绝对位置 jog，`position` 为目标位置 | `PMAC_OK` |
+| `pmac_motor_inc_jog(id, motor, distance, options)` | 增量 jog，`distance` 为位移 | `PMAC_OK` |
+
+返回 `PMAC_OK` 表示协议交互完成；实际动作是否完成应通过状态查询及设备安全逻辑确认。
+### 10.7 状态与数值查询
+
+下列 C 函数同步执行；共同参数为 Client `id`、请求 `options` 和输出指针 `out`。直接返回 `PMAC_OK` 或错误状态码，成功时将结果写入 `out`。`motor`、`coord`、`plc` 为目标编号；浮点值单位由控制器配置决定。
+
+| 函数 | 附加输入 | `out` 类型及含义 |
+|---|---|---|
+| `pmac_coord_status` | `coord` | `uint64_t`，坐标系状态位 |
+| `pmac_motor_status` | `motor` | `uint64_t`，电机状态位 |
+| `pmac_motor_position` | `motor` | `double`，实际位置 |
+| `pmac_motor_desired_position` | `motor` | `double`，期望位置 |
+| `pmac_motor_velocity` | `motor` | `double`，速度 |
+| `pmac_motor_position_error` | `motor` | `double`，位置误差 |
+| `pmac_servo_error_count` | 无 | `uint32_t`，伺服错误计数 |
+| `pmac_phase_error_count` | 无 | `uint32_t`，相位错误计数 |
+| `pmac_servo_count` | 无 | `uint32_t`，伺服计数 |
+| `pmac_phase_time` | 无 | `double`，相位周期时间 |
+| `pmac_servo_time` | 无 | `double`，伺服周期时间 |
+| `pmac_abort_all_flag` | 无 | `uint32_t`，全局 abort 标志，0 为假，非零为真 |
+| `pmac_plc_running` | `plc` | `uint32_t`，PLC 运行标志 |
+| `pmac_coord_prog_running` | `coord` | `uint32_t`，坐标系程序运行标志 |
+| `pmac_motor_closed_loop` | `motor` | `uint32_t`，电机闭环标志 |
+| `pmac_coord_motor_enabled` | `coord` | `uint32_t`，坐标系电机使能标志 |
+
+例如：
+
+```c
+double position = 0.0;
+int32_t status = pmac_motor_position(client, 1, &request_options, &position);
+if (status == PMAC_OK) {
+    /* position 是电机 1 的实际位置。 */
+}
+```
+
+### 10.8 C++17、.NET 和 Python 方法对照
+
+下表按常用方法列出名称、参数和结果；可选的请求选项分别为 C++ `RequestOptions`、.NET `RequestOptions?`、Python 关键字选项。每种绑定暴露的方法范围不完全相同，以对应源码声明为准。
+
+| 操作 | C++17 | .NET | Python | 参数与结果 |
+|---|---|---|---|---|
+| 连接 | `connectSync(options)` | `ConnectAsync(options, cancellationToken)` | `connect(host, username, password=None, **kwargs)` | 连接配置见第 2 节；成功无数据返回 |
+| 异步提交连接 | `connect(options)` | `Connect(options)` | `connect_async(...)` | 返回 `Request`，使用者等待并释放 |
+| GPASCII | `getResponse(command, pattern, options)` | `GetResponse(command, pattern, options)` | `get_response(command, pattern=None, **kwargs)` | `command` 为命令，`pattern` 可选；返回响应或匹配的字节 |
+| 提交 GPASCII | `getResponseAsync(command, options)` | `GetResponseAsync(command, options)` | `get_response_async(command, **kwargs)` | 返回 Request；结果通过 Request 读取 |
+| 直接命令 | `command(command, options)` | `Command(command, options)` | `command(command, **kwargs)` | 返回原始响应字节；相应 `Async` / `_async` 返回 Request |
+| Shell | `shell(command, persistent, options)` | `Shell(command, persistent, options)` | `shell(command, persistent=True, **kwargs)` | 返回 stdout 字节；需 stderr 或退出码时使用异步 Request |
+| DART 连接 / 断开 | `dartConnect` / `dartDisconnect` | `DartConnect` / `DartDisconnect` | `dart_connect` / `dart_disconnect` | 成功无数据返回；对应异步方法返回 Request |
+| DART 读取 | `dartGet(command, address, length, options)` | `DartGet(command, address, length, options)` | `dart_get(command, address, length, **kwargs)` | `length` 为字节数，返回主机字节序的字节序列 |
+| DART 写入 | `dartSet(command, address, data, options)` | `DartSet(command, address, data, options)` | `dart_set(command, address, data, **kwargs)` | `data` 为主机字节序字节序列；成功无数据返回 |
+| 上传 / 下载 | `upload(local, remote)` / `download(remote, local)` | `Upload(local, remote)` / `Download(remote, local)` | `upload(local, remote)` / `download(remote, local)` | 路径为字符串；成功无数据返回 |
+| 文件存在 / 删除 | `fileExists(remote)` / `removeFile(remote)` | `FileExists(remote)` / `RemoveFile(remote)` | `file_exists(remote)` / `remove_file(remote)` | 存在查询返回布尔值；删除成功无数据返回 |
+| 状态查询 | `state()`、`isConnected()` | `State()`、`IsConnected` | `state()`、`connected` | 返回状态快照或布尔值 |
+| 关闭 | `close(waitMs)` | `Close(waitMs)` | `close(wait_ms)` | 等待关闭；资源释放另遵循对象生命周期 |
+
+C++ 的 `Request.wait()` 成功后无返回数据，`waitNoThrow(waitMs)` 返回请求信息；`.NET Request.Wait()` / `WaitAsync()` 和 Python `Request.wait()` / `wait_async()` 用于等待，响应使用 `Response()` / `response()` 获取。`Request` 的匹配、stderr、取消和释放方法见第 3.2 节和对应绑定声明。
+
+Python DART 示例：
+
+```python
+import struct
+
+client.dart_connect(timeout_ms=5000)
+try:
+    data = client.dart_get(0x90, 1, 8, timeout_ms=5000)
+    print("P1 =", struct.unpack("=d", data)[0])
+    # 仅在应用确认 P1 可以写入时执行：
+    client.dart_set(0x91, 1, struct.pack("=d", 100.0), timeout_ms=5000)
+finally:
+    client.dart_disconnect(timeout_ms=5000)
+```
+
+C++ 和 .NET 的完整 DART 示例及多元素传输规则见 [DART 接口指南](dart-api.md)。
