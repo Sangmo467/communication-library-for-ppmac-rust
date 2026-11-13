@@ -17,8 +17,8 @@ pub use request::{
 };
 pub use runtime::Runtime;
 pub use transport::{
-    ConnectOptions, ExecutionContext, GpasciiBudget, GpasciiChannelPermit, HostKeyPolicy, Session,
-    Transport,
+    ConnectOptions, ErrorMonitorStream, ExecutionContext, GetErrorsOptions, GpasciiBudget,
+    GpasciiChannelPermit, HostKeyPolicy, MonitorChunk, Session, Transport,
 };
 
 pub use pool::{MemberSnapshot, MemberState, PoolProfile, PoolSnapshot};

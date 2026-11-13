@@ -197,6 +197,39 @@ PMAC_EXPORT int32_t pmac_motor_closed_loop(pmac_client_id id, int32_t motor, con
 PMAC_EXPORT int32_t pmac_coord_motor_enabled(pmac_client_id id, int32_t coord, const pmac_request_options *options, uint32_t *out);
 
 
+/* Continuous geterrors status-transition monitor over an authenticated SSH PTY.
+ * period_seconds is finite, in [0.01, 1.0]. Masks are sent only when their flag is set.
+ * Text is borrowed UTF-8 without a terminating NUL; callbacks are serialized.
+ * Return nonzero or use request_stop from the callback. stop/release are barriers
+ * and must run outside the callback. Stop sends Ctrl+C only to this monitor's PTY.
+ */
+#define PMAC_GETERRORS_DATE 1u
+#define PMAC_GETERRORS_COORD_MASK 2u
+#define PMAC_GETERRORS_MOTOR_MASK 4u
+#define PMAC_GETERRORS_RING_MASK 8u
+#define PMAC_GETERRORS_GLOBAL_MASK 16u
+#define PMAC_GETERRORS_SETTINGS 1u
+#define PMAC_GETERRORS_ERROR 2u
+#define PMAC_GETERRORS_STDERR 3u
+#define PMAC_GETERRORS_TERMINAL 4u
+typedef uint64_t pmac_geterrors_id;
+typedef struct {
+    uint32_t struct_size, abi_version;
+    double period_seconds;
+    uint64_t coord_mask, motor_mask, ring_mask, global_mask;
+    uint32_t flags, timeout_ms, queue_lines, max_line_bytes;
+} pmac_geterrors_config;
+typedef int32_t (*pmac_geterrors_callback)(void *user, int32_t status,
+    uint32_t kind, const uint8_t *text, size_t length);
+PMAC_EXPORT int32_t pmac_geterrors_start(pmac_client_id client, const pmac_geterrors_config *config,
+    pmac_geterrors_callback callback, void *user, pmac_geterrors_id *out);
+PMAC_EXPORT int32_t pmac_geterrors_request_stop(pmac_geterrors_id id);
+/* stop waits for the PTY process and callbacks; returns any terminal/cleanup error. */
+PMAC_EXPORT int32_t pmac_geterrors_stop(pmac_geterrors_id id);
+/* release destroys a valid handle even when returning a recorded terminal error.
+ * Called from its own callback, it returns INVALID_ARGUMENT without destroying it. */
+PMAC_EXPORT int32_t pmac_geterrors_release(pmac_geterrors_id id);
+
 /* Continuous Gather. All values are row-major doubles in Gather.Addr order.
  * callback: status == PMAC_OK for data; otherwise a terminal error event.
  * Pointers are borrowed until callback returns. Return nonzero to request stop.

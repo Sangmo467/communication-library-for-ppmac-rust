@@ -82,6 +82,15 @@ pub(crate) struct RusshSession {
 
 #[async_trait]
 impl Session for RusshSession {
+    async fn geterrors(
+        &self,
+        options: &pmac_core::GetErrorsOptions,
+    ) -> Result<Box<dyn pmac_core::ErrorMonitorStream>, Error> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::new(ErrorCode::Closing, "session is closed"));
+        }
+        crate::monitor::open(self.control.clone(), options).await
+    }
     async fn command(
         &self,
         command: &Command,

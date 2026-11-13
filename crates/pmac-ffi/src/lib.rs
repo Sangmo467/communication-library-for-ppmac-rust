@@ -4,6 +4,7 @@
 mod business;
 mod dart;
 mod gather;
+mod geterrors;
 mod helpers;
 mod pool;
 mod registry;
@@ -126,6 +127,7 @@ pub extern "C" fn pmac_runtime_release(id: u64) -> i32 {
             || !runtime.all_clients_closed()
             || registry().has_children(&runtime)
             || gather::has_children(&runtime)
+            || geterrors::has_children(&runtime)
         {
             return Err(Error::new(
                 ErrorCode::ShutdownPending,

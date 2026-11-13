@@ -4,6 +4,8 @@
 
 ## 未发布
 
+- 新增 geterrors 的 C ABI 与 C++17 实时状态变化监控：SSH 专用 PTY、可选日期和掩码、分类行回调、有界队列以及 Ctrl+C 停止/释放屏障，详见[使用指南](docs/geterrors.md)。
+
 - 新增实时连续 Gather 的 C ABI 与 C++17 封装，支持地址、采样周期、监听端口、有界批次回调、停止与释放屏障。
 - Gather 通过控制器来源 IP 和每会话随机握手接纳反向 TCP；错误或沉默连接共用启动截止时间。数据仍是明文 TCP，部署边界详见[详细使用指南](docs/gather.md)。
 - 修复复合 `close all buffers` 未失效本地程序上下文的问题。

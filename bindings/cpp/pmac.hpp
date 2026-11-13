@@ -9,6 +9,7 @@
 #include <functional>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -158,6 +159,84 @@ private:
     std::shared_ptr<RuntimeOwner> owner_;
 };
 
+// Omitted masks use geterrors defaults; an explicitly supplied zero is preserved.
+struct GetErrorsConfig {
+    double periodSeconds = 0.01;
+    bool date = false;
+    std::optional<uint64_t> coordMask, motorMask, ringMask, globalMask;
+    uint32_t timeoutMs = 5000, queueLines = 256, maxLineBytes = 65536;
+};
+class GetErrorsMonitor {
+public:
+    using OnMessage = std::function<void(uint32_t kind, const std::string& text)>;
+    using OnError = std::function<void(const Error&)>;
+    GetErrorsMonitor() = default;
+    ~GetErrorsMonitor() { release(); }
+    GetErrorsMonitor(const GetErrorsMonitor&) = delete;
+    GetErrorsMonitor& operator=(const GetErrorsMonitor&) = delete;
+    GetErrorsMonitor(GetErrorsMonitor&& other) noexcept
+        : id_(std::exchange(other.id_, 0)), context_(std::move(other.context_)), owner_(std::move(other.owner_)) {}
+    GetErrorsMonitor& operator=(GetErrorsMonitor&& other) noexcept {
+        if (this != &other) {
+            release(); id_ = std::exchange(other.id_, 0);
+            context_ = std::move(other.context_); owner_ = std::move(other.owner_);
+        }
+        return *this;
+    }
+    // Safe in callbacks; stop/destruction must run outside the callback thread.
+    void requestStop() { check(pmac_geterrors_request_stop(id_)); }
+    void stop() {
+        const auto status = pmac_geterrors_stop(id_);
+        if (status == PMAC_INVALID_ARGUMENT) check(status);
+        if (context_ && context_->exception) std::rethrow_exception(context_->exception);
+        check(status);
+    }
+private:
+    friend class Client;
+    struct Context { OnMessage message; OnError error; std::exception_ptr exception; };
+    static int32_t dispatch(void* user, int32_t status, uint32_t kind,
+                            const uint8_t* text, size_t length) noexcept {
+        auto& c = *static_cast<Context*>(user);
+        try {
+            const std::string value = length ? std::string(reinterpret_cast<const char*>(text), length) : std::string();
+            if (status == PMAC_OK) c.message(kind, value);
+            else if (c.error) c.error(Error(status, 0, 0, value));
+            return 0;
+        } catch (...) { c.exception = std::current_exception(); return 1; }
+    }
+    GetErrorsMonitor(uint64_t client, std::shared_ptr<RuntimeOwner> owner,
+                     const GetErrorsConfig& config, OnMessage onMessage, OnError onError)
+        : context_(new Context{std::move(onMessage), std::move(onError), {}}), owner_(std::move(owner)) {
+        if (!context_->message) throw std::invalid_argument("geterrors message callback is required");
+        pmac_geterrors_config c{};
+        c.struct_size = sizeof(c); c.abi_version = PMAC_ABI_VERSION;
+        c.period_seconds = config.periodSeconds;
+        c.timeout_ms = config.timeoutMs; c.queue_lines = config.queueLines; c.max_line_bytes = config.maxLineBytes;
+        c.flags = config.date ? PMAC_GETERRORS_DATE : 0u;
+        if (config.coordMask) { c.flags |= PMAC_GETERRORS_COORD_MASK; c.coord_mask = *config.coordMask; }
+        if (config.motorMask) { c.flags |= PMAC_GETERRORS_MOTOR_MASK; c.motor_mask = *config.motorMask; }
+        if (config.ringMask) { c.flags |= PMAC_GETERRORS_RING_MASK; c.ring_mask = *config.ringMask; }
+        if (config.globalMask) { c.flags |= PMAC_GETERRORS_GLOBAL_MASK; c.global_mask = *config.globalMask; }
+        check(pmac_geterrors_start(client, &c, dispatch, context_.get(), &id_));
+    }
+    static void check(int32_t status) {
+        if (status == PMAC_OK) return;
+        pmac_error_info info{}; size_t required = 0;
+        const auto first = pmac_copy_last_error(&info, nullptr, 0, &required);
+        if ((first == PMAC_OK || first == PMAC_BUFFER_TOO_SMALL) && info.status == status) {
+            std::vector<char> message(required);
+            if (pmac_copy_last_error(&info, message.data(), message.size(), &required) == PMAC_OK)
+                throw Error(status, 0, info.certainty, std::string(message.begin(), message.end()));
+        }
+        throw Error(status, 0, 0, "geterrors operation failed with status " + std::to_string(status));
+    }
+    void release() noexcept {
+        if (id_) { (void)pmac_geterrors_release(id_); id_ = 0; }
+    }
+    uint64_t id_ = 0;
+    std::unique_ptr<Context> context_;
+    std::shared_ptr<RuntimeOwner> owner_;
+};
 struct GatherConfig {
     uint32_t period = 1;
     std::vector<std::string> addresses;
@@ -253,6 +332,10 @@ public:
         return *this;
     }
 
+    GetErrorsMonitor startGetErrors(const GetErrorsConfig& config, GetErrorsMonitor::OnMessage onMessage,
+                                   GetErrorsMonitor::OnError onError = {}) {
+        return GetErrorsMonitor(id_, runtime_, config, std::move(onMessage), std::move(onError));
+    }
     Gather startGather(const GatherConfig& config, Gather::OnData onData, Gather::OnError onError = {}) {
         return Gather(id_, runtime_, config, std::move(onData), std::move(onError));
     }

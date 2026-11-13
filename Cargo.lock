@@ -1263,10 +1263,12 @@ dependencies = [
 name = "pmac-ffi"
 version = "2.0.0"
 dependencies = [
+ "futures",
  "pmac-core",
  "pmac-protocol",
  "pmac-transport-russh",
  "rand 0.9.5",
+ "tokio",
  "zeroize",
 ]
 

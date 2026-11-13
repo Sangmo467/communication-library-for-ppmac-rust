@@ -1578,3 +1578,135 @@ fn shell_quote(path: &str) -> Result<String, Error> {
     }
     Ok(format!("'{}'", path.replace('\'', "'\\''")))
 }
+
+impl Client {
+    /// Opens an independent continuous error monitor without reserving a request lane.
+    pub async fn start_geterrors(
+        self: &Arc<Self>,
+        options: &crate::GetErrorsOptions,
+    ) -> Result<Box<dyn crate::ErrorMonitorStream>, Error> {
+        options.validate()?;
+        let activity = {
+            let admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = self.lock_state();
+            if *admission || state.closing {
+                return Err(Error::new(ErrorCode::Closing, "client is closing"));
+            }
+            if state.state != ClientState::Ready {
+                return Err(Error::disconnected("client is not connected"));
+            }
+            *self.lock_active_tasks() += 1;
+            MonitorActivity {
+                client: self.clone(),
+            }
+        };
+        let owner = self.clone();
+        let options = options.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        // Cancellation of the caller cannot abandon a remote exec mid-open. The
+        // transport bounds initialization; an undelivered stream cleans up with its guard.
+        self.runtime.spawn(async move {
+            let result = async {
+                let _management = owner.management_lock.lock().await;
+                if owner.snapshot().closing {
+                    return Err(Error::new(
+                        ErrorCode::Closing,
+                        "client closed before monitor open",
+                    ));
+                }
+                let session = {
+                    let pool = owner.pool.lock();
+                    if pool.closing {
+                        return Err(Error::new(ErrorCode::Closing, "pool is closing"));
+                    }
+                    pool.members
+                        .iter()
+                        .filter(|member| {
+                            matches!(member.state, MemberState::Ready | MemberState::Busy)
+                        })
+                        .filter_map(|member| member.session.as_ref())
+                        .find(|session| session.is_healthy())
+                        .cloned()
+                        .ok_or_else(|| {
+                            Error::new(ErrorCode::NoReadyLane, "no healthy monitor SSH session")
+                        })?
+                };
+                let inner = session.geterrors(&options).await?;
+                let mut monitor = ClientErrorMonitor {
+                    inner: Some(inner),
+                    activity: Some(activity),
+                    stop_error: None,
+                };
+                if owner.snapshot().closing {
+                    monitor.stop_inner().await?;
+                    return Err(Error::new(
+                        ErrorCode::Closing,
+                        "client closed during monitor open",
+                    ));
+                }
+                Ok(Box::new(monitor) as Box<dyn crate::ErrorMonitorStream>)
+            }
+            .await;
+            // A canceled receiver drops the returned monitor, preserving its activity
+            // until the asynchronous Drop cleanup completes.
+            let _ = sender.send(result);
+        });
+        receiver
+            .await
+            .map_err(|_| Error::internal("monitor initialization task ended"))?
+    }
+}
+struct MonitorActivity {
+    client: Arc<Client>,
+}
+impl Drop for MonitorActivity {
+    fn drop(&mut self) {
+        let mut active = self.client.lock_active_tasks();
+        *active = active.saturating_sub(1);
+        drop(active);
+        self.client.tasks_stopped.notify_waiters();
+    }
+}
+struct ClientErrorMonitor {
+    inner: Option<Box<dyn crate::ErrorMonitorStream>>,
+    activity: Option<MonitorActivity>,
+    stop_error: Option<Error>,
+}
+impl ClientErrorMonitor {
+    async fn stop_inner(&mut self) -> Result<(), Error> {
+        if let Some(inner) = self.inner.as_mut() {
+            let result = inner.stop().await;
+            self.inner.take();
+            self.activity.take();
+            self.stop_error = result.err();
+        }
+        self.stop_error.clone().map_or(Ok(()), Err)
+    }
+}
+#[async_trait::async_trait]
+impl crate::ErrorMonitorStream for ClientErrorMonitor {
+    async fn read(&mut self) -> Result<Option<crate::MonitorChunk>, Error> {
+        match self.inner.as_mut() {
+            Some(inner) => inner.read().await,
+            None => Ok(None),
+        }
+    }
+    async fn stop(&mut self) -> Result<(), Error> {
+        self.stop_inner().await
+    }
+}
+impl Drop for ClientErrorMonitor {
+    fn drop(&mut self) {
+        if let (Some(mut inner), Some(activity)) = (self.inner.take(), self.activity.take()) {
+            let runtime = activity.client.runtime.clone();
+            runtime.spawn(async move {
+                let _ = inner.stop().await;
+                drop(inner);
+                drop(activity);
+            });
+        }
+    }
+}

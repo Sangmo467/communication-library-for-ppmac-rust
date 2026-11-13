@@ -15,3 +15,5 @@ pmac-protocol = { version = "=2.0.0", path = "../pmac-protocol" }
 pmac-transport-russh = { version = "=2.0.0", path = "../pmac-transport-russh" }
 zeroize.workspace = true
 rand.workspace = true
+tokio.workspace = true
+futures.workspace = true

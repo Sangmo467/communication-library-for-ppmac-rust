@@ -327,8 +327,62 @@ pub trait Transport: Send + Sync + 'static {
     ) -> Result<Arc<dyn Session>, Error>;
 }
 
+/// Options for the controller's continuous geterrors utility.
+#[derive(Debug, Clone)]
+pub struct GetErrorsOptions {
+    pub period_seconds: f64,
+    pub append_date: bool,
+    pub coord_mask: Option<u64>,
+    pub motor_mask: Option<u64>,
+    pub ring_mask: Option<u64>,
+    pub global_mask: Option<u64>,
+}
+impl Default for GetErrorsOptions {
+    fn default() -> Self {
+        Self {
+            period_seconds: 0.01,
+            append_date: false,
+            coord_mask: None,
+            motor_mask: None,
+            ring_mask: None,
+            global_mask: None,
+        }
+    }
+}
+impl GetErrorsOptions {
+    pub fn validate(&self) -> Result<(), Error> {
+        if !self.period_seconds.is_finite() || !(0.01..=1.0).contains(&self.period_seconds) {
+            return Err(Error::invalid(
+                "geterrors period must be finite and between 0.01 and 1 seconds",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone)]
+pub struct MonitorChunk {
+    pub data: Vec<u8>,
+    pub stderr: bool,
+}
+#[async_trait]
+pub trait ErrorMonitorStream: Send {
+    /// Returns one bounded byte chunk; no text or line boundaries are implied.
+    async fn read(&mut self) -> Result<Option<MonitorChunk>, Error>;
+    /// Interrupts this monitor and confirms its channel cleanup.
+    async fn stop(&mut self) -> Result<(), Error>;
+}
+
 #[async_trait]
 pub trait Session: Send + Sync + 'static {
+    async fn geterrors(
+        &self,
+        _options: &GetErrorsOptions,
+    ) -> Result<Box<dyn ErrorMonitorStream>, Error> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this transport does not provide geterrors monitoring",
+        ))
+    }
     async fn command(
         &self,
         command: &Command,

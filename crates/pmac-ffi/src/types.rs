@@ -204,3 +204,19 @@ pub struct PmacGatherConfig {
     pub queue_batches: u32,
     pub timeout_ms: u32,
 }
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PmacGetErrorsConfig {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub period_seconds: f64,
+    pub coord_mask: u64,
+    pub motor_mask: u64,
+    pub ring_mask: u64,
+    pub global_mask: u64,
+    pub flags: u32,
+    pub timeout_ms: u32,
+    pub queue_lines: u32,
+    pub max_line_bytes: u32,
+}
