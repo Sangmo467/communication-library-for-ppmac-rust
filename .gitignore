@@ -15,3 +15,8 @@ obj/
 TestResults/
 /.gitnexus/
 /docs/tmp/
+
+/examples/matlab/*.mex*
+/examples/matlab/*.obj
+/examples/matlab/*.exp
+/examples/matlab/*.lib

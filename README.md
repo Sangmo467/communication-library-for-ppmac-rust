@@ -1,6 +1,6 @@
 # Communication Library for Power PPMAC
 
-基于 Rust 与 russh 的 Power PPMAC 通信库，提供统一的 C ABI，以及 C++17、C++98、.NET 8 和 Python 绑定。
+基于 Rust 与 russh 的 Power PPMAC 通信库，提供统一的 C ABI，以及 C++17、C++98、.NET 8 和 Python 绑定，并提供 MATLAB GetResponse MEX 示例。
 
 当前版本：**2.0.0**；C ABI：**2.1**；开源协议：**MIT**。
 
@@ -17,7 +17,7 @@
 
 ## 仓库内容
 
-公开仓库仅包含核心源码、公开头文件、语言绑定、构建配置、依赖锁和使用文档。不包含编译产物、独立测试程序、烟测程序、内部审核记录或现场验证数据。
+公开仓库包含核心源码、公开头文件、语言绑定、使用示例、构建配置、依赖锁和使用文档。不包含编译产物、独立测试程序、烟测程序、内部审核记录或现场验证数据。
 
 核心 crate：
 
@@ -90,15 +90,19 @@ int main() {
 
 ## 文档
 
-- [实时连续 Gather](docs/gather.md)：配置、批次回调、自定义端口、停止和故障恢复。
-- [geterrors 实时监控](docs/geterrors.md)：周期和掩码、消息类型、C/C++ 完整示例、停止与排查。
-- [DART 接口指南](docs/dart-api.md)：连接、数据类型、C/C++、Python 与 .NET 使用。
-- [使用手册](docs/user-manual.md)：四种语言接入、请求、连接池、业务操作、恢复和关闭。
+- [GetResponse 多语言接入与完整示例](docs/getresponse-examples.md)：优先介绍 C、C++、C#、Python、MATLAB 的连接、请求、响应与错误处理。
+- [MATLAB MEX 调用](docs/matlab-getresponse.md)：编译、持久会话、uint8 响应、模式、关闭和回调扩展边界。
+- [C# / .NET GetResponse](docs/dotnet-getresponse.md)：构建、加载原生库、请求与异常。
+- [Python GetResponse](docs/python-getresponse.md)：安装、环境配置、模式与生命周期。
+- [使用手册](docs/user-manual.md)：请求、连接池、业务操作、恢复和关闭。
 - [构建与安装](docs/build-and-install.md)：原生库、CMake 安装和各语言加载方式。
 - [认证与主机身份校验](docs/authentication.md)：密码、私钥、known_hosts 与固定指纹。
+- [GetResponse 模式](docs/pattern-migration.md)：兼容提取和字节正则规则。
 - [Online Commands 与程序透传](docs/online-commands.md)：手册命令目录、读写分类、显式目标和同线程程序缓冲区。
 - [C ABI 契约](docs/abi-contract.md)：结构布局、ID、状态码、请求结果与恢复语义。
-- [GetResponse 模式](docs/pattern-migration.md)：兼容提取和字节正则规则。
+- [DART 接口指南](docs/dart-api.md)：连接、数据类型、C/C++、Python 与 .NET 使用。
+- [实时连续 Gather](docs/gather.md)：普通请求接通后的连续采样、批次回调、停止和故障恢复。
+- [geterrors 实时监控](docs/geterrors.md)：周期和掩码、持续监听、回调、停止与排查。
 - [第三方组件与许可证](THIRD_PARTY_NOTICES.md)。
 - [版本变更](CHANGELOG.md)。
 

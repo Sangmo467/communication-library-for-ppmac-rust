@@ -2,6 +2,8 @@
 
 适用于库版本 2.0.0、C ABI 2.1。本文说明公开 SDK 的日常使用；完整函数和结构定义分别以 `include/pmac.h`、各语言绑定源码及 [C ABI 契约](abi-contract.md) 为准。
 
+首次接入建议先阅读 [GetResponse 多语言示例](getresponse-examples.md)，包含 C/C++、[C#](dotnet-getresponse.md)、[Python](python-getresponse.md) 和 [MATLAB MEX](matlab-getresponse.md) 的构建、连接与完整调用步骤；Gather 和 geterrors 作为后续专题。
+
 ## 1. 对象模型与基本顺序
 
 所有语言共享同一套原生对象模型：

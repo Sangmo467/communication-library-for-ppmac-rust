@@ -4,6 +4,8 @@
 
 ## 未发布
 
+- 补充以 GetResponse 为主的 C/C++、C#、Python 和 MATLAB 可运行示例与详细接入文档；MATLAB 新增同步 C++17 MEX 网关。Gather/geterrors 专题位于基础请求之后。
+
 - 每个 Client 的 GPASCII 通道上限调整为 16，保留不确定释放占用；标准 error # 诊断即使随 ACK 返回也作为远端错误上报，error #31 失效旧程序上下文且不隐藏重发或补发 close。
 
 - 新增 geterrors 的 C ABI 与 C++17 实时状态变化监控：SSH 专用 PTY、可选日期和掩码、分类行回调、有界队列以及 Ctrl+C 停止/释放屏障，详见[使用指南](docs/geterrors.md)。
