@@ -25,6 +25,8 @@ extern "C" {
 #define PMAC_CONNECT_ACCEPT_ANY_HOST_KEY 2u
 #define PMAC_REQUEST_INFINITE 1u
 #define PMAC_REQUEST_READ_POOL 2u
+/* GetResponse/command only: bypass online/program classification, keep framing checks. */
+#define PMAC_REQUEST_PASSTHROUGH 4u
 #define PMAC_RECOVERY_CONFIRM_UNKNOWN_WRITES 1u
 #define PMAC_RECOVERY_CONFIRM_REMOTE_RELEASE 2u
 

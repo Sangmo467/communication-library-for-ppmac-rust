@@ -197,10 +197,11 @@ void connect(const mxArray* options) {
         std::rethrow_exception(original);
     }
 }
-std::vector<uint8_t> getresponse(const std::string& command, const std::string& pattern) {
+std::vector<uint8_t> getresponse(const std::string& command, const std::string& pattern, bool passthrough) {
     if (!current || !current->client || current->closing)
         argument("No ready session; call pmac_mex('connect', options) first");
     pmac::RequestOptions options;
+    options.passthrough = passthrough;
     const auto native = options.native();
     pmac_request_id id = 0;
     check(pmac_get_response_async(current->client, reinterpret_cast<const uint8_t*>(command.data()),
@@ -221,8 +222,16 @@ void dispatch(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
         connect(prhs[1]);
         if (nlhs) plhs[0] = mxCreateLogicalScalar(true);
     } else if (operation == "getresponse") {
-        if (nrhs < 2 || nrhs > 3) argument("Usage: bytes = pmac_mex('getresponse', command, optionalPattern)");
-        const auto response = getresponse(text(prhs[1], "command"), nrhs == 3 ? text(prhs[2], "pattern") : "");
+        if (nrhs < 2 || nrhs > 4) argument("Usage: bytes = pmac_mex('getresponse', command, pattern, options)");
+        bool passthrough = false;
+        if (nrhs == 4) {
+            scalarStruct(prhs[3]);
+            for (int i = 0; i < mxGetNumberOfFields(prhs[3]); ++i)
+                if (std::string(mxGetFieldNameByNumber(prhs[3], i)) != "passthrough")
+                    argument("Unknown request option");
+            passthrough = boolField(prhs[3], "passthrough", false);
+        }
+        const auto response = getresponse(text(prhs[1], "command"), nrhs >= 3 ? text(prhs[2], "pattern") : "", passthrough);
         if (nlhs) {
             plhs[0] = mxCreateNumericMatrix(1, static_cast<mwSize>(response.size()), mxUINT8_CLASS, mxREAL);
             if (!response.empty()) std::memcpy(mxGetData(plhs[0]), response.data(), response.size());

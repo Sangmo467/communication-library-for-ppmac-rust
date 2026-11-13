@@ -432,10 +432,21 @@ pub extern "C" fn pmac_command_submit(
 ) -> i32 {
     ffi_status(|| {
         unsafe { write_id(out_id, 0)? };
-        let command = client(id)?
-            .0
-            .parse_command_for_current_thread(unsafe { text(command, command_len)? })?;
-        let request = submit_request(id, Operation::Command(command), options)?;
+        let parsed_options = unsafe { request_options(options)? };
+        let command_text = unsafe { text(command, command_len)? };
+        let passthrough = if options.is_null() {
+            false
+        } else {
+            unsafe { read_input::<PmacRequestOptions>(options)? }.flags & 4 != 0
+        };
+        let command = if passthrough {
+            pmac_protocol::Command::passthrough(command_text)?
+        } else {
+            client(id)?
+                .0
+                .parse_command_for_current_thread(command_text)?
+        };
+        let request = submit_owned(id, Operation::Command(command), parsed_options)?;
         unsafe { write_id(out_id, request) }
     })
 }

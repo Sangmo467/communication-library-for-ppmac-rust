@@ -10,6 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::helpers::{
     client, finish_request, invalid_handle, read_input, request, submit_owned, text,
 };
+#[cfg(test)]
+use crate::types::PmacBytes;
 use crate::{ffi_status, write_id};
 use pmac_core::{Error, ErrorCode, Operation, RequestOptions, Runtime};
 use pmac_protocol::Command;
@@ -622,16 +624,15 @@ impl Decoder {
                 .map_err(|_| Error::new(ErrorCode::ParseError, "Gather text is not UTF-8"))?
                 .trim();
             if !line.is_empty() {
-                if line.to_ascii_lowercase().contains("overrun") {
+                let lower = line.to_ascii_lowercase();
+                if lower.contains("overrun") {
                     return Err(Error::new(
                         ErrorCode::ResourceLimit,
                         "controller Gather buffer overrun; samples were lost",
                     ));
                 }
                 // gather -W emits alphabetic headings. Numeric special values are errors.
-                if line.to_ascii_lowercase().contains("error")
-                    || line.to_ascii_lowercase().contains("failed")
-                {
+                if lower.contains("error") || lower.contains("failed") {
                     return Err(Error::new(
                         ErrorCode::RemoteError,
                         format!("Gather: {line}"),

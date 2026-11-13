@@ -28,7 +28,7 @@
 
 ## 构建
 
-需要 Rust 1.99.1（已由 `rust-toolchain.toml` 固定）和对应平台的 C/C++ 链接环境。
+需要 Rust 1.100.0（已由 `rust-toolchain.toml` 固定）和对应平台的 C/C++ 链接环境。
 
 ```sh
 cargo build -p pmac-ffi --release --locked

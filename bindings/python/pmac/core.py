@@ -63,7 +63,7 @@ def options(value=None):
     max_response_bytes = _checked_integer(value.get("max_response_bytes", 1024 * 1024),
                                           0, 2**(8 * C.sizeof(C.c_size_t)) - 1, "max_response_bytes")
     return N.RequestOptions(N.sizeof(N.RequestOptions), 2000, timeout_ms,
-                            (1 if value.get("infinite") else 0) | (2 if value.get("read_pool") else 0),
+                            (1 if value.get("infinite") else 0) | (2 if value.get("read_pool") else 0) | (4 if value.get("passthrough") else 0),
                             max_response_bytes)
 
 
@@ -165,17 +165,28 @@ class Request:
             return self._error_locked(status)
 
     def _error_locked(self, status):
-        info = N.ErrorInfo()
-        required = C.c_size_t()
-        code = self.runtime.lib.pmac_request_copy_error(self._id, N.byref(info), None, 0, N.byref(required))
-        if code not in (0, -11):
-            return PmacError(status, f"request failed with status {status}", self._id)
-        data = (C.c_uint8 * required.value)() if required.value else None
-        if data:
-            self.runtime.lib.pmac_request_copy_error(self._id, N.byref(info), data, len(data), N.byref(required))
-        message = bytes(data).decode("utf-8", "replace") if data else f"request failed with status {status}"
-        return PmacError(status, message, info.request_id, info.certainty)
-
+        # Local match/copy errors live in TLS, not on a successful Request.
+        lib = self.runtime.lib
+        sources = ((getattr(lib, "pmac_copy_last_error", None), ()),
+                   (lib.pmac_request_copy_error, (self._id,)))
+        for function, prefix in sources:
+            if function is None:
+                continue
+            info, required = N.ErrorInfo(), C.c_size_t()
+            code = function(*prefix, N.byref(info), None, 0, N.byref(required))
+            if code not in (0, -11) or info.status != status or not required.value:
+                continue
+            data = (C.c_uint8 * required.value)()
+            code = function(*prefix, N.byref(info), data, len(data), N.byref(required))
+            if code == 0 and info.status == status and required.value:
+                message = bytes(data[:required.value]).decode("utf-8", "replace")
+                if not prefix:
+                    request_info, ignored = N.ErrorInfo(), C.c_size_t()
+                    request_status = lib.pmac_request_copy_error(self._id, N.byref(request_info), None, 0, N.byref(ignored))
+                    if request_status in (0, -11):
+                        info.certainty = request_info.certainty
+                return PmacError(status, message, info.request_id or self._id, info.certainty)
+        return PmacError(status, f"request failed with status {status}", self._id)
     def _copy(self, stderr):
         with self._lock:
             request_id = self.id

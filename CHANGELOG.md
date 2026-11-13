@@ -4,6 +4,14 @@
 
 ## 未发布
 
+- 修复绑定层请求提取诊断丢失和执行确定性误报、自定义 Session 关闭 panic 后无法重试、取消等待后迟到 SSH Close 缓存残留；减少 Gather 行解析重复分配，CI 增加 Rust 1.100 文档表格检查。
+
+- GetResponse 新增可选 passthrough 模式：按原文发送单条 GPASCII 命令，跳过规则表、online/program 分类及本地 open 检查；C/C++、C#、Python、MATLAB 均可设置，默认关闭且保留错误上报。
+
+- 根据 Rust 1.100.0 新增 Cargo 清单诊断，修复五个 crate 的仓库元数据继承；补充升级审查和 Windows NASM 构建要求。
+
+- 构建工具链及 CI 升级至 Rust 1.100.0；最低支持版本仍为 Rust 1.99。
+
 - 补充以 GetResponse 为主的 C/C++、C#、Python 和 MATLAB 可运行示例与详细接入文档；MATLAB 新增同步 C++17 MEX 网关。Gather/geterrors 专题位于基础请求之后。
 
 - 每个 Client 的 GPASCII 通道上限调整为 16，保留不确定释放占用；标准 error # 诊断即使随 ACK 返回也作为远端错误上报，error #31 失效旧程序上下文且不隐藏重发或补发 close。

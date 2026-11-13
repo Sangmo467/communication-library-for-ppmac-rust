@@ -38,12 +38,13 @@ struct RequestOptions {
     bool infinite = false;
     bool readPool = false;
     size_t maxResponseBytes = 1024 * 1024;
+    bool passthrough = false;
     pmac_request_options native() const {
         pmac_request_options value{};
         value.struct_size = sizeof(value);
         value.abi_version = PMAC_ABI_VERSION;
         value.timeout_ms = timeoutMs;
-        value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (readPool ? PMAC_REQUEST_READ_POOL : 0u);
+        value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (readPool ? PMAC_REQUEST_READ_POOL : 0u) | (passthrough ? PMAC_REQUEST_PASSTHROUGH : 0u);
         value.max_response_bytes = maxResponseBytes;
         return value;
     }
@@ -149,11 +150,28 @@ private:
     static const uint8_t* bytes(const std::string& value) { return reinterpret_cast<const uint8_t*>(value.data()); }
     void check(int32_t status) const { if (status != PMAC_OK) throwStatus(status); }
     [[noreturn]] void throwStatus(int32_t status) const {
-        pmac_error_info info{}; size_t required = 0;
-        (void)pmac_request_copy_error(id_, &info, nullptr, 0, &required);
-        std::vector<char> message(required);
-        const int32_t copied = pmac_request_copy_error(id_, &info, message.data(), message.size(), &required);
-        throw Error(status, id_, info.certainty, copied == PMAC_OK ? std::string(message.begin(), message.end()) : "PMAC request failed with status " + std::to_string(status));
+        // API-local errors (for example a malformed regex) are not stored on a
+        // successfully completed Request. Copy TLS before another API clears it.
+        for (int source = 0; source < 2; ++source) {
+            pmac_error_info info{}; size_t required = 0;
+            int32_t copied = source == 0 ? pmac_copy_last_error(&info, nullptr, 0, &required)
+                                        : pmac_request_copy_error(id_, &info, nullptr, 0, &required);
+            if ((copied != PMAC_OK && copied != PMAC_BUFFER_TOO_SMALL) || info.status != status || required == 0) continue;
+            std::vector<char> message(required);
+            copied = source == 0 ? pmac_copy_last_error(&info, message.data(), message.size(), &required)
+                                 : pmac_request_copy_error(id_, &info, message.data(), message.size(), &required);
+            if (copied == PMAC_OK && info.status == status && required != 0) {
+                const std::string diagnostic(message.data(), required);
+                if (source == 0) {
+                    pmac_error_info requestInfo{}; size_t ignored = 0;
+                    const auto requestStatus = pmac_request_copy_error(id_, &requestInfo, nullptr, 0, &ignored);
+                    if (requestStatus == PMAC_OK || requestStatus == PMAC_BUFFER_TOO_SMALL)
+                        info.certainty = requestInfo.certainty;
+                }
+                throw Error(status, id_, info.certainty, diagnostic);
+            }
+        }
+        throw Error(status, id_, 0, "PMAC request failed with status " + std::to_string(status));
     }
     uint64_t id_ = 0;
     std::shared_ptr<RuntimeOwner> owner_;

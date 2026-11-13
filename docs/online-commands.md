@@ -47,7 +47,7 @@ Rust 直接调用方使用 `Client::parse_command_for_current_thread(text)` 后�
 
 ## 回归覆盖
 
-[命令规则表及样例](../crates/pmac-protocol/src/online-command-rules.tsv) 覆盖大小写、读写分类、显式作用域及原文保留。FFI 测试通过受控 Transport 验证正常准入与只读池拒绝写入。核心和本地 SSH 测试覆盖同线程正文、跨线程隔离、关闭排队、取消、修复以及全局缓冲区关闭。
+[命令样例集](../crates/pmac-protocol/tests/online-command-corpus.tsv) 与规则表样例分别覆盖大小写、读写分类、显式作用域及原文保留。FFI 测试通过受控 Transport 验证正常准入与只读池拒绝写入。核心和本地 SSH 测试覆盖同线程正文、跨线程隔离、关闭排队、取消、修复以及全局缓冲区关闭。
 
 这些验证证明本地接收、分类和路由行为；并不代表已在真实控制器上逐条执行运动、复位或修改配置。
 
@@ -64,3 +64,5 @@ stdin:1:1: error #31: Buffer closed due to another thread:
 收到 error #31 后，库使受影响的旧程序上下文失效并退役对应成员。不会自动补发 `close`，不会自动重发原语句，更不会把恢复或清理结果改写成原请求成功。应用必须读取原始错误，再按池恢复接口修复或重连，并在确认设备状态后显式重新打开需要的程序缓冲区。成员可能被多个调用线程共享；这些线程会观察到旧 epoch 不可用，需要协同恢复。其他独立 Client 不会被库主动关闭，但全局命令对控制器的影响仍然存在。
 
 同一 Client 通过库发出的 `close all buffers` 会在维护屏障后清除已知本地程序上下文；旧正文可能在本地准入时被拒绝，合法在线命令也仍可能读到远端通道的延迟 error #31，错误同样返回给应用。每个 Client 的在线 GPASCII 通道总额度为 16，包含预建及释放不确定的占用；不得通过新线程或池修复绕过未确认释放的计数。
+
+GetResponse/command 可使用 PMAC_REQUEST_PASSTHROUGH（4）跳过 online/program 分类及本地程序上下文检查。默认关闭；不可与 READ_POOL 组合。仍受单条帧校验约束，远端 error # 继续原样上报。详见[透传模式](getresponse-examples.md#可选透传模式跳过-onlineprogram-规则)。

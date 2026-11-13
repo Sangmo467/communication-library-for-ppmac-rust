@@ -124,3 +124,4 @@ Console.Write(System.Text.Encoding.UTF8.GetString(value));
 关闭出现 `PMAC_SHUTDOWN_PENDING` 或仍有释放不确定的资源时，应保留对象/ID并按[使用手册](user-manual.md)完成核实和恢复后重试，不能把超时当作已安全卸载。此例是独立控制台程序；长驻宿主应将对象和恢复流程纳入应用生命周期。
 
 Gather 与 geterrors 属于后续专题，当前没有 C# 便捷封装；需要时通过 C ABI 自行封装，并遵守回调和停止屏障：[实时 Gather](gather.md)、[geterrors 状态变化监控](geterrors.md)。
+GetResponse 也支持可选的 passthrough 请求选项，以原文发送单条命令并跳过 online/program 分类；默认关闭。各语言写法、单帧限制与错误语义见[透传模式说明](getresponse-examples.md#可选透传模式跳过-onlineprogram-规则)。

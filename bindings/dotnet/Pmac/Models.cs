@@ -13,14 +13,14 @@ public sealed class PmacException : Exception
     public ExecutionCertainty Certainty { get; }
 }
 
-public sealed record RequestOptions(uint TimeoutMs = 5000, bool Infinite = false, nuint MaxResponseBytes = 1024 * 1024, bool ReadPool = false)
+public sealed record RequestOptions(uint TimeoutMs = 5000, bool Infinite = false, nuint MaxResponseBytes = 1024 * 1024, bool ReadPool = false, bool Passthrough = false)
 {
     internal NativeMethods.RequestOptions Native() => new()
     {
         StructSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.RequestOptions>(),
         AbiVersion = NativeMethods.AbiVersion,
         TimeoutMs = TimeoutMs,
-        Flags = (Infinite ? 1u : 0u) | (ReadPool ? 2u : 0u),
+        Flags = (Infinite ? 1u : 0u) | (ReadPool ? 2u : 0u) | (Passthrough ? 4u : 0u),
         MaxResponseBytes = MaxResponseBytes,
     };
 }

@@ -93,7 +93,7 @@ pub(crate) unsafe fn request_options(
         options.abi_version,
         size_of::<PmacRequestOptions>(),
     )?;
-    if options.flags & !3 != 0 {
+    if options.flags & !7 != 0 {
         return Err(Error::invalid("unknown request flags"));
     }
     Ok(RequestOptions {

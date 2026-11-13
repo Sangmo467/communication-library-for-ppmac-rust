@@ -16,8 +16,22 @@ use pmac_core::{ConnectOptions, Error, ErrorCode, ExecutionContext, HostKeyPolic
 pub(crate) type Channel = russh::Channel<client::Msg>;
 #[derive(Default)]
 struct CloseState {
-    waiting: HashMap<ChannelId, tokio::sync::oneshot::Sender<()>>,
+    // None records a canceled waiter until the corresponding late Close arrives.
+    waiting: HashMap<ChannelId, Option<tokio::sync::oneshot::Sender<()>>>,
     closed: HashSet<ChannelId>,
+}
+impl CloseState {
+    fn confirm(&mut self, channel: ChannelId) {
+        match self.waiting.remove(&channel) {
+            Some(Some(confirmed)) => {
+                let _ = confirmed.send(());
+            }
+            Some(None) => {} // The consumer was canceled; do not cache an orphaned ID.
+            None => {
+                self.closed.insert(channel);
+            }
+        }
+    }
 }
 type CloseEvents = Arc<Mutex<CloseState>>;
 
@@ -27,11 +41,17 @@ struct CloseEventRegistration {
 }
 impl Drop for CloseEventRegistration {
     fn drop(&mut self) {
-        self.events
+        if let Some(waiter) = self
+            .events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .waiting
-            .remove(&self.channel);
+            .get_mut(&self.channel)
+        {
+            // Keep a tombstone only while the remote channel remains unconfirmed.
+            // If Close already consumed the registration, do not recreate one.
+            *waiter = None;
+        }
     }
 }
 
@@ -71,7 +91,7 @@ impl Connection {
             if events.closed.remove(&id) {
                 return true;
             }
-            let previous = events.waiting.insert(id, confirmed);
+            let previous = events.waiting.insert(id, Some(confirmed));
             assert!(previous.is_none(), "duplicate channel close registration");
         }
         let _registration = CloseEventRegistration {
@@ -186,11 +206,7 @@ impl client::Handler for ClientHandler {
                 .close_events
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(confirmed) = events.waiting.remove(&channel) {
-                let _ = confirmed.send(());
-            } else {
-                events.closed.insert(channel);
-            }
+            events.confirm(channel);
         }
         Ok(())
     }

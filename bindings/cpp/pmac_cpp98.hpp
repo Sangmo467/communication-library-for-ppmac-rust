@@ -13,7 +13,7 @@ namespace pmac98 {
 class Error : public std::runtime_error {
 public:
     explicit Error(int status, const std::string& operation, uint64_t request = 0, uint32_t certainty = 1)
-        : std::runtime_error(operation + " failed"), status_(status), request_(request), certainty_(certainty) {}
+        : std::runtime_error(diagnostic(status, operation, request)), status_(status), request_(request), certainty_(certainty) {}
     int status() const { return status_; }
     uint64_t requestId() const { return request_; }
     uint32_t certainty() const { return certainty_; }
@@ -21,6 +21,21 @@ public:
     pmac::ErrorCategory category() const { return pmac::errorCategory(status_); }
     bool isTransportError() const { return pmac::isTransportError(status_); }
 private:
+    static std::string diagnostic(int status, const std::string& operation, uint64_t request) {
+        for (int source = 0; source < 2; ++source) {
+            if (source == 1 && !request) break;
+            pmac_error_info info = {}; size_t required = 0;
+            int copied = source == 0 ? pmac_copy_last_error(&info, 0, 0, &required)
+                                     : pmac_request_copy_error(request, &info, 0, 0, &required);
+            if ((copied != PMAC_OK && copied != PMAC_BUFFER_TOO_SMALL) || info.status != status || required == 0) continue;
+            std::vector<char> message(required);
+            copied = source == 0 ? pmac_copy_last_error(&info, &message[0], message.size(), &required)
+                                 : pmac_request_copy_error(request, &info, &message[0], message.size(), &required);
+            if (copied == PMAC_OK && info.status == status && required != 0)
+                return std::string(&message[0], required);
+        }
+        return operation + " failed: " + pmac::statusName(status);
+    }
     int status_;
     uint64_t request_;
     uint32_t certainty_;
@@ -42,11 +57,12 @@ struct Options {
     bool infinite;
     bool read_pool;
     size_t max_response_bytes;
-    Options() : timeout_ms(5000), infinite(false), read_pool(false), max_response_bytes(1024 * 1024) {}
+    bool passthrough;
+    Options() : timeout_ms(5000), infinite(false), read_pool(false), max_response_bytes(1024 * 1024), passthrough(false) {}
     pmac_request_options native() const {
         pmac_request_options value = {};
         value.struct_size = sizeof(value); value.abi_version = PMAC_ABI_VERSION;
-        value.timeout_ms = timeout_ms; value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (read_pool ? PMAC_REQUEST_READ_POOL : 0u); value.max_response_bytes = max_response_bytes;
+        value.timeout_ms = timeout_ms; value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (read_pool ? PMAC_REQUEST_READ_POOL : 0u) | (passthrough ? PMAC_REQUEST_PASSTHROUGH : 0u); value.max_response_bytes = max_response_bytes;
         return value;
     }
 };
@@ -189,10 +205,11 @@ public:
         if (wait_status != PMAC_OK) throw Error(wait_status, "get_response_wait", request, info.request_id == request ? info.certainty : 1u);
         size_t required = 0;
         int status = pattern.empty() ? pmac_request_copy_response(request, 0, 0, &required) : pmac_request_copy_match(request, data(pattern), pattern.size(), 0, 0, 0, &required);
-        if (status != PMAC_BUFFER_TOO_SMALL && status != PMAC_OK) check(status, "get_response_copy");
+        if (status != PMAC_BUFFER_TOO_SMALL && status != PMAC_OK) throw Error(status, "get_response_copy", request, info.certainty);
         std::vector<uint8_t> result(required);
         status = pattern.empty() ? pmac_request_copy_response(request, result.empty()?0:&result[0], result.size(), &required) : pmac_request_copy_match(request, data(pattern), pattern.size(), 0, result.empty()?0:&result[0], result.size(), &required);
-        check(status, "get_response_copy"); return result;
+        if (status != PMAC_OK) throw Error(status, "get_response_copy", request, info.certainty);
+        return result;
     }
     void upload(const std::string& local, const std::string& remote, const Options& options = Options()) { pmac_request_options native = options.native(); pmac_request_id request = 0; check(pmac_upload_submit(id_, data(local), local.size(), data(remote), remote.size(), &native, &request), "upload_submit"); wait(request, "upload"); }
     void download(const std::string& remote, const std::string& local, const Options& options = Options()) { pmac_request_options native = options.native(); pmac_request_id request = 0; check(pmac_download_submit(id_, data(remote), remote.size(), data(local), local.size(), &native, &request), "download_submit"); wait(request, "download"); }

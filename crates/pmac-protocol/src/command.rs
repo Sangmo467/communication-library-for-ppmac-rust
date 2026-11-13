@@ -36,6 +36,7 @@ pub struct Command {
     scope: CommandScope,
     maintenance: MaintenanceKind,
     program_line: bool,
+    passthrough: bool,
 }
 
 impl Command {
@@ -79,6 +80,7 @@ impl Command {
             scope,
             maintenance,
             program_line: false,
+            passthrough: false,
         })
     }
 
@@ -93,7 +95,27 @@ impl Command {
             scope: CommandScope::Global,
             maintenance: MaintenanceKind::None,
             program_line: true,
+            passthrough: false,
         })
+    }
+
+    /// Send one GPASCII frame without online/program classification or context checks.
+    /// It is conservatively scheduled as a control write, never a read-pool query.
+    pub fn passthrough(text: impl Into<String>) -> Result<Self, ProtocolError> {
+        let text = text.into();
+        validate_text(&text)?;
+        Ok(Self {
+            text,
+            effect: CommandEffect::Control,
+            scope: CommandScope::Global,
+            maintenance: MaintenanceKind::None,
+            program_line: false,
+            passthrough: true,
+        })
+    }
+
+    pub fn is_passthrough(&self) -> bool {
+        self.passthrough
     }
 
     pub fn is_program_line(&self) -> bool {
@@ -175,6 +197,7 @@ impl Command {
             scope: CommandScope::Global,
             maintenance: MaintenanceKind::None,
             program_line: false,
+            passthrough: false,
         }
     }
 

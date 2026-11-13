@@ -180,17 +180,31 @@ public sealed class Request : IDisposable
 
     private unsafe PmacException Error(int status)
     {
-        var errorStatus = NativeMethods.pmac_request_copy_error(id, out var info, IntPtr.Zero, UIntPtr.Zero, out var required);
-        if (errorStatus != 0 && errorStatus != -11) return new PmacException(status, $"PMAC request failed with status {status}", id);
-        var bytes = new byte[checked((int)(nuint)required)];
-        if (bytes.Length > 0)
+        // Read the API-local diagnostic before querying the persistent request.
+        for (var source = 0; source < 2; ++source)
         {
+            var copied = source == 0
+                ? NativeMethods.pmac_copy_last_error(out var info, IntPtr.Zero, UIntPtr.Zero, out var required)
+                : NativeMethods.pmac_request_copy_error(id, out info, IntPtr.Zero, UIntPtr.Zero, out required);
+            if ((copied != 0 && copied != -11) || info.Status != status || required == UIntPtr.Zero) continue;
+            var bytes = new byte[checked((int)(nuint)required)];
             fixed (byte* pointer = bytes)
-                NativeMethods.pmac_request_copy_error(id, out info, (IntPtr)pointer, (UIntPtr)bytes.Length, out required);
+                copied = source == 0
+                    ? NativeMethods.pmac_copy_last_error(out info, (IntPtr)pointer, (UIntPtr)bytes.Length, out required)
+                    : NativeMethods.pmac_request_copy_error(id, out info, (IntPtr)pointer, (UIntPtr)bytes.Length, out required);
+            if (copied == 0 && info.Status == status && required != UIntPtr.Zero)
+            {
+                var diagnostic = System.Text.Encoding.UTF8.GetString(bytes, 0, checked((int)(nuint)required));
+                if (source == 0)
+                {
+                    var requestStatus = NativeMethods.pmac_request_copy_error(id, out var requestInfo, IntPtr.Zero, UIntPtr.Zero, out _);
+                    if (requestStatus == 0 || requestStatus == -11) info.Certainty = requestInfo.Certainty;
+                }
+                return new PmacException(status, diagnostic, info.RequestId == 0 ? id : info.RequestId, (ExecutionCertainty)info.Certainty);
+            }
         }
-        return new PmacException(status, System.Text.Encoding.UTF8.GetString(bytes), info.RequestId, (ExecutionCertainty)info.Certainty);
+        return new PmacException(status, $"PMAC request failed with status {status}", id);
     }
-
     private static RequestInfo Convert(NativeMethods.RequestInfo info) => new(info.RequestId, info.ClientId, (RequestState)info.State, info.Status, (ExecutionCertainty)info.Certainty, info.ConnectionEpoch, info.ElapsedUs, info.ResponseLen, info.StderrLen, info.HasExitCode != 0 ? info.ExitCode : null);
     private void Release()
     {

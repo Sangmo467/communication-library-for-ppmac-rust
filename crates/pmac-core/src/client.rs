@@ -341,7 +341,7 @@ impl Client {
             ));
         }
         let operation = match operation {
-            Operation::Command(command) => {
+            Operation::Command(command) if !command.is_passthrough() => {
                 if self
                     .program_buffer_for(std::thread::current().id(), true)?
                     .is_some()
@@ -556,10 +556,21 @@ impl Client {
                     .filter_map(|m| m.session.clone().map(|session| (m.id, m.epoch, session)))
                     .collect::<Vec<_>>();
                 loop {
-                    let results = futures::future::join_all(
-                        sessions.iter().map(|(_, _, session)| session.close()),
-                    )
-                    .await;
+                    let results =
+                        futures::future::join_all(sessions.iter().map(|(_, _, session)| async {
+                            // Protect both construction and polling of a custom close future.
+                            // A panic does not prove remote release; keep ownership and retry.
+                            std::panic::AssertUnwindSafe(async { session.close().await })
+                                .catch_unwind()
+                                .await
+                                .unwrap_or_else(|_| {
+                                    Err(Error::new(
+                                        ErrorCode::ShutdownPending,
+                                        "transport close panicked; release is unconfirmed",
+                                    ))
+                                })
+                        }))
+                        .await;
                     {
                         let mut pool = client.pool.lock();
                         for ((id, epoch, _), result) in sessions.iter().zip(&results) {
@@ -669,7 +680,7 @@ impl Client {
             None
         };
         let program_action = match &operation {
-            Operation::Command(command) => Some((
+            Operation::Command(command) if !command.is_passthrough() => Some((
                 command.is_program_line(),
                 Self::opens_program_buffer(command.text()),
                 command.text().trim().eq_ignore_ascii_case("close"),

@@ -4,7 +4,7 @@
 
 | 组件 | 要求 |
 |---|---|
-| Rust | 1.99.1；仓库通过 `rust-toolchain.toml` 固定，包含 rustfmt 和 Clippy |
+| Rust | 1.100.0；仓库通过 `rust-toolchain.toml` 固定，包含 rustfmt 和 Clippy |
 | 原生链接环境 | Windows 使用 MSVC 对应架构工具链；Linux 使用 GCC/Clang 对应架构工具链 |
 | CMake | 可选，>=3.20；用于构建、安装 C/C++ 头文件及原生库 |
 | C/C++ 调用方 | C11、C++17 或 C++98 |
@@ -12,6 +12,9 @@
 | Python 调用方 | Python >=3.9，仅依赖标准库 ctypes/asyncio |
 
 公开仓库不包含预编译库。使用方需要针对自己的操作系统和 CPU 架构构建。
+
+
+Windows 全新构建时，`aws-lc-sys` 的汇编实现需要 NASM。若未安装 NASM，可显式使用锁定依赖随包提供的预编译 NASM 对象：在 PowerShell 设置 `$env:AWS_LC_SYS_PREBUILT_NASM = '1'` 后构建。本次 Rust 1.100.0 的 Clippy 和测试以此方式通过；该设置仅作用于当前进程，不关闭汇编优化。升级工具链会重新构建依赖，旧版本留下的构建缓存可能曾掩盖缺失 NASM 的环境问题。
 
 ## 2. 构建原生库
 

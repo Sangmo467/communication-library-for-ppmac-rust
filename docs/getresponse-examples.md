@@ -125,6 +125,43 @@ export LD_LIBRARY_PATH="$PWD/target/debug${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 先完成 Request、复制结果并释放，再关闭 Client，最后关闭 Runtime。C++/C#/Python 的自动资源管理不能替代对关闭失败的处理。插件、MEX 或宿主程序卸载 DLL 前还应完成原生清理屏障，不能留下正在运行的回调或清理线程。
 
+## 可选透传模式：跳过 online/program 规则
+
+GetResponse 默认行为保持不变。对单个请求显式启用 `passthrough` 后，字符串不再经过 `online-command-rules.tsv` 分类，也不要求本地确认 `open prog`，不区分 online command 与 program command。发送时保留空格、分号、大小写等原始文本；仍由 GPASCII 添加正常的帧结束符。
+
+| 语言 | 启用方法 |
+| --- | --- |
+| C | `options.flags |= PMAC_REQUEST_PASSTHROUGH`，再调用 `pmac_get_response_async` |
+| C++17 | `options.passthrough = true`，传给 `getResponse(command, pattern, options)` |
+| C++98 | `pmac98::Options` 的 `passthrough = true`，传给 `getResponse` |
+| C# | `new RequestOptions(Passthrough: true)` |
+| Python | `client.get_response(command, passthrough=True)` |
+| MATLAB MEX | 第四参数 `struct('passthrough', true)` |
+
+```cpp
+pmac::RequestOptions options;
+options.passthrough = true;
+auto raw = client.getResponse("dwell 10", "", options);
+```
+
+```csharp
+var raw = client.GetResponse("dwell 10", options: new RequestOptions(Passthrough: true));
+```
+
+```python
+raw = client.get_response('dwell 10', passthrough=True, timeout_ms=5000)
+```
+
+```matlab
+raw = pmac_mex('getresponse', 'dwell 10', '', struct('passthrough', true));
+```
+
+这些调用会发送命令，设备是否接受由其当前状态决定；示例中的 `dwell 10` 通常需要设备处于相应程序缓冲区状态。应用需要在同一调用线程依次发送 open、正文和 close。透传模式不解析或维护程序缓冲区状态，也不为 reset/save 等命令自动添加维护屏障；建议一段程序操作始终使用同一种模式，避免与依赖本地上下文的默认模式混用。
+
+透传请求统一按可能产生副作用的控制写入调度，保留线程通道亲和；不能同时指定 `read_pool` / `ReadPool`，否则发送前返回参数错误。请求超时、取消、响应上限、资源配额、错误上报和不自动重放的约定继续生效。任何 `error #N`，包括 #31，仍返回失败和原始诊断；透传模式不会根据程序语义自动补发 close 或修复上下文。
+
+这里的透传仍是一条 GPASCII 帧：最大 1023 字节，拒绝空白命令、NUL、CR/LF、ACK 和 NAK，不能在一个字符串中拼接多行帧。多行程序应逐行请求；这项选项不改变响应正则提取。C ABI 的 RequestOptions 布局不变，新增 flag 值为 4；需使用包含此功能的新原生库，旧库会拒绝未知标志。`pmac_command_submit` 也支持同一选项；其他业务接口不使用它绕过规则。
+
 ## 6. 后续：Gather 与 geterrors
 
 GetResponse 接通后，再查看 [Gather 连续采样](gather.md)和 [geterrors 实时状态监控](geterrors.md)。两者为持续会话，不能通过一次普通 GetResponse 获取完整生命周期。现有 C ABI/C++17 支持专用接口与回调；Python、.NET 和本 MATLAB MEX 示例未新增这些回调封装。
