@@ -81,7 +81,9 @@ impl Connection {
         // Give stdin-driven GPASCII a chance to exit before forcing channel close.
         // This grace period is inside the caller's two-second cleanup deadline.
         let graceful = async {
-            if channel.eof().await.is_err() { return None; }
+            if channel.eof().await.is_err() {
+                return None;
+            }
             loop {
                 tokio::select! {
                     confirmed = &mut receiver => return Some(confirmed.is_ok()),

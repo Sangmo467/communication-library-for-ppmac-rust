@@ -579,6 +579,11 @@ class Client:
 
     @staticmethod
     def _pool_profile(target_size=1, max_members=None, min_ready=1, connect_timeout_ms=60000):
+        max_members = target_size if max_members is None else max_members
+        _checked_integer(target_size, 1, 255, "target_size")
+        _checked_integer(max_members, target_size, 255, "max_members")
+        _checked_integer(min_ready, 1, target_size, "min_ready")
+        _checked_integer(connect_timeout_ms, 1, 0xffffffff, "connect_timeout_ms")
         return N.PoolProfile(N.sizeof(N.PoolProfile), 2000, target_size,
                              target_size if max_members is None else max_members,
                              min_ready, connect_timeout_ms)
@@ -638,6 +643,7 @@ class Client:
         raise PmacError(-12, "pool membership changed repeatedly while copying the snapshot")
 
     def pool_confirm_recovery(self, expected_revision, acknowledge_unknown_writes=False, confirm_remote_released=False):
+        _checked_integer(expected_revision, 0, 0xffffffffffffffff, "expected_revision")
         flags = (1 if acknowledge_unknown_writes else 0) | (2 if confirm_remote_released else 0)
         check(self._pool_function("pmac_pool_confirm_recovery")(self._check(), expected_revision, flags), "confirm recovery")
     def _unit(self, name, *args, **kwargs):

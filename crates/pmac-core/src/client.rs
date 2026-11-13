@@ -257,28 +257,42 @@ impl Client {
         check(&text[start..])
     }
     fn opens_program_buffer(text: &str) -> bool {
-        let lower = text.trim().to_ascii_lowercase();
-        let operation = lower.strip_prefix('&').map_or(lower.as_str(), |tail| {
-            tail.trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, ',' | '.' | '*'))
+        for segment in text.split(';') {
+            let segment = segment.trim();
+            let operation = segment.strip_prefix('&').map_or(segment, |tail| {
+                tail.trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || matches!(c, ',' | '.' | '*')
+                })
                 .trim_start()
-        });
-        [
-            "open prog",
-            "open plc",
-            "open subprog",
-            "open forward",
-            "open inverse",
-            "open rotary",
-        ]
-        .iter()
-        .any(|prefix| {
-            operation.strip_prefix(prefix).is_some_and(|tail| {
-                tail.is_empty()
-                    || tail.starts_with(|c: char| {
-                        c.is_ascii_whitespace() || c.is_ascii_digit() || c == ','
+            });
+            let mut words = operation.split_whitespace();
+            let Some(first) = words.next() else {
+                continue;
+            };
+            // Inline program text is opaque, including its semicolons.
+            if first.eq_ignore_ascii_case("cpx") || first.eq_ignore_ascii_case("cx") {
+                break;
+            }
+            if !first.eq_ignore_ascii_case("open") {
+                continue;
+            }
+            let Some(kind) = words.next() else {
+                continue;
+            };
+            let kind = kind.to_ascii_lowercase();
+            if ["prog", "plc", "subprog", "forward", "inverse", "rotary"]
+                .iter()
+                .any(|prefix| {
+                    kind.strip_prefix(prefix).is_some_and(|tail| {
+                        tail.is_empty()
+                            || tail.starts_with(|c: char| c.is_ascii_digit() || c == ',')
                     })
-            })
-        })
+                })
+            {
+                return true;
+            }
+        }
+        false
     }
     pub fn submit(
         self: &Arc<Self>,
@@ -637,8 +651,9 @@ impl Client {
                 !command.is_program_line()
                     && command
                         .text()
-                        .trim()
-                        .eq_ignore_ascii_case("close all buffers"),
+                        .split_whitespace()
+                        .map(str::to_ascii_lowercase)
+                        .eq(["close", "all", "buffers"]),
             )),
             _ => None,
         };
