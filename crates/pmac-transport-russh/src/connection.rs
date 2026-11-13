@@ -30,7 +30,8 @@ impl Drop for CloseEventRegistration {
         self.events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waiting.remove(&self.channel);
+            .waiting
+            .remove(&self.channel);
     }
 }
 
@@ -63,7 +64,10 @@ impl Connection {
         let id = channel.id();
         let (confirmed, mut receiver) = tokio::sync::oneshot::channel();
         {
-            let mut events = self.close_events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut events = self
+                .close_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if events.closed.remove(&id) {
                 return true;
             }
@@ -112,7 +116,10 @@ pub(crate) struct ClientHandler {
 
 enum HostKeyVerifier {
     AcceptAnyExplicit,
-    Known { allowed: Vec<PublicKey>, revoked: Vec<PublicKey> },
+    Known {
+        allowed: Vec<PublicKey>,
+        revoked: Vec<PublicKey>,
+    },
     Pinned([u8; 32]),
 }
 
@@ -127,8 +134,12 @@ impl client::Handler for ClientHandler {
         let accepted = match &self.verifier {
             HostKeyVerifier::AcceptAnyExplicit => true,
             HostKeyVerifier::Known { allowed, revoked } => {
-                !revoked.iter().any(|known| known.key_data() == key.key_data())
-                    && allowed.iter().any(|known| known.key_data() == key.key_data())
+                !revoked
+                    .iter()
+                    .any(|known| known.key_data() == key.key_data())
+                    && allowed
+                        .iter()
+                        .any(|known| known.key_data() == key.key_data())
             }
             HostKeyVerifier::Pinned(expected) => {
                 Sha256::digest(key.public_key_bytes()).as_slice() == expected
@@ -146,7 +157,10 @@ impl client::Handler for ClientHandler {
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
         if self.track_closes {
-            let mut events = self.close_events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut events = self
+                .close_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(confirmed) = events.waiting.remove(&channel) {
                 let _ = confirmed.send(());
             } else {
@@ -288,7 +302,11 @@ async fn load_verifier(options: &ConnectOptions) -> Result<HostKeyVerifier, Erro
                 let mut allowed = Vec::new();
                 let mut revoked = Vec::new();
                 for (_, key, is_revoked) in keys {
-                    if is_revoked { revoked.push(key); } else { allowed.push(key); }
+                    if is_revoked {
+                        revoked.push(key);
+                    } else {
+                        allowed.push(key);
+                    }
                 }
                 HostKeyVerifier::Known { allowed, revoked }
             })

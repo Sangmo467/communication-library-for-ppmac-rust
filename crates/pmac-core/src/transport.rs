@@ -253,11 +253,23 @@ pub enum HostKeyPolicy {
 
 pub struct ExecutionContext {
     request: Arc<Request>,
+    independent_tcp: std::sync::atomic::AtomicBool,
 }
 
 impl ExecutionContext {
     pub(crate) fn new(request: Arc<Request>) -> Self {
-        Self { request }
+        Self {
+            request,
+            independent_tcp: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    pub fn begin_independent_tcp(&self) {
+        self.independent_tcp
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    pub fn independent_tcp_started(&self) -> bool {
+        self.independent_tcp
+            .load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn is_cancelled(&self) -> bool {
         self.request.is_cancelled()
@@ -322,19 +334,13 @@ pub trait Session: Send + Sync + 'static {
         command: &Command,
         context: &ExecutionContext,
     ) -> Result<OperationResult, Error>;
-    async fn dart_connect(
-        &self,
-        _context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_connect(&self, _context: &ExecutionContext) -> Result<OperationResult, Error> {
         Err(Error::new(
             ErrorCode::Unsupported,
             "this transport does not provide DART TCP",
         ))
     }
-    async fn dart_disconnect(
-        &self,
-        _context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_disconnect(&self, _context: &ExecutionContext) -> Result<OperationResult, Error> {
         Err(Error::new(
             ErrorCode::Unsupported,
             "this transport does not provide DART TCP",

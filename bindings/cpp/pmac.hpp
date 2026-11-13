@@ -389,6 +389,7 @@ private:
     static uint64_t& requestSlot() { thread_local uint64_t id = 0; return id; }
     static void check(int32_t status) {
         if (status == PMAC_OK) return;
+#ifdef PMAC_ENABLE_LAST_ERROR_DETAILS
         pmac_error_info info{}; size_t required = 0;
         int copied = pmac_copy_last_error(&info, nullptr, 0, &required);
         if ((copied == PMAC_OK || copied == PMAC_BUFFER_TOO_SMALL) && info.status == status) {
@@ -396,6 +397,7 @@ private:
             if (required == 0 || pmac_copy_last_error(&info, message.data(), message.size(), &required) == PMAC_OK)
                 throw Error(status, info.request_id, info.certainty, std::string(message.begin(), message.end()));
         }
+#endif
         throw Error(status, 0, 1u, "PMAC operation failed with status " + std::to_string(status));
     }
 

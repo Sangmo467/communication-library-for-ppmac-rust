@@ -599,6 +599,7 @@ class Client:
         return Request(self.runtime, request_id.value)
 
     def _pool_member_async(self, name, member_id, kwargs):
+        _checked_integer(member_id, 0, 0xffffffffffffffff, "member_id")
         native = options(kwargs)
         request_id = C.c_uint64()
         check(self._pool_function(name)(self._check(), member_id, N.byref(native), N.byref(request_id)), "pool member management submit")

@@ -28,10 +28,12 @@ private:
 
 inline void check(int status, const char* operation) {
     if (status == PMAC_OK) return;
+#ifdef PMAC_ENABLE_LAST_ERROR_DETAILS
     pmac_error_info info = {}; size_t required = 0;
     int copied = pmac_copy_last_error(&info, 0, 0, &required);
     if ((copied == PMAC_OK || copied == PMAC_BUFFER_TOO_SMALL) && info.status == status)
         throw Error(status, operation, info.request_id, info.certainty);
+#endif
     throw Error(status, operation);
 }
 
@@ -131,7 +133,7 @@ public:
         check(pmac_connect_submit(id_, &options, &request), "connect_submit");
         pmac_request_info info = {};
         const int status = pmac_request_wait(request, 0xffffffff, &info);
-        if (status != PMAC_OK) { (void)pmac_request_release(request); throw Error(status, "connect"); }
+        if (status != PMAC_OK) { const Error error(status, "connect", request, info.request_id == request ? info.certainty : 1u); (void)pmac_request_release(request); throw error; }
         check(pmac_request_release(request), "request_release");
     }
 
@@ -141,7 +143,7 @@ public:
         ScopedRequest owner(request);
         pmac_request_info info = {};
         const int status = pmac_request_wait(request, 0xffffffff, &info);
-        if (status != PMAC_OK) { throw Error(status, "command"); }
+        if (status != PMAC_OK) { throw Error(status, "command", request, info.request_id == request ? info.certainty : 1u); }
         size_t required = 0;
         int copy_status = pmac_request_copy_response(request, 0, 0, &required);
         if (copy_status != PMAC_BUFFER_TOO_SMALL && copy_status != PMAC_OK) { throw Error(copy_status, "copy_response"); }
@@ -183,7 +185,8 @@ public:
         pmac_request_options native = options.native(); uint64_t request = 0;
         check(pmac_get_response_async(id_, data(text), text.size(), &native, &request), "get_response_submit");
         ScopedRequest owner(request); pmac_request_info info = {};
-        check(pmac_request_wait(request, 0xffffffffu, &info), "get_response_wait");
+        const int wait_status = pmac_request_wait(request, 0xffffffffu, &info);
+        if (wait_status != PMAC_OK) throw Error(wait_status, "get_response_wait", request, info.request_id == request ? info.certainty : 1u);
         size_t required = 0;
         int status = pattern.empty() ? pmac_request_copy_response(request, 0, 0, &required) : pmac_request_copy_match(request, data(pattern), pattern.size(), 0, 0, 0, &required);
         if (status != PMAC_BUFFER_TOO_SMALL && status != PMAC_OK) check(status, "get_response_copy");
@@ -246,7 +249,7 @@ private:
     };    Client(const Client&); Client& operator=(const Client&);
     static const uint8_t* data(const std::string& value) { return reinterpret_cast<const uint8_t*>(value.data()); }
     static pmac_bytes bytes(const std::string& value) { pmac_bytes result = { data(value), value.size() }; return result; }
-    static void wait(pmac_request_id request, const char* operation) { pmac_request_info info = {}; const int status = pmac_request_wait(request, 0xffffffff, &info); (void)pmac_request_release(request); check(status, operation); }
+    static void wait(pmac_request_id request, const char* operation) { pmac_request_info info = {}; const int status = pmac_request_wait(request, 0xffffffff, &info); const uint32_t certainty = info.request_id == request ? info.certainty : 1u; (void)pmac_request_release(request); if (status != PMAC_OK) throw Error(status, operation, request, certainty); }
     uint64_t id_;
 };
 }

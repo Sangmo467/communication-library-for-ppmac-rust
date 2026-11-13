@@ -448,6 +448,7 @@ impl Client {
             Operation::DartConnect | Operation::DartDisconnect | Operation::Dart(_)
         );
         let dart_transfer = matches!(&operation, Operation::Dart(_));
+        let dart_connect = matches!(&operation, Operation::DartConnect);
         let operation_future = async {
             match operation {
                 Operation::Command(command) => lease.session.command(&command, &context).await,
@@ -507,6 +508,13 @@ impl Client {
                 .sent()
                 .fatal()),
         };
+        if dart_connect && context.independent_tcp_started() {
+            if let Err(error) = &mut result {
+                if matches!(error.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout) {
+                    error.fatal_transport = false;
+                }
+            }
+        }
         if request.has_unconfirmed_publish() {
             if let Err(error) = &result {
                 result = Err(Error::new(
@@ -537,7 +545,8 @@ impl Client {
             self.pool.lock().unknown_write = true;
         }
         let broken = result.as_ref().err().is_some_and(|e| {
-            !(dart_transfer && matches!(e.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout))
+            !((dart_transfer || (dart_connect && context.independent_tcp_started()))
+                && matches!(e.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout))
                 && (!dart || e.fatal_transport)
                 && (e.fatal_transport
                     || (uncertain
@@ -987,23 +996,25 @@ impl Client {
             m.drain = true;
         }
         self.pool.changed.notify_waiters();
-        let waiting = self.drive(request, async {
-            loop {
-                let changed = self.pool.changed.notified();
-                self.check_revision(revision)?;
-                if !self
-                    .pool
-                    .lock()
-                    .members
-                    .iter()
-                    .any(|m| m.id == id && m.state == MemberState::Busy)
-                {
-                    break Ok::<(), Error>(());
+        let waiting = self
+            .drive(request, async {
+                loop {
+                    let changed = self.pool.changed.notified();
+                    self.check_revision(revision)?;
+                    if !self
+                        .pool
+                        .lock()
+                        .members
+                        .iter()
+                        .any(|m| m.id == id && m.state == MemberState::Busy)
+                    {
+                        break Ok::<(), Error>(());
+                    }
+                    changed.await;
                 }
-                changed.await;
-            }
-        })
-        .await.and_then(|result| result);
+            })
+            .await
+            .and_then(|result| result);
         if let Err(error) = waiting {
             let mut s = self.pool.lock();
             if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
@@ -1013,6 +1024,16 @@ impl Client {
             self.pool.changed.notify_waiters();
             return Err(error);
         }
+        if let Err(error) = request.begin_send() {
+            let mut s = self.pool.lock();
+            if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
+                m.drain = false;
+            }
+            drop(s);
+            self.pool.changed.notify_waiters();
+            return Err(error);
+        }
+        request.mark_awaiting();
         let session = {
             let mut s = self.pool.lock();
             let m = s
@@ -1023,22 +1044,31 @@ impl Client {
             m.state = MemberState::Retiring;
             m.session.clone()
         };
-        if let Some(session) = session {
-            let _ = session.close().await;
-        }
+        let closed = match session {
+            Some(session) => self
+                .drive(request, session.close())
+                .await
+                .and_then(|result| result),
+            None => Ok(()),
+        };
         let mut s = self.pool.lock();
         if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
             let epoch = m.epoch;
-            m.state = MemberState::Drained;
-            m.session = None;
-            if !s.uncertain.contains(&(id, epoch)) {
+            m.state = if closed.is_ok() {
+                MemberState::Drained
+            } else {
+                MemberState::Failed
+            };
+            if closed.is_ok() {
+                m.session = None;
+            } else if !s.uncertain.contains(&(id, epoch)) {
                 s.uncertain.push((id, epoch));
             }
         }
         s.affinity.retain(|_, bound| bound.member_id != id);
         drop(s);
         self.pool.changed.notify_waiters();
-        Ok(())
+        closed
     }
     async fn fail_member(&self, id: u64, epoch: u64, code: ErrorCode) {
         let session = {
@@ -1052,9 +1082,10 @@ impl Client {
                     m.session.clone()
                 })
         };
-        if let Some(session) = session {
-            let _ = session.retire_control().await;
-        }
+        let confirmed = match session {
+            Some(session) => session.retire_control().await.is_ok(),
+            None => false,
+        };
         {
             let mut s = self.pool.lock();
             if let Some(m) = s
@@ -1064,7 +1095,7 @@ impl Client {
             {
                 m.state = MemberState::Failed;
             }
-            if !s.uncertain.contains(&(id, epoch)) {
+            if !confirmed && !s.uncertain.contains(&(id, epoch)) {
                 s.uncertain.push((id, epoch));
             }
         }

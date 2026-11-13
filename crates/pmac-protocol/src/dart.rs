@@ -57,14 +57,10 @@ impl DartCommand {
     pub fn element_size(self) -> usize {
         match self {
             Self::GetUshmChar | Self::SetUshmChar => 1,
-            Self::GetUshmInt
-            | Self::SetUshmInt
-            | Self::GetUshmFloat
-            | Self::SetUshmFloat => 4,
-            Self::GetUshmDouble
-            | Self::SetUshmDouble
-            | Self::GetPVariable
-            | Self::SetPVariable => 8,
+            Self::GetUshmInt | Self::SetUshmInt | Self::GetUshmFloat | Self::SetUshmFloat => 4,
+            Self::GetUshmDouble | Self::SetUshmDouble | Self::GetPVariable | Self::SetPVariable => {
+                8
+            }
         }
     }
 
@@ -102,11 +98,7 @@ pub struct DartTransfer {
 }
 
 impl DartTransfer {
-    pub fn get(
-        command: DartCommand,
-        address: u32,
-        length: usize,
-    ) -> Result<Self, ProtocolError> {
+    pub fn get(command: DartCommand, address: u32, length: usize) -> Result<Self, ProtocolError> {
         if command.is_write() {
             return Err(ProtocolError::Dart(
                 "a write command cannot be used for Get".into(),
@@ -122,11 +114,7 @@ impl DartTransfer {
         Ok(transfer)
     }
 
-    pub fn set(
-        command: DartCommand,
-        address: u32,
-        data: Vec<u8>,
-    ) -> Result<Self, ProtocolError> {
+    pub fn set(command: DartCommand, address: u32, data: Vec<u8>) -> Result<Self, ProtocolError> {
         if !command.is_write() {
             return Err(ProtocolError::Dart(
                 "a read command cannot be used for Set".into(),

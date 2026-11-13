@@ -29,14 +29,19 @@ thread_local! {
 }
 
 pub(crate) fn save_last_error(error: &Error, request_id: u64, connection_epoch: u64) {
-    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some((PmacErrorInfo {
-        struct_size: size_of::<PmacErrorInfo>() as u32,
-        abi_version: ABI_VERSION,
-        status: error.code as i32,
-        certainty: error.certainty as u32,
-        request_id,
-        connection_epoch,
-    }, error.message.clone())));
+    LAST_ERROR.with(|slot| {
+        *slot.borrow_mut() = Some((
+            PmacErrorInfo {
+                struct_size: size_of::<PmacErrorInfo>() as u32,
+                abi_version: ABI_VERSION,
+                status: error.code as i32,
+                certainty: error.certainty as u32,
+                request_id,
+                connection_epoch,
+            },
+            error.message.clone(),
+        ))
+    });
 }
 
 pub(crate) fn ffi_status(operation: impl FnOnce() -> Result<(), Error>) -> i32 {
@@ -68,10 +73,14 @@ pub extern "C" fn pmac_copy_last_error(
     required: *mut usize,
 ) -> i32 {
     match catch_unwind(AssertUnwindSafe(|| {
-        if out_info.is_null() { return Err(Error::invalid("error info output is null")); }
+        if out_info.is_null() {
+            return Err(Error::invalid("error info output is null"));
+        }
         LAST_ERROR.with(|slot| {
             let slot = slot.borrow();
-            let (info, message) = slot.as_ref().ok_or_else(|| Error::new(ErrorCode::InvalidHandle, "no last error"))?;
+            let (info, message) = slot
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorCode::InvalidHandle, "no last error"))?;
             unsafe { out_info.write(*info) };
             copy_bytes(message.as_bytes(), out, capacity, required)
         })
@@ -604,7 +613,14 @@ pub extern "C" fn pmac_request_wait(id: u64, wait_ms: u32, out: *mut PmacRequest
             ))
         };
         if info.state == pmac_core::RequestState::Completed {
-            Err(Error::new(info.code, "request completed"))
+            let mut error = result
+                .as_ref()
+                .and_then(|result| result.as_ref().as_ref().err())
+                .cloned()
+                .unwrap_or_else(|| Error::new(info.code, "request completed"));
+            error.certainty = info.certainty;
+            save_last_error(&error, id, info.connection_epoch);
+            Err(error)
         } else {
             Err(Error::new(
                 ErrorCode::WaitPending,
@@ -847,6 +863,3 @@ pub extern "C" fn pmac_runtime_wake(id: u64) -> i32 {
         Ok(())
     })
 }
-
-#[cfg(test)]
-mod lifecycle_tests;

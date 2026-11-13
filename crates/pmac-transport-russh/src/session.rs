@@ -140,10 +140,7 @@ impl Session for RusshSession {
         result
     }
 
-    async fn dart_connect(
-        &self,
-        context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_connect(&self, context: &ExecutionContext) -> Result<OperationResult, Error> {
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::new(ErrorCode::Closing, "session is closed"));
         }
@@ -154,17 +151,17 @@ impl Session for RusshSession {
         let connection = crate::dart::connect(self, &self.options.host, context).await?;
         if self.closed.load(Ordering::Acquire) {
             crate::dart::disconnect(connection).await?;
-            return Err(Error::new(ErrorCode::Closing, "session closed during DART connect"));
+            return Err(Error::new(
+                ErrorCode::Closing,
+                "session closed during DART connect",
+            ));
         }
         self.dart_port.store(connection.port, Ordering::Release);
         *slot = Some(connection);
         Ok(OperationResult::default())
     }
 
-    async fn dart_disconnect(
-        &self,
-        _context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_disconnect(&self, _context: &ExecutionContext) -> Result<OperationResult, Error> {
         self.dart_port.store(0, Ordering::Release);
         self.close_dart().await?;
         Ok(OperationResult::default())
@@ -183,7 +180,10 @@ impl Session for RusshSession {
             None => {
                 let port = self.dart_port.load(Ordering::Acquire);
                 if port == 0 {
-                    return Err(Error::new(ErrorCode::Disconnected, "DART is not connected; call DartConnect first"));
+                    return Err(Error::new(
+                        ErrorCode::Disconnected,
+                        "DART is not connected; call DartConnect first",
+                    ));
                 }
                 crate::dart::connect_port(&self.options.host, port).await?
             }

@@ -1,5 +1,5 @@
 use pmac_core::{Error, Operation};
-use pmac_protocol::{DartCommand, DartTransfer};
+use pmac_protocol::{DartCommand, DartTransfer, DART_MAX_DATA_BYTES};
 
 use crate::helpers::{bytes, submit_request};
 use crate::types::PmacRequestOptions;
@@ -36,6 +36,11 @@ pub extern "C" fn pmac_dart_set_async(
     ffi_status(|| {
         unsafe { write_id(out_id, 0)? };
         let command = DartCommand::try_from(command).map_err(Error::from)?;
+        if data_len == 0 || data_len > DART_MAX_DATA_BYTES {
+            return Err(Error::invalid(format!(
+                "data length must be 1..={DART_MAX_DATA_BYTES} bytes"
+            )));
+        }
         let data = unsafe { bytes(data, data_len)? }.to_vec();
         let transfer = DartTransfer::set(command, address, data).map_err(Error::from)?;
         let request = submit_request(id, Operation::Dart(transfer), options)?;

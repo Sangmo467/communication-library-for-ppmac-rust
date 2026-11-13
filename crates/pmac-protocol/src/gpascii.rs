@@ -55,11 +55,27 @@ impl GpasciiDecoder {
         else {
             // An incomplete echo is bounded by the command length and is not response data.
             // A trailing CR/LF may also be framing rather than part of the body.
-            let pending_echo = if self.echo_checked { 0 } else { self.echo.len().saturating_add(1) };
+            let pending_echo = if self.echo_checked {
+                0
+            } else {
+                self.echo.len().saturating_add(1)
+            };
             let framing = usize::from(self.buffer.ends_with(b"\r\n")) * 2
-                + usize::from(!self.buffer.ends_with(b"\r\n") && self.buffer.ends_with(b"\r"));
-            let leading = self.buffer.iter().take_while(|&&b| matches!(b, b'\r' | b'\n' | b' ' | b'\t')).count();
-            if self.buffer.len().saturating_sub(leading) > self.maximum.saturating_add(pending_echo).saturating_add(framing) {
+                + usize::from(
+                    !self.buffer.ends_with(b"\r\n")
+                        && (self.buffer.ends_with(b"\r") || self.buffer.ends_with(b"\n")),
+                );
+            let leading = self
+                .buffer
+                .iter()
+                .take_while(|&&b| matches!(b, b'\r' | b'\n' | b' ' | b'\t'))
+                .count();
+            if self.buffer.len().saturating_sub(leading)
+                > self
+                    .maximum
+                    .saturating_add(pending_echo)
+                    .saturating_add(framing)
+            {
                 return Err(ProtocolError::ResponseTooLarge(self.maximum));
             }
             return Ok(Vec::new());
@@ -181,13 +197,31 @@ mod tests {
         let wire = b"Sys.ServoCount\r\n1\r\n\x06";
         let mut bytewise = GpasciiDecoder::new(b"Sys.ServoCount", 1);
         let mut result = Vec::new();
-        for byte in wire { result.extend(bytewise.push(&[*byte]).unwrap()); }
+        for byte in wire {
+            result.extend(bytewise.push(&[*byte]).unwrap());
+        }
         assert_eq!(result[0].body, b"1");
         for split in 0..=wire.len() {
             let mut decoder = GpasciiDecoder::new(b"Sys.ServoCount", 1);
             let mut frames = decoder.push(&wire[..split]).unwrap();
             frames.extend(decoder.push(&wire[split..]).unwrap());
             assert_eq!(frames[0].body, b"1", "split {split}");
+        }
+    }
+    #[test]
+    fn small_response_framing_survives_every_split() {
+        for ending in [b"\n".as_slice(), b"\r", b"\r\n"] {
+            for size in 0..=3 {
+                let mut wire = vec![b'x'; size];
+                wire.extend_from_slice(ending);
+                wire.push(6);
+                for split in 0..=wire.len() {
+                    let mut decoder = GpasciiDecoder::new(b"cmd", size);
+                    let mut frames = decoder.push(&wire[..split]).unwrap();
+                    frames.extend(decoder.push(&wire[split..]).unwrap());
+                    assert_eq!(frames[0].body, vec![b'x'; size]);
+                }
+            }
         }
     }
     #[test]

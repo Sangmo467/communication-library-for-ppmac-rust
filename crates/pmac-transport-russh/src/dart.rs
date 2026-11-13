@@ -23,9 +23,8 @@ struct DartConnectionPermit {
 
 impl DartBudget {
     fn shared(host: &str) -> Arc<Self> {
-        static REGISTRY: std::sync::OnceLock<
-            std::sync::Mutex<HashMap<String, Weak<DartBudget>>>,
-        > = std::sync::OnceLock::new();
+        static REGISTRY: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Weak<DartBudget>>>> =
+            std::sync::OnceLock::new();
         let registry = REGISTRY.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
         let key = host.to_ascii_lowercase();
         let mut registry = registry
@@ -42,16 +41,12 @@ impl DartBudget {
     }
 
     fn reserve(self: &Arc<Self>) -> Result<DartConnectionPermit, Error> {
-        let permit = self
-            .connections
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::ResourceLimit,
-                    "controller DART TCP connection limit reached (10)",
-                )
-            })?;
+        let permit = self.connections.clone().try_acquire_owned().map_err(|_| {
+            Error::new(
+                ErrorCode::ResourceLimit,
+                "controller DART TCP connection limit reached (10)",
+            )
+        })?;
         Ok(DartConnectionPermit {
             _budget: self.clone(),
             _permit: permit,
@@ -71,6 +66,7 @@ pub(crate) async fn connect(
     context: &ExecutionContext,
 ) -> Result<DartConnection, Error> {
     let port = discover(session, context).await?;
+    context.begin_independent_tcp();
     connect_port(host, port).await
 }
 
@@ -177,12 +173,15 @@ async fn discover(session: &RusshSession, context: &ExecutionContext) -> Result<
         .await
         .map_err(discovery_error)?;
     let port = discovery_value(&port.response, "Dart.Port")?;
-    u16::try_from(port).ok().filter(|port| *port != 0).ok_or_else(|| {
-        Error::new(
-            ErrorCode::Unsupported,
-            "DART service returned an invalid TCP port",
-        )
-    })
+    u16::try_from(port)
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unsupported,
+                "DART service returned an invalid TCP port",
+            )
+        })
 }
 
 fn discovery_value(response: &[u8], expected_name: &str) -> Result<u64, Error> {
@@ -224,9 +223,5 @@ fn discovery_error(error: Error) -> Error {
 }
 
 fn dart_io_error(operation: &str, error: std::io::Error) -> Error {
-    Error::new(
-        ErrorCode::Disconnected,
-        format!("{operation}: {error}"),
-    )
-    .sent()
+    Error::new(ErrorCode::Disconnected, format!("{operation}: {error}")).sent()
 }

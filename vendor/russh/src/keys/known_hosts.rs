@@ -109,9 +109,9 @@ pub fn known_host_key_entries_path<P: AsRef<Path>>(
                 } else {
                     (first, false)
                 };
-                if revoked && hosts.bytes().any(|b| matches!(b, b'*' | b'?' | b'!')) {
+                if hosts.contains('!') || (revoked && hosts.bytes().any(|b| matches!(b, b'*' | b'?'))) {
                     return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                        format!("unsupported revoked host pattern on line {line}")).into());
+                        format!("unsupported known_hosts host pattern on line {line}")).into());
                 }
                 let algorithm = fields.next();
                 let key = fields.next();

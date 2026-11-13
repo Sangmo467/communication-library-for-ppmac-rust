@@ -87,3 +87,5 @@ profile 要求 `1 <= min_ready <= target_size <= max_members <= 255`，连接预
 `PUBLISH_UNKNOWN` 表示文件发布结果不确定。库不自动重试可能有副作用的操作，也不以完整 ACK 代替机械状态判断。
 
 主机身份与登录方式独立。必须选择 known_hosts、32字节 SHA-256 指纹，或显式 `PMAC_CONNECT_ACCEPT_ANY_HOST_KEY`；后者只用于调用方明确接受风险的环境。密码/私钥/口令在异步提交时转为库拥有的配置，不写入错误文本和测试报告。同时配置私钥和密码时不自动兜底密码认证。
+
+- C++ 头文件默认兼容缺少 pmac_copy_last_error 导出的旧版 ABI 2.1 库，失败时使用保守的 MayHaveExecuted。确认所链接的库提供该导出后，可在包含头文件前定义 PMAC_ENABLE_LAST_ERROR_DETAILS 以启用完整错误详情；该选项要求所有翻译单元保持一致。
