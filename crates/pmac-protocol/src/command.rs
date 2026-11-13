@@ -26,6 +26,7 @@ pub enum MaintenanceKind {
     GlobalReset,
     EtherCat,
     BufferLoad,
+    Device,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub struct Command {
     effect: CommandEffect,
     scope: CommandScope,
     maintenance: MaintenanceKind,
+    program_line: bool,
 }
 
 impl Command {
@@ -53,6 +55,22 @@ impl Command {
             effect = effect.max(segment_effect);
             scope = merge_scopes(scope, segment_scope);
             maintenance = merge_maintenance(maintenance, segment_maintenance);
+            let lower = segment.to_ascii_lowercase();
+            let coordinate_operation = lower.strip_prefix('&').map(|rest| {
+                rest.trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || matches!(c, ',' | '.' | '*')
+                })
+                .trim_start()
+            });
+            if coordinate_operation.is_some_and(|op| {
+                ["cpx", "cx"].iter().any(|prefix| {
+                    op.strip_prefix(prefix)
+                        .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+                })
+            }) {
+                // The rest of the line is opaque program/shell text, including semicolons.
+                break;
+            }
         }
 
         Ok(Self {
@@ -60,7 +78,26 @@ impl Command {
             effect,
             scope,
             maintenance,
+            program_line: false,
         })
+    }
+
+    /// A single buffered-program line. The caller must verify an open buffer on
+    /// the same channel before sending it; it must never enter a read-only lane.
+    pub fn program_line(text: impl Into<String>) -> Result<Self, ProtocolError> {
+        let text = text.into();
+        validate_text(&text)?;
+        Ok(Self {
+            text,
+            effect: CommandEffect::Control,
+            scope: CommandScope::Global,
+            maintenance: MaintenanceKind::None,
+            program_line: true,
+        })
+    }
+
+    pub fn is_program_line(&self) -> bool {
+        self.program_line
     }
 
     pub fn motor(
@@ -137,6 +174,7 @@ impl Command {
             effect: CommandEffect::Control,
             scope: CommandScope::Global,
             maintenance: MaintenanceKind::None,
+            program_line: false,
         }
     }
 
@@ -176,6 +214,9 @@ fn validate_text(text: &str) -> Result<(), ProtocolError> {
 fn classify_segment(
     segment: &str,
 ) -> Result<(CommandEffect, CommandScope, MaintenanceKind), ProtocolError> {
+    if let Some(classification) = crate::online::classify(segment)? {
+        return Ok(classification);
+    }
     let lower = segment.to_ascii_lowercase();
     if lower == "&*adisable" {
         return Ok((
@@ -207,7 +248,13 @@ fn classify_segment(
     }
     if matches!(
         lower.as_str(),
-        "ecatreset" | "ecat reset" | "ecatrescan" | "ecat rescan" | "ecatslaves" | "ecat slaves"
+        "ecatreset"
+            | "ecat reset"
+            | "ecatrescan"
+            | "ecat rescan"
+            | "ecatslaves"
+            | "ecat slaves"
+            | "ecat config"
     ) {
         return Ok((
             CommandEffect::Maintenance,
@@ -270,7 +317,18 @@ fn classify_segment(
         let coord = validate_coord(coord)?;
         let operation = segment[1 + digits..].trim().to_ascii_lowercase();
         let read = matches!(operation.as_str(), "?" | "p");
-        let simple_write = matches!(operation.as_str(), "enable" | "hold" | "run");
+        let simple_write = matches!(
+            operation.as_str(),
+            "enable"
+                | "hold"
+                | "run"
+                | "abort"
+                | "disable"
+                | "adisable"
+                | "ddisable"
+                | "dkill"
+                | "pmach"
+        );
         let valid_program = operation
             .strip_prefix("begin ")
             .and_then(|value| value.strip_suffix(" run"))
@@ -295,7 +353,10 @@ fn classify_segment(
             MaintenanceKind::None,
         ));
     }
-    let indexed_effect = if lower.contains('=') {
+    let indexed_effect = if !structured_read(&lower, "motor")
+        && !structured_read(&lower, "coord")
+        && !structured_read(&lower, "plc")
+    {
         CommandEffect::Control
     } else {
         CommandEffect::ReadOnly
@@ -309,13 +370,7 @@ fn classify_segment(
     if let Some(scope) = indexed_scope(segment, "plc[", validate_plc)? {
         return Ok((indexed_effect, scope, MaintenanceKind::None));
     }
-    if lower.contains("jog")
-        || lower.contains("kill")
-        || lower.contains("adisable")
-        || lower.starts_with("begin ")
-    {
-        return Err(ProtocolError::AmbiguousTarget(segment.into()));
-    }
+
     if lower.starts_with("enable plc ") || lower.starts_with("disable plc ") {
         let number = lower
             .rsplit(' ')
@@ -328,13 +383,31 @@ fn classify_segment(
             MaintenanceKind::None,
         ));
     }
-    let read = lower.starts_with("sys.") && !lower.contains('=');
+    static SYMBOLIC_VARIABLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let variable = SYMBOLIC_VARIABLE.get_or_init(|| regex::Regex::new(r"^[a-z_][a-z0-9_]*(?:\[[^\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\r\n]+\])?)*(?:(?:\s*(?:=|\+=|-=|\*=|/=|->)).*|\+\+|--)?$").expect("symbolic variable regex"));
+    if !variable.is_match(&lower)
+        || matches!(
+            lower.as_str(),
+            "system"
+                | "pread"
+                | "dread"
+                | "resume"
+                | "linear"
+                | "rapid"
+                | "abs"
+                | "inc"
+                | "return"
+                | "break"
+                | "continue"
+                | "else"
+                | "endif"
+                | "endwhile"
+        )
+    {
+        return Err(ProtocolError::UnsupportedCommand(segment.into()));
+    }
     Ok((
-        if read {
-            CommandEffect::ReadOnly
-        } else {
-            CommandEffect::Control
-        },
+        CommandEffect::Control,
         CommandScope::System,
         MaintenanceKind::None,
     ))

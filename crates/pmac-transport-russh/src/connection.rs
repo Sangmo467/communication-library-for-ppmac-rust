@@ -60,7 +60,7 @@ impl Connection {
             .map_err(transport_error)
     }
 
-    pub(crate) async fn close_channel(&self, channel: Channel) -> bool {
+    pub(crate) async fn close_channel(&self, mut channel: Channel) -> bool {
         let id = channel.id();
         let (confirmed, mut receiver) = tokio::sync::oneshot::channel();
         {
@@ -78,6 +78,29 @@ impl Connection {
             channel: id,
             events: self.close_events.clone(),
         };
+        // Give stdin-driven GPASCII a chance to exit before forcing channel close.
+        // This grace period is inside the caller's two-second cleanup deadline.
+        let graceful = async {
+            if channel.eof().await.is_err() { return None; }
+            loop {
+                tokio::select! {
+                    confirmed = &mut receiver => return Some(confirmed.is_ok()),
+                    message = channel.wait() => match message {
+                        Some(russh::ChannelMsg::ExitStatus { .. }
+                            | russh::ChannelMsg::ExitSignal { .. }
+                            | russh::ChannelMsg::Close) | None => return None,
+                        _ => {}
+                    }
+                }
+            }
+        };
+        if let Ok(Some(confirmed)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), graceful).await
+        {
+            return confirmed;
+        }
+        // Exit status alone does not confirm channel release. Always finish the
+        // close handshake; timeout/cancellation retains the uncertain permit.
         if channel.close().await.is_err() {
             return receiver.try_recv().is_ok();
         }

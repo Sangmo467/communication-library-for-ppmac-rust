@@ -92,6 +92,7 @@ int main() {
 - [使用手册](docs/user-manual.md)：四种语言接入、请求、连接池、业务操作、恢复和关闭。
 - [构建与安装](docs/build-and-install.md)：原生库、CMake 安装和各语言加载方式。
 - [认证与主机身份校验](docs/authentication.md)：密码、私钥、known_hosts 与固定指纹。
+- [Online Commands 与程序透传](docs/online-commands.md)：手册命令目录、读写分类、显式目标和同线程程序缓冲区。
 - [C ABI 契约](docs/abi-contract.md)：结构布局、ID、状态码、请求结果与恢复语义。
 - [GetResponse 模式](docs/pattern-migration.md)：兼容提取和字节正则规则。
 - [第三方组件与许可证](THIRD_PARTY_NOTICES.md)。

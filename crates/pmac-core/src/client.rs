@@ -6,7 +6,7 @@ use crate::{
     RequestState, Transport,
 };
 use futures::FutureExt;
-use pmac_protocol::{CommandEffect, MaintenanceKind};
+use pmac_protocol::{Command, CommandEffect, MaintenanceKind};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -57,6 +57,14 @@ struct MutableState {
     closing: bool,
     next_sequence: u64,
 }
+#[derive(Clone)]
+struct ProgramBuffer {
+    member_id: u64,
+    epoch: u64,
+    closing: Option<Weak<Request>>,
+    owner: Weak<()>,
+}
+
 pub struct Client {
     id: u64,
     runtime: tokio::runtime::Handle,
@@ -67,6 +75,7 @@ pub struct Client {
     state: Mutex<MutableState>,
     pool: Arc<Pool>,
     requests: Mutex<HashMap<u64, Weak<Request>>>,
+    program_buffers: Mutex<HashMap<std::thread::ThreadId, ProgramBuffer>>,
     management_lock: tokio::sync::Mutex<()>,
     shell_lock: tokio::sync::Mutex<()>,
     close_started: std::sync::atomic::AtomicBool,
@@ -104,6 +113,7 @@ impl Client {
             }),
             pool: Pool::new(),
             requests: Mutex::new(HashMap::new()),
+            program_buffers: Mutex::new(HashMap::new()),
             management_lock: tokio::sync::Mutex::new(()),
             shell_lock: tokio::sync::Mutex::new(()),
             file_semaphore: Semaphore::new(config.max_file_tasks.max(1)),
@@ -114,6 +124,161 @@ impl Client {
     }
     pub fn id(&self) -> u64 {
         self.id
+    }
+    /// Parse on the calling thread, using its confirmed GPASCII program-buffer context.
+    pub fn parse_command_for_current_thread(
+        &self,
+        text: impl Into<String>,
+    ) -> Result<Command, Error> {
+        let text = text.into();
+        if self
+            .program_buffer_for(std::thread::current().id(), true)?
+            .is_some()
+        {
+            Self::validate_program_line(&text)?;
+            Command::program_line(text).map_err(Error::from)
+        } else {
+            let command = Command::raw(text).map_err(Error::from)?;
+            if Self::opens_program_buffer(command.text()) && command.text().contains(';') {
+                return Err(Error::invalid(
+                    "open must be submitted and confirmed separately before program lines",
+                ));
+            }
+            Ok(command)
+        }
+    }
+
+    fn program_buffer_for(
+        &self,
+        thread: std::thread::ThreadId,
+        admission: bool,
+    ) -> Result<Option<ProgramBuffer>, Error> {
+        let binding = self
+            .program_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread)
+            .cloned();
+        let Some(binding) = binding else {
+            return Ok(None);
+        };
+        let valid = {
+            let pool = self.pool.lock();
+            pool.affinity
+                .get(&thread)
+                .is_some_and(|affinity| affinity.member_id == binding.member_id)
+                && pool.members.iter().any(|member| {
+                    member.id == binding.member_id
+                        && member.epoch == binding.epoch
+                        && matches!(member.state, MemberState::Ready | MemberState::Busy)
+                        && member
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.is_healthy())
+                })
+        };
+        if !valid {
+            self.program_buffers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&thread);
+            return Ok(None);
+        }
+        if admission
+            && binding
+                .closing
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .is_some_and(|request| {
+                    let info = request.info();
+                    info.state != RequestState::Completed
+                        || info.certainty != ExecutionCertainty::NotSent
+                })
+        {
+            return Err(Error::new(
+                ErrorCode::MaintenanceActive,
+                "wait for the program close request before submitting more commands",
+            ));
+        }
+        Ok(Some(binding))
+    }
+
+    fn validate_program_line(text: &str) -> Result<(), Error> {
+        if text.trim().eq_ignore_ascii_case("close") {
+            return Ok(());
+        }
+        let check = |fragment: &str| {
+            let lower = fragment.trim_start().to_ascii_lowercase();
+            let close_token = lower.strip_prefix("close").is_some_and(|tail| {
+                tail.is_empty()
+                    || tail.starts_with(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            });
+            if close_token {
+                return Err(Error::invalid(
+                    "close must be submitted separately without trailing program text or comments",
+                ));
+            }
+            if matches!(
+                lower.trim(),
+                "$$$" | "$$$***" | "reboot" | "save" | "ecat reset" | "ecatreset"
+            ) {
+                return Err(Error::invalid(
+                    "online maintenance commands cannot be sent as program-buffer text",
+                ));
+            }
+            Ok(())
+        };
+        let bytes = text.as_bytes();
+        let mut quote = None;
+        let mut escaped = false;
+        let mut start = 0;
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if let Some(delimiter) = quote {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == delimiter {
+                    quote = None;
+                }
+            } else if matches!(byte, b'\'' | b'"') {
+                quote = Some(byte);
+            } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                check(&text[start..index])?;
+                return Ok(());
+            } else if byte == b';' {
+                check(&text[start..index])?;
+                start = index + 1;
+            }
+            index += 1;
+        }
+        check(&text[start..])
+    }
+    fn opens_program_buffer(text: &str) -> bool {
+        let lower = text.trim().to_ascii_lowercase();
+        let operation = lower.strip_prefix('&').map_or(lower.as_str(), |tail| {
+            tail.trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, ',' | '.' | '*'))
+                .trim_start()
+        });
+        [
+            "open prog",
+            "open plc",
+            "open subprog",
+            "open forward",
+            "open inverse",
+            "open rotary",
+        ]
+        .iter()
+        .any(|prefix| {
+            operation.strip_prefix(prefix).is_some_and(|tail| {
+                tail.is_empty()
+                    || tail.starts_with(|c: char| {
+                        c.is_ascii_whitespace() || c.is_ascii_digit() || c == ','
+                    })
+            })
+        })
     }
     pub fn submit(
         self: &Arc<Self>,
@@ -136,6 +301,27 @@ impl Client {
                 "request ID and response limit must be nonzero",
             ));
         }
+        let operation = match operation {
+            Operation::Command(command) => {
+                if self
+                    .program_buffer_for(std::thread::current().id(), true)?
+                    .is_some()
+                {
+                    Self::validate_program_line(command.text())?;
+                    Operation::Command(Command::program_line(command.text()).map_err(Error::from)?)
+                } else if command.is_program_line() {
+                    return Err(Error::invalid("program passthrough requires a confirmed open buffer on this calling thread"));
+                } else {
+                    if Self::opens_program_buffer(command.text()) && command.text().contains(';') {
+                        return Err(Error::invalid(
+                            "open must be confirmed separately before program text",
+                        ));
+                    }
+                    Operation::Command(command)
+                }
+            }
+            other => other,
+        };
         let management = is_management(&operation);
         let (class, writes) = classify(&operation, options.read_pool)?;
         let reserved = operation
@@ -175,6 +361,17 @@ impl Client {
             )?;
             self.pool.lock().revision
         };
+        if matches!(&operation, Operation::Command(command) if command.is_program_line() && command.text().trim().eq_ignore_ascii_case("close"))
+        {
+            if let Some(buffer) = self
+                .program_buffers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(&request.origin_thread())
+            {
+                buffer.closing = Some(Arc::downgrade(&request));
+            }
+        }
         request.set_completion_signal(self.completion.clone());
         self.lock_requests()
             .insert(request_id, Arc::downgrade(&request));
@@ -432,6 +629,29 @@ impl Client {
         } else {
             None
         };
+        let program_action = match &operation {
+            Operation::Command(command) => Some((
+                command.is_program_line(),
+                Self::opens_program_buffer(command.text()),
+                command.text().trim().eq_ignore_ascii_case("close"),
+                !command.is_program_line()
+                    && command
+                        .text()
+                        .trim()
+                        .eq_ignore_ascii_case("close all buffers"),
+            )),
+            _ => None,
+        };
+        if program_action.is_some_and(|action| action.0) {
+            let buffer = self.program_buffer_for(request.origin_thread(), false)?;
+            if !buffer.is_some_and(|buffer| {
+                buffer.member_id == lease.member_id && buffer.epoch == lease.epoch
+            }) {
+                return Err(Error::invalid(
+                    "program buffer context changed before dispatch",
+                ));
+            }
+        }
         request.begin_send()?;
         request.mark_awaiting();
         let context = ExecutionContext::new(request.clone());
@@ -508,6 +728,45 @@ impl Client {
                 .sent()
                 .fatal()),
         };
+        if let Some((program, opens, closes, closes_all)) = program_action {
+            if result.is_ok() {
+                let mut buffers = self
+                    .program_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if closes_all {
+                    buffers.clear();
+                } else if program && closes {
+                    buffers.remove(&request.origin_thread());
+                } else if !program && opens {
+                    buffers.retain(|_, buffer| buffer.owner.strong_count() != 0);
+                    buffers.insert(
+                        request.origin_thread(),
+                        ProgramBuffer {
+                            member_id: lease.member_id,
+                            epoch: lease.epoch,
+                            closing: None,
+                            owner: request.origin_liveness(),
+                        },
+                    );
+                }
+            } else if closes_all {
+                self.program_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clear();
+            } else if program {
+                self.program_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&request.origin_thread());
+                // A compiler/protocol error may have ended the remote buffer. Retire the channel
+                // rather than risk sending a subsequent program line as an online command.
+                if let Err(error) = &mut result {
+                    error.fatal_transport = true;
+                }
+            }
+        }
         if dart_connect && context.independent_tcp_started() {
             if let Err(error) = &mut result {
                 if matches!(error.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout) {
@@ -558,7 +817,7 @@ impl Client {
                                 | ErrorCode::Disconnected
                         )))
         });
-        if reset {
+        if reset || (program_action.is_some_and(|action| action.3) && result.is_err()) {
             self.retire_device().await;
         } else if broken {
             if control {

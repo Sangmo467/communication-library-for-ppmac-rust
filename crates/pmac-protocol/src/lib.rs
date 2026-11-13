@@ -4,6 +4,7 @@ mod command;
 mod dart;
 mod error;
 mod gpascii;
+mod online;
 mod parse;
 mod reset;
 mod shell;

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pmac_core::{Error, ErrorCode, Operation};
-use pmac_protocol::{regex_match, Command};
+use pmac_protocol::regex_match;
 use zeroize::Zeroizing;
 
 use helpers::*;
@@ -430,7 +430,9 @@ pub extern "C" fn pmac_command_submit(
 ) -> i32 {
     ffi_status(|| {
         unsafe { write_id(out_id, 0)? };
-        let command = Command::raw(unsafe { text(command, command_len)? })?;
+        let command = client(id)?
+            .0
+            .parse_command_for_current_thread(unsafe { text(command, command_len)? })?;
         let request = submit_request(id, Operation::Command(command), options)?;
         unsafe { write_id(out_id, request) }
     })

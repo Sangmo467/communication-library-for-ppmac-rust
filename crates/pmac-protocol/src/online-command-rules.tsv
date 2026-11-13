@@ -1,0 +1,116 @@
+regex	scope	effect	sample	source_line	note
+^\$$	Motor	Write	#1$	54021	phase reference
+^(?:dkill|k|kill|hm|home|hmz|homez)$	Motor	Write	#1kill	57365	motor-only
+^(?:j|jog)(?:\+|-|/)$	Motor	Write	#1j+	58537	indefinite jog/stop
+^jog$	Motor	Write	#1jog	59218	open-loop to indefinite jog
+^(?:j|jog)=$	Either	Write	&1j=	58650	pre-jog-position command valid for motor or coordinate
+^(?:j|jog)(?:=|==|:|\^|=\^).+$	Motor	Write	#2j==2.3	58687	parameter/variable position and post-trigger suffixes; body opaque numeric syntax
+^out.+$	Motor	Write	#1out0	62532	open-loop output
+^%$	Coord	Read	&1%	54144	time-base override query
+^%.+$	Coord	Write	&1%100	54165	time-base override assignment
+^[<>/\\]$	Coord	Write	&1\	54336	lookahead/reverse/forward/halt
+^(?:a|abort|adisable|ddisable|enable|disable|h|hold|q|pause|r|run|stop|pmatch|undefine)$	Coord	Write	&1abort	55680	coordinate program/motor control
+^(?:b|begin)(?:[0-9].*|\s.*)?$	Coord	Write	&1b1r	55805	begin can combine directly with r; line-label decimal suffix allowed
+^(?:s|step)(?:[0-9]+|\s+[0-9]+)?$	Coord	Write	&1step5	63681	single/multiple-step
+^start(?:[0-9]+|\s+[0-9]+)?$	Coord	Write	&1start5	63927	manual optional nonnegative program number; not arbitrary text
+^(?:cpx|cx)(?:\s+.*)?$	Coord	Write	&1cpx linear X10	56470	whole remaining line opaque program body, action token boundary required
+^clear\s+rotary$	Coord	Write	&1clear rotary	56379	rotary buffer clear
+^define\s+(?:lookahead|rotary)(?:\s+.*)?$	Coord	Write	&1define lookahead 2000	57054	buffer allocation
+^delete\s+(?:lookahead|rotary)$	Coord	Write	&1delete rotary	57214	buffer deletion
+^open\s+(?:forward|inverse|rotary)(?:\s*.*)?$	Coord	Write	&1open rotary	62095	program buffer mode; forward/inverse/rotary require explicit coordinate
+^list\s+(?:apc|pc|rotary|forward|inverse)(?:\s*.*)?$	Coord	Read	&1list pc	59726	kinematic/program counter listing
+^#[0-9]+\s*->.+$	Coord	Write	&1#1->1000X	53669	inner motor selector plus outer explicit coordinate required; no coordinate list for axis definitions
+^->$	Motor	Read	#1..3->	53951	manual scope Global; syntactic motor list required for axis definition query
+^(?:d|p|f|v)$	Either	Read	&1v	56677	motor or coordinate reporting; explicit # or & required by user
+^(?:t|g|rotfree|rotfreeall)$	Coord	Read	&1rotfreeall	63585	axis target/distance and rotary memory reporting
+^\?$	Global	Read	?	54490	bare global query AND #/& scoped status forms valid
+^#$	Thread	Read	#	53608	query modal motor; do not strip standalone selector
+^&$	Thread	Read	&	54215	query modal coordinate; do not strip standalone selector
+^#[0-9]+$	Thread	Write	#1	53628	set modal motor; do not strip standalone selector
+^&[0-9]+$	Thread	Write	&1	54238	set modal coordinate; do not strip standalone selector
+^q(?:[0-9][0-9,.:]*)$	Coord	Read	&1Q100..102	63009	Q variable query, not bare q pause; dynamic index query is conservatively Write
+^q(?:[0-9][0-9,.:]*|\([^\r\n]+\))\s*=.*$	Coord	Write	&1Q(P1)=5	63051	coordinate Q assignment
+^[dlr](?:[0-9][0-9,.:]*)$	Thread	Read	D1..3	56761	thread-local variables; expression indices should conservatively be Write if side effects cannot be excluded; dynamic index query is conservatively Write
+^[dlr](?:[0-9][0-9,.:]*|\([^\r\n]+\))\s*=.*$	Thread	Write	L1=5	56806	thread-local variable assignment
+^[imp](?:[0-9][0-9,.:]*)$	Global	Read	M100..102	60016	global variable queries; MI22 in user list appears typo for M122; dynamic index query is conservatively Write
+^i(?:[0-9][0-9,.:]*)\s*->$	Global	Read	I1->	58310	I-variable definition query; dynamic index query is conservatively Write
+^m(?:[0-9][0-9,.:]*)\s*->$	Global	Read	M0,3,100->	60092	empty RHS queries address definitions; dynamic index query is conservatively Write
+^[imp](?:[0-9][0-9,.:]*|\([^\r\n]+\))\s*=.*$	Global	Write	P(P1)=3	62699	global variable assignment
+^m(?:[0-9][0-9,.:]*|\([^\r\n]+\))\s*->.+$	Global	Write	M0->Sys.ServoCount	60135	M mapping assignments incl *u,*s,*f,*d, hardware, self-reference
+^backup(?:\s+.+)$	Global	Read	backup Motor[1]	55872	report saved/status elements; not save
+^(?:brickacver|bricklvver|buffer|cipdevicetype|cipmajorrevision|cipproductcode|cipserialnumber|cipvendorcode|cpu|date|free|lotnum|productcode|serialnum|size|type|vers)$	Global	Read	vers	56091	firmware/hardware/buffer reporting
+^string[0-9]+$	Global	Read	string250	64052	manual omits scope field; USHM string query
+^echo$	Thread	Read	echo	57627	echo-mode query
+^echo[0-9]+$	Thread	Write	echo7	57641	echo-mode setting
+^bpclear\s+.+$	Global	Write	bpclear prog1,0	55970	breakpoint remove
+^bpclearall$	Global	Write	bpclearall	56009	all breakpoints remove
+^bpset\s+.+$	Global	Write	bpset prog1,0:	56020	breakpoint set
+^bufioforceclear$	Global	Write	bufioforceclear	56168	forced buffer I/O clear
+^clear\s+(?:all\s+buffers|gather|phase\s+gather|plc\s+.+|prog\s+.+)$	Global	Write	clear phase gather	56272	buffer clear families
+^close$	Global	Write	close	56400	close current or all program buffers
+^clrf$	Global	Write	clrf	56435	clear local MACRO errors/broadcast clear
+^delete\s+all\s+(?:lookahead|rotary)$	Global	Write	delete all lookahead	57184	all-coordinate buffer deletion
+^(?:enable|disable)\s+(?:plc|bgcplc)\s*.+$	Global	Write	enable plc NamedPlc	57281	PLC lists/ranges and user-required symbolic names
+^(?:enable|disable)\s+rticplc$	Global	Write	enable rticplc	57348	RTI CPL C program control
+^(?:step|resume|pause)\s+plc\s*.+$	Global	Write	resume plc 11,13..16,20	63552	PLC execution controls, numeric list 0..31
+^ecat\s*slaves(?:\s+.*)?$	Global	Read	ecat slaves	57561	query topology; optional network
+^ecat\s+(?:alias|assign|config|reset)(?:\s+.*)?$	Global	Maintenance	ecat config	57406	changes EtherCAT devices/setup
+^(?:fsave|save)$	Global	Maintenance	fsave	57916	nonvolatile save
+^fload$	Global	Maintenance	fload	57869	load latest fast-save result
+^reboot$	Global	Maintenance	reboot	63503	no ACK; full host reboot; requires reset semantics beyond ordinary frame decoder
+^\$\$\$(?:\*\*\*)?$	Global	Maintenance	$$$***	54087	full reset; no normal ACK
+^(?:setverbose|resetverbose)$	Global	Write	setverbose	63534	response formatting mode
+^open\s+(?:plc|prog|subprog)\s*.+$	Thread	Write	open subprog 100,64	62256	open program buffer; mode persists across requests
+^list\s+(?:prog|plc|subprog)\s*(?:[a-z_][a-z0-9_]*|[0-9]+)(?:,[0-9]*(?:,[0-9]+)?)?$	Global	Read	list prog100	59837	program buffer listing; optional line and count
+^undefine\s+all$	Global	Write	undefine all	64178	clear all axis definitions
+^macroport$	Thread	Write	macroport	61157	reports port but may allocate/open a port on first use; conservative write
+^macroportclose$	Thread	Write	macroportclose	61169	close communication port
+^macroportstate$	Global	Read	macroportstate	61184	all port states
+^macroring$	Thread	Read	macroring	61198	selected MACRO ring query
+^macroring\s*=.*$	Thread	Write	macroring=1	61209	set selected ring
+^macroauxiliary[0-9]+\s*,\s*[a-z]+[0-9]+\s*$	Global	Read	macroauxiliary0,M1	60813	mx alias; query remote variable
+^mx[0-9]+\s*,\s*[a-z]+[0-9]+\s*$	Global	Read	mx0,M1	60813	short form
+^(?:macroauxiliary|mx)[0-9]+\s*,[^=]+=.*$	Global	Write	mx0,M1=2	60848	remote variable assignment
+^(?:macroauxiliaryread|mxread)\s*.+$	Global	Write	mxread0,M1,P1	60890	remote read COPIES INTO local PMAC variable
+^(?:macroauxiliarywrite|mxwrite)\s*.+$	Global	Write	mxwrite0,M1,P1	60935	copy local to remote
+^(?:macrocontrollerdetect|macrocontrollerinit)$	Global	Maintenance	macrocontrollerdetect	60980	hardware detection/initialization
+^(?:macromaster|mm)[0-9]+\s*,\s*[a-z]+[0-9]+\s*$	Thread	Read	mm5,M1	61010	selected-ring master query
+^(?:macromaster|mm)[0-9]+\s*,[^=]+=.*$	Thread	Write	mm5,M1=2	61044	selected-ring master assignment
+^(?:macromasterread|mmread)\s*.+$	Thread	Write	mmread5,M1,P1	61082	remote read copies local variable
+^(?:macromasterwrite|mmwrite)\s*.+$	Thread	Write	mmwrite5,M1,P1	61118	local-to-master copy
+^(?:macroringmasterslave|mrms)[0-9]+,[0-9]+,[0-9]+,\s*[a-z]+[0-9]+\s*$	Global	Read	mrms0,5,0,M1	61284	explicit ring/master/node query
+^(?:macroringmasterslave|mrms)[0-9]+,[0-9]+,[0-9]+,[^=]+=.*$	Global	Write	mrms0,5,0,M1=2	61327	explicit ring/master/node assignment
+^(?:macroringmasterslaveread|mrmsread)\s*.+$	Global	Write	mrmsread0,5,0,M1,P1	61376	read copies local variable
+^(?:macroringmasterslavewrite|mrmswrite)\s*.+$	Global	Write	mrmswrite0,5,0,M1,P1	61432	local-to-remote copy
+^(?:macroringmasterslave|mrms)(?:\$\$\$|\$\$\$\*\*\*|clrf|save)\s*[0-9].*$	Global	Maintenance	macroringmasterslaveclrf0,5,0	61229	forwarded slave commands; classify conservatively
+^macroringorder(?:\$\$\$|\$\$\$\*\*\*|clrf|detect|init|load|repair|restore|save|verify|verifybackup)(?:\s+.*)?$	Thread	Maintenance	macroringorderdetect	61489	MACRO station maintenance; detect writes generated files/setup
+^macroringorderstations(?:\s+.*)?$	Thread	Read	macroringorderstations	61527	station report/backup query
+^(?:macroslave|ms)[0-9]+\s*,\s*[a-z]+[0-9]+\s*$	Global	Read	ms0,M1	61772	remote slave variable query
+^(?:macroslave|ms)[0-9]+\s*,[^=]+=.*$	Global	Write	ms0,M1=2	61807	remote slave variable assignment
+^(?:macroslaveread|msread)\s*.+$	Global	Write	msread0,M1,P1	61842	remote read copies local variable
+^(?:macroslavewrite|mswrite)\s*.+$	Global	Write	mswrite0,M1,P1	61883	local-to-remote copy
+^(?:macroslave|ms)(?:\$\$\$|\$\$\$\*\*\*|clrf|save)\s*[0-9].*$	Global	Maintenance	macroslaveclrf0	61727	forwarded slave commands
+^macrostation\s+.*$	Thread	Write	macrostation 1	61924	select default station
+^macrostation[0-9]+$	Thread	Write	macrostation1	61924	compact selection
+^macrostationclearerrors\s*.*$	Thread	Write	macrostationclearerrors1	61942	clear station errors
+^macrostationclose$	Thread	Write	macrostationclose	61959	close station communication
+^macrostationenable[^=]*$	Thread	Read	macrostationenable1,0	61974	query enable parameter
+^macrostationenable[^=]*=.*$	Thread	Write	macrostationenable1,0=1	61974	set enable parameter
+^macrostationerrors\s*.*$	Thread	Read	macrostationerrors1	61997	report errors
+^macrostationfrequency$	Global	Read	macrostationfrequency	62013	query max phase clock
+^macrostationfrequency\s*=.*$	Global	Write	macrostationfrequency=10000	62013	set phase clock
+^macrostationringcheck[^=]*$	Thread	Read	macrostationringcheck1	62034	query ring check params
+^macrostationringcheck[^=]*=.*$	Thread	Write	macrostationringcheck1=20,10,20	62034	write ring check params
+^macrostation(?:status|type)$	Thread	Read	macrostationstatus	62072	selected station reporting
+^(?:macroringmasterslave|mrms)(?:date|vers)\s*[0-9].*$	Global	Read	mrmsvers0,0,1	61229	forwarded slave firmware query
+^(?:macroslave|ms)(?:date|vers)\s*[0-9].*$	Global	Read	msdate0	61727	forwarded slave firmware query
+^[a-z_][a-z0-9_]*(?:\[[0-9]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[0-9]+\])?)+$	Global	Read	Motor[1].ActPos	56552	data-structure member/pointer .a reporting; no assignment operators allowed; numeric indices only, dynamic indices conservative write
+^[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?)+\s*(?:=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=).*$	Global	Write	Motor[1].ServoCtrl=1	56643	data-structure member assignment
+^q\([^\r\n]+\)$	Coord	Write	&1Q(P1+P17)	63009	query with dynamic expression conservatively write: arbitrary expression may have side effects
+^[dlr]\([^\r\n]+\)$	Thread	Write	D(P1+P17)	56761	dynamic query conservatively write
+^[imp]\([^\r\n]+\)(?:->)?$	Global	Write	P(P1+P17)	62656	dynamic query conservatively write
+^[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?)+$	Global	Write	Sys.Ddata[L0]	56552	dynamic data-structure indices; evaluated conservatively as write after numeric-only read rule
+^macroringordersync$	Global	Maintenance	macroringordersync	61677	global MACRO synchronization
+^close\s+all\s+buffers$	Global	Maintenance	close all buffers	56400	global buffer close barrier
+^macroringorderbackup(?:\s+.*)?$	Thread	Maintenance	macroringorderbackup	61527	back up station contents to file
+^resume$	Coord	Write	&1resume	user-extension	Explicitly requested coordinate resume compatibility command
