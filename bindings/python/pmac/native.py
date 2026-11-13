@@ -57,6 +57,14 @@ def load(path=None):
     submit = [C.c_uint64, C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(RequestOptions), C.POINTER(C.c_uint64)]
     lib.pmac_command_submit.argtypes = submit
     lib.pmac_get_response_async.argtypes = submit
+    dart_control = [C.c_uint64, C.POINTER(RequestOptions), C.POINTER(C.c_uint64)]
+    for name in ("pmac_dart_connect_async", "pmac_dart_disconnect_async"):
+        if hasattr(lib, name): getattr(lib, name).argtypes = dart_control
+    dart_head = [C.c_uint64, C.c_uint32, C.c_uint32]
+    if hasattr(lib, "pmac_dart_get_async"):
+        lib.pmac_dart_get_async.argtypes = dart_head + [C.c_size_t] + dart_control[1:]
+    if hasattr(lib, "pmac_dart_set_async"):
+        lib.pmac_dart_set_async.argtypes = dart_head + [C.POINTER(C.c_uint8), C.c_size_t] + dart_control[1:]
     lib.pmac_shell_submit.argtypes = submit[:3] + [C.c_uint32] + submit[3:]
     two_paths = [C.c_uint64, C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(RequestOptions), C.POINTER(C.c_uint64)]
     lib.pmac_upload_submit.argtypes = two_paths

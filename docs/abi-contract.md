@@ -8,14 +8,14 @@
 - 已有输入结构布局保持不变，接受 ABI major 2 的输入，包括版本值 2000；新增 pool/通知接口需相应库导出。
 - 公开聚合采用默认 C 布局的 `repr(C)`，禁止 pack(1)。`size_t` 随目标位宽变化，不以 x64 布局代替32位验证。
 - 输入结构带 `struct_size`、`abi_version`；先读取8字节公共头并检查最小尺寸与 ABI major，再复制完整输入结构。输出结构必须由调用方按当前公开类型分配完整空间。
-- `pmac_get_runtime_info` 返回 ABI、库版本、功能掩码和原生指针位宽。C/Rust 逐字段探针及比较脚本见 [验证工具](release-validation-tools.md)，已运行的平台范围见 [验证状态](verification.md)。
+- `pmac_get_runtime_info` 返回 ABI、库版本、功能掩码和原生指针位宽。调用方应核对 ABI major 和指针位宽，不能混用不同架构的头文件与动态库。
 
 ## ID、关闭与释放
 
 Runtime、Client、Request 的高4位为类型标签，低位是永不回绕复用的序列。释放后旧 ID 永久失效；内部 Arc 保活已取得的对象引用，C 调用不解引用对象地址。
 
 - `pmac_client_close(id, 0, wait_ms)` 停止该 Client 准入，取消已接纳请求并收尾。当前仅支持 close_mode=0。
-- `pmac_client_release` 在该 owner 仍有在用、回收中或不确定 GPASCII 资源时返回 `SHUTDOWN_PENDING` 并保留 Client ID；设备核实后调用 `pmac_pool_confirm_recovery`，再重试 release。
+- `pmac_client_release` 只允许在 Client 已完成 close 且该 owner 的在用、回收中及不确定 GPASCII 资源全部归还后删除 ID。其余情况返回 `SHUTDOWN_PENDING` 并保留 ID；设备核实后调用 `pmac_pool_confirm_recovery`，再重试 release。
 - `pmac_client_recovery_ids` 枚举已关闭/关闭中且仍有未归还资源的 Client ID。即使 C++ 析构已移交对象，也可据此取得保留 ID，再按设备核实结果执行受限恢复。
 - `pmac_runtime_shutdown` 停止该 Runtime 的新 Client 和新 Request 准入，关闭现有 Client，并通过受监督收尾等待 Tokio 及阻塞任务停止。
 - shutdown 超时返回 `SHUTDOWN_PENDING`，Runtime ID 仍有效，允许再次等待。超时不意味着后台任务已经退出。

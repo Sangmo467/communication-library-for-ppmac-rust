@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod command;
+mod dart;
 mod error;
 mod gpascii;
 mod parse;
@@ -9,6 +10,10 @@ mod shell;
 mod status;
 
 pub use command::{Command, CommandEffect, CommandScope, MaintenanceKind, MAX_COMMAND_LEN};
+pub use dart::{
+    DartCommand, DartTransfer, DART_MAX_DATA_BYTES, DART_MAX_P_INDEX, DART_USHM_BYTES,
+    DART_WRITE_ACK,
+};
 pub use error::ProtocolError;
 pub use gpascii::{GpasciiDecoder, GpasciiFrame};
 pub use parse::{

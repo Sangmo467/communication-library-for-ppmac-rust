@@ -20,6 +20,7 @@ use crate::RusshTransport;
 
 #[derive(Default)]
 struct Observed {
+    dart_port: AtomicUsize,
     password_attempts: AtomicUsize,
     key_attempts: AtomicUsize,
     commands: std::sync::Mutex<Vec<String>>,
@@ -310,6 +311,8 @@ impl server::Handler for TestServer {
             }
             let program_key = (self.connection_id, channel);
             match command.as_str() {
+                "Dart.Enable" => session.data(channel, b"Dart.Enable=1\r\n\x06".to_vec())?,
+                "Dart.Port" => session.data(channel, format!("Dart.Port={}\r\n\x06", self.observed.dart_port.load(Ordering::Acquire)).into_bytes())?,
                 "open prog 1" | "open plc 1" => {
                     self.observed
                         .open_programs
@@ -620,6 +623,74 @@ impl Drop for Fixture {
         self.listener.abort();
         self.observed.delayed_release.notify_one();
     }
+}
+
+#[test]
+fn dart_read_timeout_recovers_on_next_request_without_retiring_ssh() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let fixture = Fixture::new(None);
+    fixture.observed.dart_port.store(listener.local_addr().unwrap().port() as usize, Ordering::Release);
+    let server = std::thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut header = [0u8; 12];
+        first.read_exact(&mut header).unwrap();
+        let mut byte = [0u8; 1];
+        assert_eq!(first.read(&mut byte).unwrap(), 0);
+        let (mut second, _) = listener.accept().unwrap();
+        second.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        second.read_exact(&mut header).unwrap();
+        second.write_all(&42.0f64.to_be_bytes()).unwrap();
+    });
+    fixture.connect();
+    fixture.run(Operation::DartConnect).unwrap();
+    let make_read = || Operation::Dart(pmac_protocol::DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap());
+    let error = fixture.run_with_options(make_read(), RequestOptions { timeout_ms: 200, ..RequestOptions::default() }).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ExecTimeout);
+    assert!(fixture.client.is_connected());
+    let response = fixture.run(make_read()).unwrap().response;
+    assert_eq!(response, 42.0f64.to_ne_bytes());
+    fixture.run(Operation::DartDisconnect).unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn dart_write_timeout_requires_reconciliation_and_is_not_replayed() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let fixture = Fixture::new(None);
+    fixture.observed.dart_port.store(listener.local_addr().unwrap().port() as usize, Ordering::Release);
+    let server = std::thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut request = [0u8; 20];
+        first.read_exact(&mut request).unwrap();
+        assert_eq!(&request[..4], &0x91u32.to_be_bytes());
+        let mut byte = [0u8; 1];
+        assert_eq!(first.read(&mut byte).unwrap(), 0);
+        let (mut second, _) = listener.accept().unwrap();
+        second.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut header = [0u8; 12];
+        second.read_exact(&mut header).unwrap();
+        assert_eq!(&header[..4], &0x90u32.to_be_bytes());
+        second.write_all(&7.0f64.to_be_bytes()).unwrap();
+    });
+    fixture.connect();
+    fixture.run(Operation::DartConnect).unwrap();
+    let write = Operation::Dart(pmac_protocol::DartTransfer::set(pmac_protocol::DartCommand::SetPVariable, 1, 7.0f64.to_ne_bytes().to_vec()).unwrap());
+    let error = fixture.run_with_options(write, RequestOptions { timeout_ms: 200, ..RequestOptions::default() }).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ExecTimeout);
+    assert_eq!(error.certainty, ExecutionCertainty::MayHaveExecuted);
+    assert!(fixture.client.pool_snapshot().unknown_write);
+    assert!(fixture.client.is_connected());
+    let read = Operation::Dart(pmac_protocol::DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap());
+    assert_eq!(fixture.run(read).unwrap().response, 7.0f64.to_ne_bytes());
+    let snapshot = fixture.client.pool_snapshot();
+    fixture.client.confirm_recovery(snapshot.revision, 1).unwrap();
+    assert!(!fixture.client.pool_snapshot().unknown_write);
+    fixture.run(Operation::DartDisconnect).unwrap();
+    server.join().unwrap();
 }
 
 #[test]

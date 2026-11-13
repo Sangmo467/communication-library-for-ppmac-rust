@@ -2,6 +2,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod business;
+mod dart;
 mod helpers;
 mod pool;
 mod registry;
@@ -274,10 +275,12 @@ pub extern "C" fn pmac_client_close(id: u64, close_mode: u32, wait_ms: u32) -> i
 pub extern "C" fn pmac_client_release(id: u64) -> i32 {
     ffi_status(|| {
         let (client, _) = client(id)?;
-        if client.has_unreleased_gpascii() {
+        if client.snapshot().state != pmac_core::ClientState::Closed
+            || client.has_unreleased_gpascii()
+        {
             return Err(Error::new(
                 ErrorCode::ShutdownPending,
-                "remote GPASCII release requires confirmation before client release",
+                "client must complete close and release all GPASCII resources before release",
             ));
         }
         registry()

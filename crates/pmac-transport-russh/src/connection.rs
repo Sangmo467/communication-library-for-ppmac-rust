@@ -214,11 +214,15 @@ pub(crate) async fn connect(
         })?;
 
     let authenticated = if let Some(key) = private_key {
-        let hash = handle
-            .best_supported_rsa_hash()
-            .await
-            .map_err(transport_error)?
-            .flatten();
+        let hash = if key.algorithm().is_rsa() {
+            handle
+                .best_supported_rsa_hash()
+                .await
+                .map_err(transport_error)?
+                .flatten()
+        } else {
+            None
+        };
         handle
             .authenticate_publickey(
                 options.username.clone(),

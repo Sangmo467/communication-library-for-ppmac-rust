@@ -115,6 +115,21 @@ fn runtime_release_requires_shutdown_and_explicit_client_id_release() {
 }
 
 #[test]
+fn client_release_requires_completed_close() {
+    let runtime = new_runtime();
+    let client = mock_client(runtime);
+    assert_eq!(
+        pmac_client_release(client),
+        ErrorCode::ShutdownPending as i32
+    );
+    assert!(registry().client(client).is_some());
+    assert_eq!(pmac_client_close(client, 0, 1_000), ErrorCode::Ok as i32);
+    assert_eq!(pmac_client_release(client), ErrorCode::Ok as i32);
+    assert_eq!(pmac_runtime_shutdown(runtime, 5_000), ErrorCode::Ok as i32);
+    assert_eq!(pmac_runtime_release(runtime), ErrorCode::Ok as i32);
+}
+
+#[test]
 fn cleanup_supervisor_retains_runtime_until_child_handles_are_released() {
     let _lock = CLEANUP_TEST_LOCK.lock().unwrap();
     let runtime = new_runtime();

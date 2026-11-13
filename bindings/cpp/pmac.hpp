@@ -223,6 +223,35 @@ public:
         request.wait();
         return pattern.empty() ? request.response() : request.match(pattern);
     }
+    Request dartConnectAsync(const RequestOptions& options = {}) {
+        auto native = options.native();
+        return createRequest(pmac_dart_connect_async(id_, &native, &requestSlot()));
+    }
+    void dartConnect(const RequestOptions& options = {}) {
+        Request request = dartConnectAsync(options); request.wait();
+    }
+    Request dartDisconnectAsync(const RequestOptions& options = {}) {
+        auto native = options.native();
+        return createRequest(pmac_dart_disconnect_async(id_, &native, &requestSlot()));
+    }
+    void dartDisconnect(const RequestOptions& options = {}) {
+        Request request = dartDisconnectAsync(options); request.wait();
+    }
+    Request dartGetAsync(uint32_t command, uint32_t address, size_t length, const RequestOptions& options = {}) {
+        auto native = options.native();
+        return createRequest(pmac_dart_get_async(id_, command, address, length, &native, &requestSlot()));
+    }
+    std::vector<uint8_t> dartGet(uint32_t command, uint32_t address, size_t length, const RequestOptions& options = {}) {
+        Request request = dartGetAsync(command, address, length, options);
+        request.wait(); return request.response();
+    }
+    Request dartSetAsync(uint32_t command, uint32_t address, const std::vector<uint8_t>& data, const RequestOptions& options = {}) {
+        auto native = options.native();
+        return createRequest(pmac_dart_set_async(id_, command, address, data.data(), data.size(), &native, &requestSlot()));
+    }
+    void dartSet(uint32_t command, uint32_t address, const std::vector<uint8_t>& data, const RequestOptions& options = {}) {
+        Request request = dartSetAsync(command, address, data, options); request.wait();
+    }
     Request shellAsync(const std::string& command, bool persistent = true, const RequestOptions& options = {}) {
         auto native = options.native();
         return createRequest(pmac_shell_submit(id_, byteData(command), command.size(), persistent ? 1u : 0u, &native, &requestSlot()));
