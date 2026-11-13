@@ -1,5 +1,8 @@
 # C# / .NET GetResponse 接入
 
+GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](getresponse-passthrough.md)**。
+
+
 本指南优先演示 GetResponse：连接 Power PMAC，发送一次命令，取得完整响应或从同一次响应中提取文本。示例项目为 [Pmac.GetResponse.csproj](../examples/dotnet/getresponse/Pmac.GetResponse.csproj)，主程序为 [Program.cs](../examples/dotnet/getresponse/Program.cs)，通过 ProjectReference 引用仓库现有 .NET 绑定，不需要额外 NuGet 包。
 
 ## 准备环境

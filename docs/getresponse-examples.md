@@ -1,5 +1,8 @@
 # GetResponse 多语言接入与示例
 
+GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](getresponse-passthrough.md)**。
+
+
 先通过 GetResponse 完成“连接 → 发送命令 → 等待 → 读取响应 → 关闭”，再接入持续采样和监控。示例默认查询 `Sys.ServoTime`，用户传入的其他命令会实际执行。
 
 | 语言 | 主要接口 | 可运行代码 | 详细步骤 |

@@ -1,5 +1,8 @@
 # Python 调用：优先使用 GetResponse
 
+GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](getresponse-passthrough.md)**。
+
+
 Python 绑定位于 [`bindings/python`](../bindings/python)，通过 `ctypes` 调用本机库，无需编写扩展模块。先使用 `Client.get_response()` 完成普通命令请求；它会创建 Request、等待完成、复制响应并释放 Request。可运行示例见 [`examples/python/getresponse.py`](../examples/python/getresponse.py)，默认只读取 `Sys.ServoTime`。
 
 ## 1. 准备本机库与 Python 包

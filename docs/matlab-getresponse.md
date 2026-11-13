@@ -1,5 +1,8 @@
 # MATLAB 调用：GetResponse MEX 示例
 
+GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](getresponse-passthrough.md)**。
+
+
 MATLAB 可以通过本项目 C ABI 调用原生库。这里提供 C++17 MEX 网关，优先实现连接和同步 GetResponse，不需要在 MATLAB 中传递原生对象指针或维护 64 位 Request ID。
 
 文件： [构建脚本](../examples/matlab/build_pmac_mex.m)、[MEX 源码](../examples/matlab/pmac_mex.cpp)、[调用示例](../examples/matlab/example_getresponse.m)。MEX 每次维护一个 Runtime/Client 会话，可连续查询后再关闭。
