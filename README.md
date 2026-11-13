@@ -10,6 +10,7 @@
 - 严格调用线程与 GPASCII Channel 亲和，支持显式连接池和故障隔离。
 - 持久 Shell、隔离 exec、SFTP 上传/下载和程序 buffer 上传。
 - 电机、坐标系、PLC 常用操作及状态查询。
+- 实时连续 Gather：可配置采样周期、地址和监听端口，按批次回调返回数值数据。
 - 请求取消、执行 deadline、有界队列、完成通知和确定性错误状态。
 - known_hosts、SHA-256 主机指纹、密码和私钥认证。
 
@@ -88,7 +89,8 @@ int main() {
 
 ## 文档
 
-- [DART 接口指南](docs/dart-api.md)：连接、数据类型及各语言接口。
+- [实时连续 Gather](docs/gather.md)：配置、批次回调、自定义端口、停止和故障恢复。
+- [DART 接口指南](docs/dart-api.md)：连接、数据类型、C/C++、Python 与 .NET 使用。
 - [使用手册](docs/user-manual.md)：四种语言接入、请求、连接池、业务操作、恢复和关闭。
 - [构建与安装](docs/build-and-install.md)：原生库、CMake 安装和各语言加载方式。
 - [认证与主机身份校验](docs/authentication.md)：密码、私钥、known_hosts 与固定指纹。

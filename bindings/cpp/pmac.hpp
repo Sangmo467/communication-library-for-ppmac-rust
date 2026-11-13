@@ -6,6 +6,8 @@
 #include "pmac_error.hpp"
 
 #include <cstring>
+#include <functional>
+#include <exception>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -156,6 +158,87 @@ private:
     std::shared_ptr<RuntimeOwner> owner_;
 };
 
+struct GatherConfig {
+    uint32_t period = 1;
+    std::vector<std::string> addresses;
+    std::string localIp;
+    uint16_t port = 0;
+    uint32_t maxSamples = 2048, batchRows = 128, queueBatches = 32, timeoutMs = 5000;
+};
+// Borrowed view valid only for the duration of the callback; values are row-major.
+struct GatherBatch {
+    const double* data;
+    size_t rows, items;
+    uint64_t firstSample;
+    double at(size_t row, size_t item) const {
+        if (row >= rows || item >= items) throw std::out_of_range("Gather sample index");
+        return data[row * items + item];
+    }
+    std::vector<double> copy() const { return {data, data + rows * items}; }
+};
+class Gather {
+public:
+    using OnData = std::function<void(const GatherBatch&)>;
+    using OnError = std::function<void(const Error&)>;
+    Gather() = default;
+    ~Gather() { release(); }
+    Gather(const Gather&) = delete;
+    Gather& operator=(const Gather&) = delete;
+    Gather(Gather&& other) noexcept
+        : id_(std::exchange(other.id_, 0)), context_(std::move(other.context_)), owner_(std::move(other.owner_)) {}
+    Gather& operator=(Gather&& other) noexcept {
+        if (this != &other) { release(); id_ = std::exchange(other.id_, 0); context_ = std::move(other.context_); owner_ = std::move(other.owner_); }
+        return *this;
+    }
+    // Use requestStop inside callbacks. stop is a barrier and must run outside callbacks.
+    void requestStop() { check(pmac_gather_request_stop(id_)); }
+    void stop() {
+        const auto status = pmac_gather_stop(id_);
+        if (status == PMAC_INVALID_ARGUMENT) { check(status); }
+        if (context_ && context_->exception) std::rethrow_exception(context_->exception);
+        check(status);
+    }
+private:
+    friend class Client;
+    struct Context { OnData data; OnError error; std::exception_ptr exception; };
+    static int32_t dispatch(void* user, int32_t status, const double* data, size_t rows,
+                            size_t items, uint64_t first, const uint8_t* message, size_t length) noexcept {
+        auto& c = *static_cast<Context*>(user);
+        try {
+            if (status == PMAC_OK) c.data({data, rows, items, first});
+            else if (c.error) c.error(Error(status, 0, 0, std::string(reinterpret_cast<const char*>(message), length)));
+            return 0;
+        } catch (...) { c.exception = std::current_exception(); return 1; }
+    }
+    Gather(uint64_t client, std::shared_ptr<RuntimeOwner> owner, const GatherConfig& config, OnData onData, OnError onError)
+        : context_(new Context{std::move(onData), std::move(onError), {}}), owner_(std::move(owner)) {
+        if (!context_->data) throw std::invalid_argument("Gather data callback is required");
+        if (config.addresses.empty() || config.addresses.size() > 128) throw std::invalid_argument("Gather needs 1..=128 addresses");
+        std::vector<pmac_bytes> addresses;
+        for (const auto& a : config.addresses) addresses.push_back({reinterpret_cast<const uint8_t*>(a.data()), a.size()});
+        pmac_gather_config c{};
+        c.struct_size = sizeof(c); c.abi_version = PMAC_ABI_VERSION;
+        c.period = config.period; c.items = static_cast<uint32_t>(addresses.size()); c.addresses = addresses.data();
+        c.local_ip = {reinterpret_cast<const uint8_t*>(config.localIp.data()), config.localIp.size()};
+        c.port = config.port; c.max_samples = config.maxSamples; c.batch_rows = config.batchRows;
+        c.queue_batches = config.queueBatches; c.timeout_ms = config.timeoutMs;
+        check(pmac_gather_start(client, &c, dispatch, context_.get(), &id_));
+    }
+    static void check(int32_t status) {
+        if (status == PMAC_OK) return;
+        pmac_error_info info{}; size_t required = 0;
+        (void)pmac_copy_last_error(&info, nullptr, 0, &required);
+        std::vector<char> message(required);
+        const auto copied = pmac_copy_last_error(&info, message.data(), message.size(), &required);
+        throw Error(status, 0, info.certainty, copied == PMAC_OK ? std::string(message.begin(), message.end()) : "Gather operation failed");
+    }
+    void release() noexcept {
+        if (id_) { (void)pmac_gather_release(id_); id_ = 0; }
+    }
+    uint64_t id_ = 0;
+    std::unique_ptr<Context> context_;
+    std::shared_ptr<RuntimeOwner> owner_;
+};
 class Runtime;
 
 class Client {
@@ -170,6 +253,9 @@ public:
         return *this;
     }
 
+    Gather startGather(const GatherConfig& config, Gather::OnData onData, Gather::OnError onError = {}) {
+        return Gather(id_, runtime_, config, std::move(onData), std::move(onError));
+    }
     Request connect(const ConnectOptions& options) {
         NativeConnect native(options);
         return createRequest(pmac_connect_submit(id_, &native.value, &requestSlot()));

@@ -59,10 +59,12 @@ def _checked_integer(value, minimum, maximum, name):
 
 def options(value=None):
     value = value or {}
-    return N.RequestOptions(N.sizeof(N.RequestOptions), 2000,
-                            value.get("timeout_ms", 5000),
+    timeout_ms = _checked_integer(value.get("timeout_ms", 5000), 0, 0xffffffff, "timeout_ms")
+    max_response_bytes = _checked_integer(value.get("max_response_bytes", 1024 * 1024),
+                                          0, 2**(8 * C.sizeof(C.c_size_t)) - 1, "max_response_bytes")
+    return N.RequestOptions(N.sizeof(N.RequestOptions), 2000, timeout_ms,
                             (1 if value.get("infinite") else 0) | (2 if value.get("read_pool") else 0),
-                            value.get("max_response_bytes", 1024 * 1024))
+                            max_response_bytes)
 
 
 def _release_request(lib, request_id, created_pid):
@@ -455,9 +457,11 @@ class Client:
         keepalive = []
         for name, value in (("host", host), ("username", username), ("password", password), ("private_key", kwargs.get("private_key")), ("public_key", kwargs.get("public_key")), ("passphrase", kwargs.get("passphrase")), ("known_hosts", kwargs.get("known_hosts")), ("pinned_sha256", kwargs.get("pinned_sha256"))):
             view, buffer = N.view(value); setattr(native, name, view); keepalive.append(buffer)
-        native.port = kwargs.get("port", 22); native.control_pool_size = kwargs.get("control_pool_size", 1)
+        native.port = _checked_integer(kwargs.get("port", 22), 1, 0xffff, "port")
+        native.control_pool_size = _checked_integer(kwargs.get("control_pool_size", 1), 1, 0xff, "control_pool_size")
         native.flags = (1 if kwargs.get("tcp_probe", True) else 0) | (2 if kwargs.get("accept_any_host_key", False) else 0)
-        native.tcp_probe_timeout_ms = kwargs.get("tcp_probe_timeout_ms", 600); native.keepalive_interval_ms = kwargs.get("keepalive_interval_ms", 1000); native.keepalive_max = kwargs.get("keepalive_max", 3)
+        for name, default in (("tcp_probe_timeout_ms", 600), ("keepalive_interval_ms", 1000), ("keepalive_max", 3)):
+            setattr(native, name, _checked_integer(kwargs.get(name, default), 0, 0xffffffff, name))
         return native, keepalive
 
     def connect_async(self, host, username, password=None, **kwargs):

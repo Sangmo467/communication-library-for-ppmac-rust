@@ -294,6 +294,31 @@ impl Client {
         }
         false
     }
+    fn closes_all_program_buffers(text: &str) -> bool {
+        for segment in text.split(';') {
+            let segment = segment.trim();
+            let operation = segment.strip_prefix('&').map_or(segment, |tail| {
+                tail.trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || matches!(c, ',' | '.' | '*')
+                })
+                .trim_start()
+            });
+            let mut words = operation.split_whitespace();
+            let Some(first) = words.next() else {
+                continue;
+            };
+            // Inline program bodies do not contain further online commands.
+            if first.eq_ignore_ascii_case("cpx") || first.eq_ignore_ascii_case("cx") {
+                break;
+            }
+            if first.eq_ignore_ascii_case("close")
+                && words.map(str::to_ascii_lowercase).eq(["all", "buffers"])
+            {
+                return true;
+            }
+        }
+        false
+    }
     pub fn submit(
         self: &Arc<Self>,
         request_id: u64,
@@ -648,12 +673,7 @@ impl Client {
                 command.is_program_line(),
                 Self::opens_program_buffer(command.text()),
                 command.text().trim().eq_ignore_ascii_case("close"),
-                !command.is_program_line()
-                    && command
-                        .text()
-                        .split_whitespace()
-                        .map(str::to_ascii_lowercase)
-                        .eq(["close", "all", "buffers"]),
+                !command.is_program_line() && Self::closes_all_program_buffers(command.text()),
             )),
             _ => None,
         };

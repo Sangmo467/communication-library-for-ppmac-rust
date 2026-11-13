@@ -4,7 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(_WIN32) && defined(PMAC_BUILD_SHARED)
+#if defined(_WIN32) && defined(PMAC_STATIC)
+#  define PMAC_EXPORT
+#elif defined(_WIN32) && defined(PMAC_BUILD_SHARED)
 #  define PMAC_EXPORT __declspec(dllexport)
 #elif defined(_WIN32)
 #  define PMAC_EXPORT __declspec(dllimport)
@@ -194,6 +196,38 @@ PMAC_EXPORT int32_t pmac_coord_prog_running(pmac_client_id id, int32_t coord, co
 PMAC_EXPORT int32_t pmac_motor_closed_loop(pmac_client_id id, int32_t motor, const pmac_request_options *options, uint32_t *out);
 PMAC_EXPORT int32_t pmac_coord_motor_enabled(pmac_client_id id, int32_t coord, const pmac_request_options *options, uint32_t *out);
 
+
+/* Continuous Gather. All values are row-major doubles in Gather.Addr order.
+ * callback: status == PMAC_OK for data; otherwise a terminal error event.
+ * Pointers are borrowed until callback returns. Return nonzero to request stop.
+ * Callbacks run serially on a dedicated thread and may start before start returns.
+ * Do not call stop/release from the callback; use request_stop or return nonzero.
+ * One session per controller. gather and nc processes are reserved for Gather.
+ * Reverse TCP requires controller source IP and a per-session random handshake.
+ * TCP data remains unencrypted; use a trusted network and restrict incoming peers.
+ */
+typedef uint64_t pmac_gather_id;
+typedef int32_t (*pmac_gather_callback)(void *user, int32_t status,
+    const double *data, size_t rows, size_t items, uint64_t first_sample,
+    const uint8_t *message, size_t message_len);
+typedef struct {
+    uint32_t struct_size, abi_version;
+    uint32_t period, items;
+    const pmac_bytes *addresses;
+    pmac_bytes local_ip; /* empty: discover SSH_CONNECTION client IP; numeric local IP override */
+    uint16_t port, reserved; /* port 0: auto; reserved must be zero */
+    uint32_t max_samples; /* 0: 2048 */
+    uint32_t batch_rows; /* 0: 128, maximum 4096; flush approximately every 20 ms */
+    uint32_t queue_batches; /* 0: 32; queue overflow stops acquisition */
+    uint32_t timeout_ms; /* 0: 5000 per startup/cleanup request */
+} pmac_gather_config;
+PMAC_EXPORT int32_t pmac_gather_start(pmac_client_id client, const pmac_gather_config *config,
+    pmac_gather_callback callback, void *user, pmac_gather_id *out);
+PMAC_EXPORT int32_t pmac_gather_request_stop(pmac_gather_id id);
+/* stop waits for threads/callbacks; returns the terminal acquisition/cleanup error, if any. */
+PMAC_EXPORT int32_t pmac_gather_stop(pmac_gather_id id);
+/* release stops and destroys the handle even when it reports a terminal error. */
+PMAC_EXPORT int32_t pmac_gather_release(pmac_gather_id id);
 #ifdef __cplusplus
 }
 #endif

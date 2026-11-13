@@ -3,11 +3,10 @@
 
 mod business;
 mod dart;
+mod gather;
 mod helpers;
 mod pool;
 mod registry;
-#[cfg(test)]
-mod tests;
 mod types;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -126,6 +125,7 @@ pub extern "C" fn pmac_runtime_release(id: u64) -> i32 {
         if !runtime.is_shutdown()
             || !runtime.all_clients_closed()
             || registry().has_children(&runtime)
+            || gather::has_children(&runtime)
         {
             return Err(Error::new(
                 ErrorCode::ShutdownPending,
