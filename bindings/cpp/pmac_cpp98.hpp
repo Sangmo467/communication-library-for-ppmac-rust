@@ -12,16 +12,28 @@ namespace pmac98 {
 
 class Error : public std::runtime_error {
 public:
-    explicit Error(int status, const std::string& operation) : std::runtime_error(operation + " failed"), status_(status) {}
+    explicit Error(int status, const std::string& operation, uint64_t request = 0, uint32_t certainty = 1)
+        : std::runtime_error(operation + " failed"), status_(status), request_(request), certainty_(certainty) {}
     int status() const { return status_; }
+    uint64_t requestId() const { return request_; }
+    uint32_t certainty() const { return certainty_; }
     const char* statusName() const { return pmac::statusName(status_); }
     pmac::ErrorCategory category() const { return pmac::errorCategory(status_); }
     bool isTransportError() const { return pmac::isTransportError(status_); }
 private:
     int status_;
+    uint64_t request_;
+    uint32_t certainty_;
 };
 
-inline void check(int status, const char* operation) { if (status != PMAC_OK) throw Error(status, operation); }
+inline void check(int status, const char* operation) {
+    if (status == PMAC_OK) return;
+    pmac_error_info info = {}; size_t required = 0;
+    int copied = pmac_copy_last_error(&info, 0, 0, &required);
+    if ((copied == PMAC_OK || copied == PMAC_BUFFER_TOO_SMALL) && info.status == status)
+        throw Error(status, operation, info.request_id, info.certainty);
+    throw Error(status, operation);
+}
 
 struct Options {
     uint32_t timeout_ms;
@@ -126,15 +138,15 @@ public:
     std::vector<uint8_t> command(const std::string& command, const Options& options = Options()) {
         pmac_request_options native = options.native(); pmac_request_id request = 0;
         check(pmac_command_submit(id_, data(command), command.size(), &native, &request), "command_submit");
+        ScopedRequest owner(request);
         pmac_request_info info = {};
         const int status = pmac_request_wait(request, 0xffffffff, &info);
-        if (status != PMAC_OK) { (void)pmac_request_release(request); throw Error(status, "command"); }
+        if (status != PMAC_OK) { throw Error(status, "command"); }
         size_t required = 0;
         int copy_status = pmac_request_copy_response(request, 0, 0, &required);
-        if (copy_status != PMAC_BUFFER_TOO_SMALL && copy_status != PMAC_OK) { (void)pmac_request_release(request); throw Error(copy_status, "copy_response"); }
+        if (copy_status != PMAC_BUFFER_TOO_SMALL && copy_status != PMAC_OK) { throw Error(copy_status, "copy_response"); }
         std::vector<uint8_t> result(required);
         copy_status = pmac_request_copy_response(request, result.empty() ? 0 : &result[0], result.size(), &required);
-        (void)pmac_request_release(request);
         check(copy_status, "copy_response");
         return result;
     }

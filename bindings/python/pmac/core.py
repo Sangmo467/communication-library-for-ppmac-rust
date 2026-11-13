@@ -36,6 +36,27 @@ def check(status, operation="PMAC operation"):
         raise PmacError(status, f"{operation} failed with status {status}")
 
 
+def _check_business(lib, status, operation):
+    if status == 0:
+        return
+    function = getattr(lib, "pmac_copy_last_error", None)
+    if function is not None:
+        info, required = N.ErrorInfo(), C.c_size_t()
+        copied = function(N.byref(info), None, 0, N.byref(required))
+        if copied in (0, -11) and info.status == status:
+            data = (C.c_uint8 * required.value)() if required.value else None
+            if data is None or function(N.byref(info), data, len(data), N.byref(required)) == 0:
+                message = bytes(data).decode("utf-8", "replace") if data else operation
+                raise PmacError(status, message, info.request_id, info.certainty)
+    raise PmacError(status, f"{operation} failed with status {status}", certainty=1)
+
+def _checked_integer(value, minimum, maximum, name):
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} is outside the native integer range")
+    return value
+
 def options(value=None):
     value = value or {}
     return N.RequestOptions(N.sizeof(N.RequestOptions), 2000,
@@ -484,6 +505,8 @@ class Client:
         with self.dart_disconnect_async(**kwargs) as request: request.wait()
 
     def dart_get_async(self, command, address, length, **kwargs):
+        _checked_integer(command, 0, 0xffffffff, "command"); _checked_integer(address, 0, 0xffffffff, "address")
+        _checked_integer(length, 0, 524288, "length")
         native = options(kwargs); request = C.c_uint64()
         check(self.lib.pmac_dart_get_async(self._check(), command, address, length, N.byref(native), N.byref(request)), "DART get submit")
         return Request(self.runtime, request.value)
@@ -493,6 +516,7 @@ class Client:
             request.wait(); return request.response()
 
     def dart_set_async(self, command, address, data, **kwargs):
+        _checked_integer(command, 0, 0xffffffff, "command"); _checked_integer(address, 0, 0xffffffff, "address")
         view, buffer = N.view(data); native = options(kwargs); request = C.c_uint64()
         check(self.lib.pmac_dart_set_async(self._check(), command, address, view.data, view.len, N.byref(native), N.byref(request)), "DART set submit")
         return Request(self.runtime, request.value)
@@ -615,7 +639,12 @@ class Client:
     def pool_confirm_recovery(self, expected_revision, acknowledge_unknown_writes=False, confirm_remote_released=False):
         flags = (1 if acknowledge_unknown_writes else 0) | (2 if confirm_remote_released else 0)
         check(self._pool_function("pmac_pool_confirm_recovery")(self._check(), expected_revision, flags), "confirm recovery")
-    def _unit(self, name, *args, **kwargs): native = options(kwargs); check(getattr(self.lib, "pmac_" + name)(self._check(), *args, N.byref(native)), name)
+    def _unit(self, name, *args, **kwargs):
+        if args:
+            _checked_integer(args[0], -0x80000000, 0x7fffffff, "target")
+        if name == "coord_exec_prog":
+            _checked_integer(args[1], -0x80000000, 0x7fffffff, "program")
+        native = options(kwargs); _check_business(self.lib, getattr(self.lib, "pmac_" + name)(self._check(), *args, N.byref(native)), name)
     def abort(self, **kwargs): self._unit("abort", **kwargs)
     def coord_enable(self, n, **kwargs): self._unit("coord_enable", n, **kwargs)
     def coord_exec_prog(self, n, p, **kwargs): self._unit("coord_exec_prog", n, p, **kwargs)
@@ -630,8 +659,9 @@ class Client:
     def motor_inc_jog(self, n, value, **kwargs): self._unit("motor_inc_jog", n, float(value), **kwargs)
 
     def _query(self, name, kind, target=None, **kwargs):
+        if target is not None: _checked_integer(target, -0x80000000, 0x7fffffff, "target")
         native = options(kwargs); value = kind(); args = (self._check(),) + (() if target is None else (target,)) + (N.byref(native), N.byref(value))
-        check(getattr(self.lib, "pmac_" + name)(*args), name); return value.value
+        _check_business(self.lib, getattr(self.lib, "pmac_" + name)(*args), name); return value.value
     def coord_status(self, n, **kwargs): return CoordStatus(self._query("coord_status", C.c_uint64, n, **kwargs))
     def motor_status(self, n, **kwargs): return MotorStatus(self._query("motor_status", C.c_uint64, n, **kwargs))
     def motor_position(self, n, **kwargs): return self._query("motor_position", C.c_double, n, **kwargs)

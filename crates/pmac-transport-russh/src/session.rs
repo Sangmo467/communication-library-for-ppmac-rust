@@ -34,7 +34,7 @@ impl Transport for RusshTransport {
             ));
         }
         let permit = options.gpascii_budget.reserve(options.gpascii_owner)?;
-        let control = connect(options, context).await?;
+        let control = connect(options, context, true).await?;
         let channel = open_gpascii(&control, context, permit).await?;
         Ok(Arc::new(RusshSession {
             options: options.clone(),
@@ -294,7 +294,7 @@ impl Session for RusshSession {
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::new(ErrorCode::Closing, "session is closed"));
         }
-        let connection = connect(&self.options, context).await?;
+        let connection = connect(&self.options, context, false).await?;
         let mut guard = self.maintenance.lock().await;
         if self.closed.load(Ordering::Acquire) {
             drop(guard);
@@ -601,7 +601,7 @@ impl RusshSession {
             return Ok(connection.clone());
         }
         *guard = None;
-        let connection = connect(&self.options, context).await?;
+        let connection = connect(&self.options, context, false).await?;
         if self.closed.load(Ordering::Acquire) || self.maintenance_retired.load(Ordering::Acquire) {
             let _ = connection.close().await;
             return Err(disconnected(

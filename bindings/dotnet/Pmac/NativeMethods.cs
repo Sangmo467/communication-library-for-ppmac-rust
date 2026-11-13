@@ -57,6 +57,7 @@ internal static class NativeMethods
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_request_cancel(ulong id);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_request_copy_response(ulong id, IntPtr output, UIntPtr capacity, out UIntPtr required);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_request_copy_stderr(ulong id, IntPtr output, UIntPtr capacity, out UIntPtr required);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_copy_last_error(out ErrorInfo info, IntPtr output, UIntPtr capacity, out UIntPtr required);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_request_copy_error(ulong id, out ErrorInfo info, IntPtr output, UIntPtr capacity, out UIntPtr required);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_request_copy_match(ulong id, IntPtr pattern, UIntPtr length, uint group, IntPtr output, UIntPtr capacity, out UIntPtr required);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_request_release(ulong id);

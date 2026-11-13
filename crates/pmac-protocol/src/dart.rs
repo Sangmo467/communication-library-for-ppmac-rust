@@ -159,6 +159,10 @@ impl DartTransfer {
         self.length
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
     pub fn into_wire_data(self) -> Vec<u8> {
         self.command.native_to_wire(self.data)
     }
@@ -178,7 +182,7 @@ impl DartTransfer {
             )));
         }
         let width = self.command.element_size();
-        if length % width != 0 {
+        if !length.is_multiple_of(width) {
             return Err(ProtocolError::Dart(format!(
                 "data length {length} is not aligned to {width}-byte elements"
             )));

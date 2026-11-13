@@ -79,6 +79,8 @@ def load(path=None):
     copy = [C.c_uint64, C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(C.c_size_t)]
     lib.pmac_request_copy_response.argtypes = copy
     lib.pmac_request_copy_stderr.argtypes = copy
+    if hasattr(lib, "pmac_copy_last_error"):
+        lib.pmac_copy_last_error.argtypes = [C.POINTER(ErrorInfo), C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(C.c_size_t)]
     lib.pmac_request_copy_error.argtypes = [C.c_uint64, C.POINTER(ErrorInfo), C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(C.c_size_t)]
     lib.pmac_request_copy_match.argtypes = [C.c_uint64, C.POINTER(C.c_uint8), C.c_size_t, C.c_uint32] + copy[1:]
     lib.pmac_request_release.argtypes = [C.c_uint64]

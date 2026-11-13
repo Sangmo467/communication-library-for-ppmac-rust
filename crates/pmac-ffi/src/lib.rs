@@ -24,14 +24,63 @@ use types::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+thread_local! {
+    static LAST_ERROR: std::cell::RefCell<Option<(PmacErrorInfo, String)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn save_last_error(error: &Error, request_id: u64, connection_epoch: u64) {
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some((PmacErrorInfo {
+        struct_size: size_of::<PmacErrorInfo>() as u32,
+        abi_version: ABI_VERSION,
+        status: error.code as i32,
+        certainty: error.certainty as u32,
+        request_id,
+        connection_epoch,
+    }, error.message.clone())));
+}
+
 pub(crate) fn ffi_status(operation: impl FnOnce() -> Result<(), Error>) -> i32 {
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
     match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(Ok(())) => ErrorCode::Ok as i32,
+        Ok(Err(error)) => {
+            LAST_ERROR.with(|slot| {
+                if slot.borrow().is_none() {
+                    save_last_error(&error, 0, 0);
+                }
+            });
+            error.code as i32
+        }
+        Err(_) => {
+            let error = Error::internal("native operation panicked").sent();
+            save_last_error(&error, 0, 0);
+            ErrorCode::Internal as i32
+        }
+    }
+}
+
+/// Copy the calling thread's last FFI error without clearing it.
+#[no_mangle]
+pub extern "C" fn pmac_copy_last_error(
+    out_info: *mut PmacErrorInfo,
+    out: *mut u8,
+    capacity: usize,
+    required: *mut usize,
+) -> i32 {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if out_info.is_null() { return Err(Error::invalid("error info output is null")); }
+        LAST_ERROR.with(|slot| {
+            let slot = slot.borrow();
+            let (info, message) = slot.as_ref().ok_or_else(|| Error::new(ErrorCode::InvalidHandle, "no last error"))?;
+            unsafe { out_info.write(*info) };
+            copy_bytes(message.as_bytes(), out, capacity, required)
+        })
+    })) {
         Ok(Ok(())) => ErrorCode::Ok as i32,
         Ok(Err(error)) => error.code as i32,
         Err(_) => ErrorCode::Internal as i32,
     }
 }
-
 #[no_mangle]
 pub extern "C" fn pmac_runtime_create(config: *const PmacRuntimeConfig, out_id: *mut u64) -> i32 {
     ffi_status(|| {

@@ -987,7 +987,7 @@ impl Client {
             m.drain = true;
         }
         self.pool.changed.notify_waiters();
-        self.drive(request, async {
+        let waiting = self.drive(request, async {
             loop {
                 let changed = self.pool.changed.notified();
                 self.check_revision(revision)?;
@@ -1003,7 +1003,16 @@ impl Client {
                 changed.await;
             }
         })
-        .await??;
+        .await.and_then(|result| result);
+        if let Err(error) = waiting {
+            let mut s = self.pool.lock();
+            if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
+                m.drain = false;
+            }
+            drop(s);
+            self.pool.changed.notify_waiters();
+            return Err(error);
+        }
         let session = {
             let mut s = self.pool.lock();
             let m = s

@@ -133,6 +133,8 @@ PMAC_EXPORT int32_t pmac_request_wait(pmac_request_id id, uint32_t wait_ms, pmac
 PMAC_EXPORT int32_t pmac_request_cancel(pmac_request_id id);
 PMAC_EXPORT int32_t pmac_request_copy_response(pmac_request_id id, uint8_t *out, size_t capacity, size_t *required);
 PMAC_EXPORT int32_t pmac_request_copy_stderr(pmac_request_id id, uint8_t *out, size_t capacity, size_t *required);
+/* Copy the immediately preceding error on this thread; request_id is diagnostic and already released. */
+PMAC_EXPORT int32_t pmac_copy_last_error(pmac_error_info *out_info, char *out, size_t capacity, size_t *required);
 PMAC_EXPORT int32_t pmac_request_copy_error(pmac_request_id id, pmac_error_info *out_info, char *out, size_t capacity, size_t *required);
 PMAC_EXPORT int32_t pmac_request_copy_match(pmac_request_id id, const uint8_t *pattern, size_t pattern_len, uint32_t group, uint8_t *out, size_t capacity, size_t *required);
 PMAC_EXPORT int32_t pmac_request_release(pmac_request_id id);

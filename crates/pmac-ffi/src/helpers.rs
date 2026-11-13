@@ -69,7 +69,13 @@ pub(crate) fn finish_request(request: Arc<Request>) -> Result<Vec<u8>, Error> {
         .ok_or_else(|| Error::internal("completed request has no result"))?;
     let copied = match result.as_ref() {
         Ok(result) => Ok(result.response.clone()),
-        Err(error) => Err(error.clone()),
+        Err(error) => {
+            let info = request.info();
+            let mut detailed = error.clone();
+            detailed.certainty = info.certainty;
+            crate::save_last_error(&detailed, id, info.connection_epoch);
+            Err(error.clone())
+        }
     };
     registry().remove(id, crate::registry::request_kind());
     copied

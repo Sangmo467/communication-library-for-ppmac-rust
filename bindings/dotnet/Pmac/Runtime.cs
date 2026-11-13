@@ -112,7 +112,28 @@ public sealed class Runtime : IDisposable, IAsyncDisposable
 
     internal static void Check(int status)
     {
-        if (status != 0) throw new PmacException(status, $"PMAC runtime/client operation failed with status {status}");
+        if (status == 0) return;
+        try
+        {
+            var result = NativeMethods.pmac_copy_last_error(out var info, IntPtr.Zero, UIntPtr.Zero, out var required);
+            if ((result == 0 || result == -11) && info.Status == status)
+            {
+                var length = checked((int)required.ToUInt64());
+                var buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(length);
+                try
+                {
+                    if (length == 0 || NativeMethods.pmac_copy_last_error(out info, buffer, (UIntPtr)length, out _) == 0)
+                    {
+                        var bytes = new byte[length];
+                        if (length != 0) System.Runtime.InteropServices.Marshal.Copy(buffer, bytes, 0, length);
+                        throw new PmacException(status, System.Text.Encoding.UTF8.GetString(bytes), info.RequestId, (ExecutionCertainty)info.Certainty);
+                    }
+                }
+                finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer); }
+            }
+        }
+        catch (EntryPointNotFoundException) { }
+        throw new PmacException(status, $"PMAC runtime/client operation failed with status {status}", 0, ExecutionCertainty.MayHaveExecuted);
     }
 }
 
