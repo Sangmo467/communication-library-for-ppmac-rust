@@ -7,7 +7,7 @@
 ## 功能
 
 - GPASCII 命令、同步/异步 GetResponse、响应与正则捕获。
-- 严格调用线程与 GPASCII Channel 亲和，支持显式连接池和故障隔离。
+- 严格调用线程与 GPASCII Channel 亲和，同一 Client 最多 16 个在线通道，支持显式连接池和故障隔离。
 - 持久 Shell、隔离 exec、SFTP 上传/下载和程序 buffer 上传。
 - 电机、坐标系、PLC 常用操作及状态查询。
 - 实时连续 Gather：可配置采样周期、地址和监听端口，按批次回调返回数值数据。

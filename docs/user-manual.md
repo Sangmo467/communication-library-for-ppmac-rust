@@ -232,6 +232,9 @@ C++ 异常提供 `status()`、`requestId()`、`certainty()`；.NET 的 `PmacExce
 - C：`pmac_pool_*_async`。
 
 池参数满足 `1 <= min_ready <= target_size <= max_members <= 255`。成员是独立 SSH/GPASCII 会话，不是无边界的自动扩容机制。
+同一 Client 最多占用 **16 个 GPASCII 在线通道**，合计其所有池成员的预建、打开中、在用、回收中以及释放不确定的通道。第 17 个通道申请在发送前返回 `RESOURCE_LIMIT`；不同 Client 各自拥有 16 个额度，即使连接到同一控制器也不共用一个 16 通道上限。设备自身仍可能有额外资源限制。profile 的成员数范围不代表允许突破在线通道预算。
+
+只有已确认释放的通道才归还额度；释放不确定的旧通道继续占用所属 Client 的额度，应用核实远端释放后按 revision 显式确认恢复。一个 Client 的恢复声明不能释放其他 Client 的占用。维护面的 BufferUpload 不占用 GPASCII 在线通道额度，在线通道满额时仍可通过维护面执行。
 
 关键规则：
 

@@ -16,7 +16,9 @@ pub use dart::{
     DART_WRITE_ACK,
 };
 pub use error::ProtocolError;
-pub use gpascii::{GpasciiDecoder, GpasciiFrame};
+pub use gpascii::{
+    contains_controller_error, is_buffer_closed_error, GpasciiDecoder, GpasciiFrame,
+};
 pub use parse::{
     parse_bool, parse_f64, parse_u32, parse_u64, regex_match, response_text, RegexMatch,
 };

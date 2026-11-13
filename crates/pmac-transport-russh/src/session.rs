@@ -838,7 +838,7 @@ async fn execute_gpascii(
             ChannelMsg::Data { data } => {
                 let frames = decoder.push(&data).map_err(protocol_error)?;
                 if let Some(frame) = frames.into_iter().next() {
-                    if frame.remote_error {
+                    if frame.remote_error || pmac_protocol::contains_controller_error(&stderr) {
                         let mut error = Error::new(
                             ErrorCode::RemoteError,
                             format!(
@@ -846,7 +846,15 @@ async fn execute_gpascii(
                                 String::from_utf8_lossy(&frame.body)
                             ),
                         );
+                        if !stderr.is_empty() {
+                            error.message.push_str("\nstderr: ");
+                            error.message.push_str(&String::from_utf8_lossy(&stderr));
+                        }
                         error.certainty = ExecutionCertainty::Confirmed;
+                        // A global close from another client invalidates this channel's mode.
+                        // Surface the original error and require explicit recovery; never replay.
+                        error.fatal_transport = pmac_protocol::is_buffer_closed_error(&frame.body)
+                            || pmac_protocol::is_buffer_closed_error(&stderr);
                         return Err(error);
                     }
                     if frame.body.len().saturating_add(stderr.len()) > response_limit {
@@ -1035,12 +1043,16 @@ mod tests {
         task.abort();
         assert!(runtime.block_on(task).is_err());
         drop(runtime);
-        let permits = (0..7)
-            .map(|_| budget.reserve(99).unwrap())
+        let permits = (0..15)
+            .map(|_| budget.reserve(77).unwrap())
             .collect::<Vec<_>>();
-        assert!(budget.reserve(99).is_err());
-        drop(permits);
+        assert!(budget.reserve(77).is_err());
+        let other_client = budget.reserve(99).unwrap();
+        budget.confirm_remote_release(99);
+        assert!(budget.reserve(77).is_err());
         budget.confirm_remote_release(77);
-        assert!(budget.reserve(99).is_ok());
+        assert!(budget.reserve(77).is_ok());
+        drop(permits);
+        drop(other_client);
     }
 }

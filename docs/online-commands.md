@@ -1,6 +1,6 @@
 # Online Commands 与程序正文透传
 
-命令目录依据 Power PMAC Software Reference Manual，Online Command Specification（手册页 1119–1319）。目录规则见 [online-command-rules.tsv](../crates/pmac-protocol/src/online-command-rules.tsv)；其中记录语法族、作用域、读写/维护分类和代表样例。规则覆盖手册各 Online 命令族，具体参数有效性和设备资源状态由控制器最终判断。
+命令目录依据仓库中的 `Power_PMAC_Software_Reference_Manual_3.pdf`，Online Command Specification（手册页 1119–1319）。目录规则见 [online-command-rules.tsv](../crates/pmac-protocol/src/online-command-rules.tsv)；其中记录语法族、作用域、读写/维护分类和代表样例。规则覆盖手册各 Online 命令族，具体参数有效性和设备资源状态由控制器最终判断。
 
 ## Online Commands
 
@@ -8,7 +8,7 @@
 - Motor specific 要求同一条命令显式提供 `#` 电机目标；Coordinate-system specific 要求显式提供 `&` 坐标系目标。支持合法的单编号、列表、范围和 `*`。
 - 先执行 `#1` 或 `&1` 选择默认目标，不会使后续裸目标相关命令绕过上述校验。例如 `kill` 仍需写为 `#1kill`，`abort` 仍需写为 `&1abort`。
 - 手册里的 `k/kill` 为电机命令，因此 `&1k`、`&1kill` 被拒绝；可用 `#1k`、`#1kill` 或相应电机列表形式。
-- 额外支持 `&nresume`（以及列表、范围、`&*resume`）作为坐标系控制写入兼容命令；该扩展在规则表中明确标记，不冒充手册 Online 条目。
+- 按用户要求额外支持 `&nresume`（以及列表、范围、`&*resume`）作为坐标系控制写入兼容命令；该扩展在规则表中明确标记，不冒充手册 Online 条目。
 - `cpx`、`cx` 要求显式坐标系，后续单行程序正文保持原样，包括空格、大小写、引号和分号。整条请求为控制写入，不分析正文中的变量来降低分类。
 - `start` 按手册接收可选的非负程序常数，例如 `&1start`、`&1start5`、`&1start 5`；任意正文请使用 `cpx/cx` 或程序缓冲区。
 
@@ -47,6 +47,20 @@ Rust 直接调用方使用 `Client::parse_command_for_current_thread(text)` 后�
 
 ## 回归覆盖
 
-[命令样例集](../crates/pmac-protocol/tests/online-command-corpus.tsv) 与规则表样例分别覆盖大小写、读写分类、显式作用域及原文保留。FFI 测试通过受控 Transport 验证正常准入与只读池拒绝写入。核心和本地 SSH 测试覆盖同线程正文、跨线程隔离、关闭排队、取消、修复以及全局缓冲区关闭。
+[命令规则表及样例](../crates/pmac-protocol/src/online-command-rules.tsv) 覆盖大小写、读写分类、显式作用域及原文保留。FFI 测试通过受控 Transport 验证正常准入与只读池拒绝写入。核心和本地 SSH 测试覆盖同线程正文、跨线程隔离、关闭排队、取消、修复以及全局缓冲区关闭。
 
 这些验证证明本地接收、分类和路由行为；并不代表已在真实控制器上逐条执行运动、复位或修改配置。
+
+## 跨 Client 全局关闭与控制器错误
+
+`close all buffers` 会影响其他 Client 或外部程序打开的缓冲区。其他 GPASCII 通道即使本地仍记录 `open prog`，下一次提交也可能收到：
+
+```text
+stdin:1:1: error #31: Buffer closed due to another thread:
+```
+
+库将任何标准 `error #<编号>` 诊断作为 `REMOTE_ERROR` 返回，即使控制器以 ACK 而非 NAK 结束响应；已接收的 stdout/stderr 原始诊断会保留在错误详情中。同步 C 调用须立即使用 `pmac_copy_last_error` 读取，异步请求使用 `pmac_request_copy_error` 并保留 Request ID 至复制完成；C++/Python/.NET 绑定通过其错误/异常携带诊断。`CONFIRMED` 只说明完整协议响应已收到，不表示语句执行成功。
+
+收到 error #31 后，库使受影响的旧程序上下文失效并退役对应成员。不会自动补发 `close`，不会自动重发原语句，更不会把恢复或清理结果改写成原请求成功。应用必须读取原始错误，再按池恢复接口修复或重连，并在确认设备状态后显式重新打开需要的程序缓冲区。成员可能被多个调用线程共享；这些线程会观察到旧 epoch 不可用，需要协同恢复。其他独立 Client 不会被库主动关闭，但全局命令对控制器的影响仍然存在。
+
+同一 Client 通过库发出的 `close all buffers` 会在维护屏障后清除已知本地程序上下文；旧正文可能在本地准入时被拒绝，合法在线命令也仍可能读到远端通道的延迟 error #31，错误同样返回给应用。每个 Client 的在线 GPASCII 通道总额度为 16，包含预建及释放不确定的占用；不得通过新线程或池修复绕过未确认释放的计数。

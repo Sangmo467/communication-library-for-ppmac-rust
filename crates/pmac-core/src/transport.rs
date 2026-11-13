@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use crate::{Error, ErrorCode, OperationResult, Request};
 
-const MAX_GPASCII_CHANNELS: usize = 8;
+const MAX_GPASCII_CHANNELS: usize = 16;
 
 #[derive(Default)]
 struct GpasciiBudgetState {
@@ -59,10 +59,12 @@ impl GpasciiBudget {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.used >= MAX_GPASCII_CHANNELS {
+        // All pool members of one Client carry the same process-unique owner.
+        // Keep controller-wide accounting for lifetime/recovery, but admit per owner.
+        if state.owners.get(&owner).copied().unwrap_or(0) >= MAX_GPASCII_CHANNELS {
             return Err(Error::new(
                 ErrorCode::ResourceLimit,
-                "controller GPASCII channel limit reached (8)",
+                "client GPASCII channel limit reached (16)",
             ));
         }
         state.used += 1;
@@ -459,28 +461,64 @@ mod tests {
     #[test]
     fn gpascii_budget_is_bounded_and_uncertain_release_requires_confirmation() {
         let budget = Arc::new(GpasciiBudget::new());
-        let mut permits = (0..8)
+        let mut permits = (0..16)
             .map(|_| budget.reserve(1).unwrap())
             .collect::<Vec<_>>();
-        let error = budget.reserve(2).err().unwrap();
+        assert_eq!(budget.owner_usage(1), 16);
+        let error = budget.reserve(1).err().unwrap();
         assert_eq!(error.code, ErrorCode::ResourceLimit);
         assert_eq!(error.certainty, ExecutionCertainty::NotSent);
-        drop(permits.pop());
-        permits.push(budget.reserve(1).unwrap());
-        permits.pop().unwrap().retain_uncertain();
-        assert!(budget.reserve(2).is_err());
+
+        permits.pop().unwrap().release();
+        assert_eq!(budget.owner_usage(1), 15);
+        budget.reserve(1).unwrap().retain_uncertain();
+        assert_eq!(budget.owner_usage(1), 16);
+        assert!(budget.owner_has_uncertain(1));
+        assert!(budget.reserve(1).is_err());
         budget.confirm_remote_release(2);
-        assert!(budget.reserve(2).is_err());
+        assert!(budget.reserve(1).is_err());
         budget.confirm_remote_release(1);
-        permits.push(budget.reserve(2).unwrap());
-        assert_eq!(permits.len(), 8);
+        assert_eq!(budget.owner_usage(1), 15);
+        assert!(!budget.owner_has_uncertain(1));
+        permits.push(budget.reserve(1).unwrap());
+        assert_eq!(permits.len(), 16);
+        drop(permits);
+        assert_eq!(budget.owner_usage(1), 0);
+    }
+
+    #[test]
+    fn each_client_owner_has_sixteen_channels_in_a_shared_controller_budget() {
+        let budget = Arc::new(GpasciiBudget::new());
+        let mut first = (0..16)
+            .map(|_| budget.reserve(1).unwrap())
+            .collect::<Vec<_>>();
+        let mut second = (0..16)
+            .map(|_| budget.reserve(2).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(budget.owner_usage(1), 16);
+        assert_eq!(budget.owner_usage(2), 16);
+        assert!(budget.reserve(1).is_err());
+        assert!(budget.reserve(2).is_err());
+        first.pop().unwrap().retain_uncertain();
+        drop(second.pop());
+        second.push(budget.reserve(2).unwrap());
+        budget.confirm_remote_release(2);
+        assert_eq!(budget.owner_usage(1), 16);
+        assert!(budget.reserve(1).is_err());
+        budget.confirm_remote_release(1);
+        first.push(budget.reserve(1).unwrap());
+        assert_eq!(first.len(), 16);
+        assert_eq!(second.len(), 16);
+        assert_eq!(budget.owner_usage(1), 16);
+        assert_eq!(budget.owner_usage(2), 16);
     }
 
     #[test]
     fn uncertain_budget_outlives_external_owners_until_confirmation() {
         let owner = GpasciiBudget::allocate_owner().unwrap();
+        let other_owner = GpasciiBudget::allocate_owner().unwrap();
         let budget = GpasciiBudget::shared("budget-lifetime-test", 32_000);
-        let permits = (0..8)
+        let permits = (0..16)
             .map(|_| budget.reserve(owner).unwrap())
             .collect::<Vec<_>>();
         for permit in permits {
@@ -488,11 +526,19 @@ mod tests {
         }
         drop(budget);
         let budget = GpasciiBudget::shared("BUDGET-LIFETIME-TEST", 32_000);
-        assert!(budget.reserve(owner + 1).is_err());
+        assert_eq!(budget.owner_usage(owner), 16);
+        assert!(budget.reserve(owner).is_err());
+        let other_permits = (0..16)
+            .map(|_| budget.reserve(other_owner).unwrap())
+            .collect::<Vec<_>>();
+        budget.confirm_remote_release(other_owner);
+        assert!(budget.reserve(owner).is_err());
         budget.confirm_remote_release(owner);
-        assert!(budget.reserve(owner + 1).is_ok());
+        assert_eq!(budget.owner_usage(owner), 0);
+        assert_eq!(budget.owner_usage(other_owner), 16);
+        assert!(budget.reserve(owner).is_ok());
+        drop(other_permits);
     }
-
     #[test]
     fn budget_owner_tokens_are_process_unique() {
         assert_ne!(

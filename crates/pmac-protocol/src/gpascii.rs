@@ -101,6 +101,7 @@ impl GpasciiDecoder {
             ));
         }
         self.buffer.clear();
+        let remote_error = remote_error || contains_controller_error(&body);
         Ok(vec![GpasciiFrame { body, remote_error }])
     }
 
@@ -143,6 +144,63 @@ impl GpasciiDecoder {
     }
 }
 
+/// Detect a controller diagnostic even when the transport terminator is ACK.
+/// A quoted value or an identifier containing the words is not a diagnostic.
+pub fn contains_controller_error(bytes: &[u8]) -> bool {
+    bytes
+        .split(|b| *b == b'\n')
+        .any(|line| diagnostic_code(line).is_some())
+}
+/// Error 31 invalidates the remote program-buffer context, including other clients.
+pub fn is_buffer_closed_error(bytes: &[u8]) -> bool {
+    bytes.split(|b| *b == b'\n').any(|line| {
+        diagnostic_code(line).is_some_and(|code| {
+            code.iter()
+                .skip_while(|b| **b == b'0')
+                .copied()
+                .eq(b"31".iter().copied())
+        })
+    })
+}
+fn diagnostic_code(line: &[u8]) -> Option<&[u8]> {
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, &byte) in line.iter().enumerate() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            quote = Some(byte);
+            continue;
+        }
+        let Some(word) = line.get(offset..offset + 7) else {
+            break;
+        };
+        if !word.eq_ignore_ascii_case(b"error #")
+            || (offset != 0 && !line[offset - 1].is_ascii_whitespace() && line[offset - 1] != b':')
+        {
+            continue;
+        }
+        let rest = &line[offset + 7..];
+        let length = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        if length == 0
+            || rest
+                .get(length)
+                .is_some_and(|b| !b.is_ascii_whitespace() && *b != b':')
+        {
+            continue;
+        }
+        return Some(&rest[..length]);
+    }
+    None
+}
 fn trim_leading_newlines(bytes: &mut Vec<u8>) {
     let count = bytes
         .iter()
@@ -284,6 +342,48 @@ mod tests {
                 let index = offset as u64 + 1;
                 assert_eq!(line, format!("P{index}={}", index * 31 + 7));
             }
+        }
+    }
+    #[test]
+    fn controller_error_diagnostics_survive_ack_nak_and_every_split() {
+        for terminator in *b"\x06\x15" {
+            for code in ["1", "31", "999999999999999999999999"] {
+                let body =
+                    format!("stdin:1:1: error #{code}: Buffer closed due to another thread:");
+                let mut wire = body.as_bytes().to_vec();
+                wire.extend([b'\r', b'\n', terminator]);
+                for split in 0..=wire.len() {
+                    let mut d = GpasciiDecoder::new(b"P1", 4096);
+                    let mut frames = d.push(&wire[..split]).unwrap();
+                    frames.extend(d.push(&wire[split..]).unwrap());
+                    assert_eq!(frames.len(), 1);
+                    assert!(frames[0].remote_error);
+                    assert_eq!(frames[0].body, body.as_bytes());
+                    assert_eq!(is_buffer_closed_error(&frames[0].body), code == "31");
+                }
+            }
+        }
+    }
+    #[test]
+    fn controller_error_detection_does_not_match_quoted_values_or_names() {
+        for body in [
+            b"Someerror #31: value".as_slice(),
+            b"Value=\"error #31: literal\"",
+            b"Value=\"prefix error #31: literal\"",
+            b"error #31oops",
+            b"error #oops",
+            b"last_error #31: value",
+            b"error count=31",
+        ] {
+            assert!(!contains_controller_error(body), "{body:?}");
+        }
+        for body in [
+            b"error #4: bad".as_slice(),
+            b"STDIN:2:3: ERROR #31: Buffer closed",
+            b"error #123",
+            b"warning\nerror #7: failed\n",
+        ] {
+            assert!(contains_controller_error(body), "{body:?}");
         }
     }
 }
