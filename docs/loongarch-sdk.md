@@ -39,4 +39,4 @@ GNU glibc 2.36 源码先通过固定 SHA-256 校验，再生成专用 sysroot。
 
 C++ 例程使用构建容器中交叉工具链匹配的 libstdc++ 运行环境。其运行通过不代表把该工具链的 libstdc++ 分发给所有系统；使用方应在目标系统以本机编译器重新编译例程。库的低版本 libc 运行验证单独执行。
 
-参考：[Rust LoongArch Linux 要求](https://doc.rust-lang.org/rustc/platform-support/loongarch-linux.html)、[龙芯 ELF ABI](https://loongson.github.io/LoongArch-Documentation/LoongArch-ELF-ABI-EN.html)、[GNU glibc 源码](https://ftp.gnu.org/gnu/glibc/)。
+参考：[Rust LoongArch Linux 要求](https://doc.rust-lang.org/rustc/platform-support/loongarch-linux.html)、[龙芯 ELF ABI](https://loongson.github.io/LoongArch-Documentation/LoongArch-ELF-ABI-EN.pdf)、[GNU glibc 源码](https://ftp.gnu.org/gnu/glibc/)。

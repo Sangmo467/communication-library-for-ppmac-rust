@@ -37,7 +37,7 @@ foreach ($item in $profiles) {
     if ($identity.pointerBits -ne $item.bits -or $identity.format -ne $item.format) { throw 'Header identity mismatch' }
     if ($item.target -eq 'loongarch64-unknown-linux-gnu') {
         # 相同 machine/位数不能证明 ABI 一致：拒绝旧世界、软浮点、单精度 ABI。
-        foreach ($badFlags in @(0x03,0x41,0x42)) {
+        foreach ($badFlags in @(0x03,0x41,0x42,0x4b)) {
             [BitConverter]::GetBytes([uint32]$badFlags).CopyTo($bytes,48)
             [IO.File]::WriteAllBytes($path,$bytes)
             $rejected = $false

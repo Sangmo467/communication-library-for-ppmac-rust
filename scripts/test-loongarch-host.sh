@@ -11,7 +11,7 @@ lib=${1:-"$(CDPATH= cd "$(dirname "$0")/.." && pwd)/native/libpmac.so"}
 command -v readelf >/dev/null 2>&1 || { echo 'Install binutils (readelf) first.' >&2; exit 1; }
 readelf -h "$lib" | grep -Eq 'Machine:.*LoongArch' || { echo 'Wrong ELF machine.' >&2; exit 1; }
 flags=$(readelf -h "$lib" | sed -n 's/.*Flags: *\(0x[0-9a-fA-F]*\).*/\1/p')
-[ -n "$flags" ] && [ "$((flags & 199))" -eq 67 ] || { echo 'LP64D/new-world ELF ABI v1 required.' >&2; exit 1; }
+[ -n "$flags" ] && [ "$((flags & 255))" -eq 67 ] || { echo 'LP64D/new-world ELF ABI v1 required.' >&2; exit 1; }
 [ -e /lib64/ld-linux-loongarch-lp64d.so.1 ] || { echo 'New-world LoongArch dynamic loader is missing.' >&2; exit 1; }
 version=$(getconf GNU_LIBC_VERSION | awk '{print $2}')
 awk -v version="$version" 'BEGIN {split(version,a,".");exit !(a[1]>2 || (a[1]==2 && a[2]>=36))}' || { echo "glibc 2.36+ required; found $version" >&2; exit 1; }

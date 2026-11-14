@@ -39,4 +39,4 @@ GNU glibc 2.36 source is verified against a fixed SHA-256 before building a dedi
 
 C++ examples run against the cross toolchain's matching libstdc++ environment. This does not distribute that libstdc++ to every target OS: consumers should rebuild examples with their target system's compiler. The library's older-libc runtime checks execute separately.
 
-References: [Rust LoongArch Linux requirements](https://doc.rust-lang.org/rustc/platform-support/loongarch-linux.html), [Loongson ELF ABI](https://loongson.github.io/LoongArch-Documentation/LoongArch-ELF-ABI-EN.html), [GNU glibc source](https://ftp.gnu.org/gnu/glibc/).
+References: [Rust LoongArch Linux requirements](https://doc.rust-lang.org/rustc/platform-support/loongarch-linux.html), [Loongson ELF ABI](https://loongson.github.io/LoongArch-Documentation/LoongArch-ELF-ABI-EN.pdf), [GNU glibc source](https://ftp.gnu.org/gnu/glibc/).
