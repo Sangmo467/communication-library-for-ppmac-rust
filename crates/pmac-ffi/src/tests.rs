@@ -522,3 +522,15 @@ fn get_response_passthrough_flag_bypasses_rules_and_preserves_exact_text() {
     assert_eq!(pmac_runtime_shutdown(runtime_id, 1000), 0);
     assert_eq!(pmac_runtime_release(runtime_id), 0);
 }
+
+#[test]
+fn native_version_matches_workspace_package_version() {
+    // C 导出版本必须跟随工作区版本，防止包名已更新而 DLL/so/dylib 仍报告旧版本。
+    let pointer = pmac_version_string();
+    assert!(!pointer.is_null());
+    let version = unsafe { std::ffi::CStr::from_ptr(pointer) }
+        .to_str()
+        .unwrap();
+    assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(version, VERSION);
+}

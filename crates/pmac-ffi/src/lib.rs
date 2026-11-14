@@ -279,7 +279,7 @@ pub extern "C" fn pmac_get_runtime_info(out: *mut PmacRuntimeInfo) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn pmac_version_string() -> *const std::ffi::c_char {
-    c"2.0.2".as_ptr()
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
 }
 #[no_mangle]
 pub extern "C" fn pmac_version_number() -> u32 {

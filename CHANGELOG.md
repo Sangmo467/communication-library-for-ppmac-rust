@@ -6,6 +6,8 @@
 
 ## 2.0.3
 
+- 原生版本字符串自动跟随 Cargo 版本，并增加 C 导出版本一致性测试。
+
 - GetResponse/command 默认开启透传；显式关闭后启用 online/program 规则校验，只读池请求自动分类。新增 PMAC_REQUEST_CLASSIFY（8），C ABI 保持 2.1。
 - 根据软件参考手册及 DART、Modbus 独立规范核对 66 个结构根名称，前缀匹配不区分大小写，后续成员和多维下标交给控制器判断；自定义数组使用圆括号。
 - 补齐 Modbus Client/Server 在线命令、运动程序及 16 种 jog/jogret 正文原样上传测试，提供中英文结构目录及使用说明。
