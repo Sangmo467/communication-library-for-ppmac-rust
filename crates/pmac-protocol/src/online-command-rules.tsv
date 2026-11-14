@@ -104,13 +104,19 @@ regex	scope	effect	sample	source_line	note
 ^macrostation(?:status|type)$	Thread	Read	macrostationstatus	62072	selected station reporting
 ^(?:macroringmasterslave|mrms)(?:date|vers)\s*[0-9].*$	Global	Read	mrmsvers0,0,1	61229	forwarded slave firmware query
 ^(?:macroslave|ms)(?:date|vers)\s*[0-9].*$	Global	Read	msdate0	61727	forwarded slave firmware query
-^[a-z_][a-z0-9_]*(?:\[[0-9]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[0-9]+\])?)+$	Global	Read	Motor[1].ActPos	56552	data-structure member/pointer .a reporting; no assignment operators allowed; numeric indices only, dynamic indices conservative write
-^[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?)+\s*(?:=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=).*$	Global	Write	Motor[1].ServoCtrl=1	56643	data-structure member assignment
+^[a-z_][a-z0-9_]*(?:\[[0-9]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[0-9]+\])*)+$	Global	Read	Motor[1].ActPos	56552	data-structure member/pointer .a reporting; no assignment operators allowed; numeric indices only, dynamic indices conservative write
+^[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])*)+\s*(?:=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=).*$	Global	Write	Motor[1].ServoCtrl=1	56643	data-structure member assignment
 ^q\([^\r\n]+\)$	Coord	Write	&1Q(P1+P17)	63009	query with dynamic expression conservatively write: arbitrary expression may have side effects
 ^[dlr]\([^\r\n]+\)$	Thread	Write	D(P1+P17)	56761	dynamic query conservatively write
 ^[imp]\([^\r\n]+\)(?:->)?$	Global	Write	P(P1+P17)	62656	dynamic query conservatively write
-^[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?)+$	Global	Write	Sys.Ddata[L0]	56552	dynamic data-structure indices; evaluated conservatively as write after numeric-only read rule
+^[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\]\r\n]+\])*)+$	Global	Write	Sys.Ddata[L0]	56552	dynamic data-structure indices; evaluated conservatively as write after numeric-only read rule
 ^macroringordersync$	Global	Maintenance	macroringordersync	61677	global MACRO synchronization
 ^close\s+all\s+buffers$	Global	Maintenance	close all buffers	56400	global buffer close barrier
 ^macroringorderbackup(?:\s+.*)?$	Thread	Maintenance	macroringorderbackup	61527	back up station contents to file
 ^resume$	Coord	Write	&1resume	user-extension	Explicitly requested coordinate resume compatibility command
+^modbus(?:closeall|closethread)$	Global	Write	ModbusCloseAll	Modbus:4	keep socket operations on the main member
+^modbus(?:close|connect|ping|query|response|serverquery|serverresponse)\s+[0-7]$	Global	Write	ModbusConnect 0	Modbus:3-25	socket-specific online command
+^modbus(?:exceptioncode|linuxerror|socketerror|state|serverlinuxerror|serverstate)(?:\s+[0-7])?$	Global	Write	ModbusServerState 0	Modbus:7-25	status commands retain socket and calling-thread affinity
+^modbusascii\s+[0-7]\s*,\s*\S.*$	Global	Write	ModbusAscii 0,P1=1 P2=2 P3=3	Modbus:3	remaining single-line ASCII payload is opaque
+^modbus(?:coil|float|register|discrete|holding)\s+[0-7]\s*,\s*\S.*$	Global	Write	ModbusRegister 0,10,2=5,4	Modbus:4-14	parameters are validated by controller
+^modbus(?:coilread|coilwrite|discreteread|floatread|floatwrite|holdingread|registerread|registerwrite)\s+[0-7]\s*,\s*\S.*$	Global	Write	ModbusRegisterRead 0,10,2,P100	Modbus:5-15	Read commands can write local variables; never read-pool

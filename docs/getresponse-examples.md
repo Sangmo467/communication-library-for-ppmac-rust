@@ -132,7 +132,9 @@ export LD_LIBRARY_PATH="$PWD/target/debug${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 ## 可选透传模式：跳过 online/program 规则
 
-GetResponse 默认行为保持不变。对单个请求显式启用 `passthrough` 后，字符串不再经过 `online-command-rules.tsv` 分类，也不要求本地确认 `open prog`，不区分 online command 与 program command。发送时保留空格、分号、大小写等原始文本；仍由 GPASCII 添加正常的帧结束符。
+GetResponse/command 默认开启透传：跳过 online/program 分类及本地程序上下文检查，原文逐行发送。显式关闭透传可启用规则校验：C 使用 PMAC_REQUEST_CLASSIFY（8），C++ 使用 passthrough=false，C# 使用 Passthrough:false，Python 使用 passthrough=False，MATLAB 使用 struct('passthrough', false)。只读池请求自动启用分类；C 显式 PASSTHROUGH（4）不可与 READ_POOL 或 CLASSIFY 组合。基础帧校验和远端 error # 上报始终生效。
+
+GetResponse 默认开启透传。透传时字符串不经过 `online-command-rules.tsv` 分类，也不要求本地确认 `open prog`，不区分 online command 与 program command。发送时保留空格、分号、大小写等原始文本；仍由 GPASCII 添加正常的帧结束符。
 
 | 语言 | 启用方法 |
 | --- | --- |
@@ -161,11 +163,11 @@ raw = client.get_response('dwell 10', passthrough=True, timeout_ms=5000)
 raw = pmac_mex('getresponse', 'dwell 10', '', struct('passthrough', true));
 ```
 
-这些调用会发送命令，设备是否接受由其当前状态决定；示例中的 `dwell 10` 通常需要设备处于相应程序缓冲区状态。应用需要在同一调用线程依次发送 open、正文和 close。透传模式不解析或维护程序缓冲区状态，也不为 reset/save 等命令自动添加维护屏障；建议一段程序操作始终使用同一种模式，避免与依赖本地上下文的默认模式混用。
+这些调用会发送命令，设备是否接受由其当前状态决定；示例中的 `dwell 10` 通常需要设备处于相应程序缓冲区状态。应用需要在同一调用线程依次发送 open、正文和 close。透传模式不解析或维护程序缓冲区状态，也不为 reset/save 等命令自动添加维护屏障；建议一段程序操作始终使用同一种模式，避免与依赖本地上下文的规则校验模式混用。
 
-透传请求统一按可能产生副作用的控制写入调度，保留线程通道亲和；不能同时指定 `read_pool` / `ReadPool`，否则发送前返回参数错误。请求超时、取消、响应上限、资源配额、错误上报和不自动重放的约定继续生效。任何 `error #N`，包括 #31，仍返回失败和原始诊断；透传模式不会根据程序语义自动补发 close 或修复上下文。
+透传请求统一按可能产生副作用的控制写入调度，保留线程通道亲和；显式 C 透传标志不可与 READ_POOL 组合，否则发送前返回参数错误；各语言绑定指定只读池时自动选择分类模式。请求超时、取消、响应上限、资源配额、错误上报和不自动重放的约定继续生效。任何 `error #N`，包括 #31，仍返回失败和原始诊断；透传模式不会根据程序语义自动补发 close 或修复上下文。
 
-这里的透传仍是一条 GPASCII 帧：最大 1023 字节，拒绝空白命令、NUL、CR/LF、ACK 和 NAK，不能在一个字符串中拼接多行帧。多行程序应逐行请求；这项选项不改变响应正则提取。C ABI 的 RequestOptions 布局不变，新增 flag 值为 4；需使用包含此功能的新原生库，旧库会拒绝未知标志。`pmac_command_submit` 也支持同一选项；其他业务接口不使用它绕过规则。
+这里的透传仍是一条 GPASCII 帧：最大 1023 字节，拒绝空白命令、NUL、CR/LF、ACK 和 NAK，不能在一个字符串中拼接多行帧。多行程序应逐行请求；这项选项不改变响应正则提取。C ABI 的 RequestOptions 布局不变，透传 flag 为 4，显式分类 flag 为 8；需使用包含此功能的新原生库，旧库会拒绝未知标志。`pmac_command_submit` 也支持同一选项；其他业务接口不使用它绕过规则。
 
 ## 6. 后续：Gather 与 geterrors
 

@@ -171,12 +171,50 @@ R	Tdata[0].TestValue
 W	Tdata[0].TestValue=P1+5
 R	UserAlgo.TestValue
 W	UserAlgo.TestValue=P1+5
-R	MyUserStructure[2].Member
-W	MyUserStructure[2].Member=P1+5
 W	MyVariable
-W	MyArray[3]
-W	MyArray[P1]
 W	JogSpeed
 W	KillCounter
 W	SystemTemperature
-W	MyArray[3]=P1+5
+W	StimulusType
+W	StimulusType(11)
+W	MotorState_Mtr(11)
+W	MyArray(3)
+W	MyArray(P1)
+W	MyArray(3)=P1+5
+R	CompTable[0].Data[1][2][3]
+W	ModbusAscii 0,P1=1 P2=2 P3=3
+W	ModbusAscii 0,0xF000,MotorState_Mtr(11)
+W	ModbusClose 0
+W	ModbusCloseAll
+W	ModbusCloseThread
+W	ModbusCoil 0,10,12
+W	ModbusCoil 0,10,12=5,4
+W	ModbusCoilRead 0,10,12,mbarray(0)
+W	ModbusCoilWrite 0,10,12,&1 mbcsarray(0)
+W	ModbusConnect 0
+W	ModbusDiscrete 0,10,12
+W	ModbusDiscreteRead 0,10,12,mbarray(0)
+W	ModbusExceptionCode
+W	ModbusFloat 0,10,2
+W	ModbusFloat 0,10,2=1.5,-2.5
+W	ModbusFloatRead 0,10,2,mbarray(0)
+W	ModbusFloatWrite 0,10,2,P100
+W	ModbusHolding 0,10,2
+W	ModbusHoldingRead 0,10,2,mbarray(0)
+W	ModbusLinuxError
+W	ModbusPing 0
+W	ModbusQuery 0
+W	ModbusRegister 0,10,2
+W	ModbusRegister 0,10,2=5,4
+W	ModbusRegisterRead 0,10,2,P100
+W	ModbusRegisterWrite 0,10,2,P100
+W	ModbusResponse 0
+W	ModbusSocketError
+W	ModbusState
+W	ModbusServerLinuxError
+W	ModbusServerQuery 0
+W	ModbusServerResponse 0
+W	ModbusServerState
+R	Modbus[0].Config.ServerIPAddr[3]
+R	ModbusServer[0].State
+R	Sys.ModbusServerBuffer[0]

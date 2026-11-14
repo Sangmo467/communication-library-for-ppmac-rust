@@ -56,7 +56,7 @@ try {
     foreach ($file in @('LICENSE','THIRD_PARTY_NOTICES.md','Cargo.lock','rust-toolchain.toml')) { Copy-Item -LiteralPath $file -Destination $destination }
     # 白名单复制可独立编译的公开例程，排除内部审核和独立测试 fixture。
     $sdkFiles = @('cmake/PmacConfig.cmake','examples/CMakeLists.txt',
-        'crates/pmac-protocol/src/online-command-rules.tsv','crates/pmac-protocol/tests/online-command-corpus.tsv',
+        'crates/pmac-protocol/src/data-structures.tsv','crates/pmac-protocol/src/online-command-rules.tsv','crates/pmac-protocol/tests/online-command-corpus.tsv',
         'examples/c/abi_layout.c','examples/c/sdk_smoke.c','examples/c/getresponse.c','examples/c/geterrors.c',
         'examples/cpp/sdk_smoke.cpp','examples/cpp/getresponse.cpp','examples/cpp/geterrors.cpp','examples/cpp/gather.cpp',
         'examples/python/getresponse.py','examples/python/sdk_smoke.py',
@@ -68,7 +68,7 @@ try {
     # 所有公开使用文档均按中英文对打包；只按明确白名单选择，排除内部审核资料。
     foreach ($manual in @('abi-contract','authentication','build-and-install','dart-api','dependency-patches','dotnet-getresponse',
         'gather','geterrors','getresponse-examples','getresponse-passthrough','matlab-getresponse',
-        'loongarch-sdk','online-commands','pattern-migration','prebuilt-sdk','python-getresponse','user-manual')) {
+        'data-structures','loongarch-sdk','online-commands','pattern-migration','prebuilt-sdk','python-getresponse','user-manual')) {
         $sdkFiles += @("docs/$manual.md", "docs/$manual.en.md")
     }
     $sdkFiles += @('THIRD_PARTY_NOTICES.en.md','CHANGELOG.md','CHANGELOG.en.md')

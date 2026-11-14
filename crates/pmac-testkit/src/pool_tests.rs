@@ -1626,3 +1626,180 @@ fn close_retries_only_members_without_confirmation() {
     assert!(!fixture.client.has_unreleased_gpascii());
     assert!(fixture.runtime.is_shutdown());
 }
+
+#[test]
+fn requested_motion_program_upload_preserves_each_line_on_the_confirmed_member() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    // open 必须先收到成功响应；本测试只向模拟 Transport 上传，不执行真实运动。
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    let lines = [
+        "abs",
+        "linear",
+        "ta 50",
+        "ts 25",
+        "gather.enable=2",
+        "dwell 10",
+        "frax(a,b,c,x,y)",
+        "x 50",
+        "x 100 y 50 f30.5",
+        "a 50 x 0 y30.5",
+        "b(L2) x 10",
+        "normal k -1",
+        "circle2",
+        "x 0 y 0 i 30 j 0",
+        "x 0 y 0 r (P2)",
+        "dwell 0",
+        "gather.enable=0",
+    ];
+    for line in lines {
+        let command = fixture
+            .client
+            .parse_command_for_current_thread(line)
+            .unwrap();
+        assert!(command.is_program_line());
+        assert!(!command.is_passthrough());
+        let request = fixture.submit(Operation::Command(command), options());
+        fixture.finish(request.clone()).unwrap();
+        assert_eq!(request.info().member_id, 1);
+    }
+    // close 单独提交并等待确认，避免正文错误地落入在线解释器。
+    fixture
+        .finish(parsed_program_request(&fixture, "close"))
+        .unwrap();
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abs")
+        .is_err());
+    let mut expected = vec!["open prog 1"];
+    expected.extend(lines);
+    expected.push("close");
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        expected
+    );
+    assert!(fixture
+        .transport
+        .member(1)
+        .commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn custom_array_and_modbus_commands_use_control_member_and_reject_read_pool() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    for text in [
+        "StimulusType",
+        "StimulusType(11)",
+        "MotorState_Mtr(11)",
+        "ModbusConnect 0",
+        "ModbusRegisterRead 0,10,2,P100",
+        "ModbusCoilRead 0,10,12,mbarray(0)",
+        "ModbusServerState",
+    ] {
+        let command = fixture
+            .client
+            .parse_command_for_current_thread(text)
+            .unwrap();
+        let error = fixture
+            .client
+            .submit(
+                fixture.runtime.next_id(),
+                Operation::Command(command),
+                RequestOptions {
+                    read_pool: true,
+                    ..options()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        fixture.finish(fixture.command(text, false)).unwrap();
+    }
+    assert_eq!(
+        fixture.transport.member(0).commands.lock().unwrap().len(),
+        7
+    );
+    assert!(fixture
+        .transport
+        .member(1)
+        .commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn requested_buffer_jog_syntax_is_forwarded_without_online_reclassification() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    let lines = [
+        "jog1..3,5..7:0;",
+        "jog25..27:*",
+        "jog=10000^-50;",
+        "jog1:-50000^(P10);",
+        "jog1..3=*^0;",
+        "jogret1,2,3=-2468;",
+        "jogret25..27=*",
+        "jog^5000;",
+        "jog1^(Q1);",
+        "jog2=3000;",
+        "jog3=(Q1);",
+        "jog7=*",
+        "jog/1,2,3;",
+        "jog+ ",
+        "jog+ 1..5,8",
+        "jog-1,2,3;",
+    ];
+    let mut expected = vec!["open prog 1".to_string()];
+    for line in lines {
+        for text in [line.to_string(), line.to_ascii_uppercase()] {
+            // 列表、范围、变量表达式、星号、尾部分号与空格都保留给控制器解释。
+            let command = fixture
+                .client
+                .parse_command_for_current_thread(&text)
+                .unwrap();
+            assert!(command.is_program_line());
+            assert!(!command.is_passthrough());
+            assert_eq!(command.text(), text);
+            let request = fixture.submit(Operation::Command(command), options());
+            fixture.finish(request.clone()).unwrap();
+            assert_eq!(request.info().member_id, 1);
+            expected.push(text);
+        }
+    }
+    fixture
+        .finish(parsed_program_request(&fixture, "close"))
+        .unwrap();
+    expected.push("close".to_string());
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        expected
+    );
+    assert!(fixture
+        .transport
+        .member(1)
+        .commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}

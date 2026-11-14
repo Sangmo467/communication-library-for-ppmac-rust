@@ -406,15 +406,17 @@ fn get_response_program_passthrough_starts_only_after_same_thread_open_ack() {
     let mut info = std::mem::MaybeUninit::<PmacRequestInfo>::uninit();
     assert_eq!(pmac_request_wait(connect, 1000, info.as_mut_ptr()), 0);
     assert_eq!(pmac_request_release(connect), 0);
+    let checked = PmacRequestOptions {
+        struct_size: size_of::<PmacRequestOptions>() as u32,
+        abi_version: ABI_VERSION,
+        timeout_ms: 1000,
+        flags: 8,
+        max_response_bytes: 4096,
+    };
     let submit = |text: &str| {
         let mut request = 0;
-        let status = pmac_get_response_async(
-            client,
-            text.as_ptr(),
-            text.len(),
-            std::ptr::null(),
-            &mut request,
-        );
+        let status =
+            pmac_get_response_async(client, text.as_ptr(), text.len(), &checked, &mut request);
         (status, request)
     };
     assert_eq!(submit("abort"), (ErrorCode::InvalidArgument as i32, 0));
@@ -426,13 +428,7 @@ fn get_response_program_passthrough_starts_only_after_same_thread_open_ack() {
         let text = b"abort";
         let mut request = 0;
         (
-            pmac_get_response_async(
-                client,
-                text.as_ptr(),
-                text.len(),
-                std::ptr::null(),
-                &mut request,
-            ),
+            pmac_get_response_async(client, text.as_ptr(), text.len(), &checked, &mut request),
             request,
         )
     })
@@ -472,47 +468,55 @@ fn get_response_passthrough_flag_bypasses_rules_and_preserves_exact_text() {
     assert_eq!(pmac_request_wait(request, 1000, info.as_mut_ptr()), 0);
     assert_eq!(pmac_request_release(request), 0);
     let wire = b"  Vendor.FutureCommand(7);;dwell 10  ";
-    request = 99;
-    assert_ne!(
-        pmac_get_response_async(
-            client,
-            wire.as_ptr(),
-            wire.len(),
-            std::ptr::null(),
-            &mut request
-        ),
-        0
-    );
-    assert_eq!(request, 0);
     let mut options = PmacRequestOptions {
         struct_size: size_of::<PmacRequestOptions>() as u32,
         abi_version: ABI_VERSION,
         timeout_ms: 1000,
-        flags: 4,
+        flags: 0,
         max_response_bytes: 4096,
     };
-    assert_eq!(
-        pmac_get_response_async(client, wire.as_ptr(), wire.len(), &options, &mut request),
-        0
-    );
-    assert_eq!(pmac_request_wait(request, 1000, info.as_mut_ptr()), 0);
-    assert_eq!(pmac_request_release(request), 0);
+    // 空选项、零标志、显式透传均保留原文，且无需已确认的本地程序上下文。
+    for flags in [None, Some(0), Some(4)] {
+        options.flags = flags.unwrap_or(0);
+        let pointer = if flags.is_none() {
+            std::ptr::null()
+        } else {
+            &options
+        };
+        assert_eq!(
+            pmac_get_response_async(client, wire.as_ptr(), wire.len(), pointer, &mut request),
+            0
+        );
+        assert_eq!(pmac_request_wait(request, 1000, info.as_mut_ptr()), 0);
+        assert_eq!(pmac_request_release(request), 0);
+    }
     assert_eq!(
         mock.session.commands(),
-        vec![String::from_utf8(wire.to_vec()).unwrap()]
+        vec![String::from_utf8(wire.to_vec()).unwrap(); 3]
     );
-    options.flags = 6;
-    assert_eq!(
-        pmac_get_response_async(client, wire.as_ptr(), wire.len(), &options, &mut request),
-        ErrorCode::InvalidArgument as i32
-    );
-    assert_eq!(request, 0);
-    options.flags = 8;
-    assert_eq!(
-        pmac_get_response_async(client, wire.as_ptr(), wire.len(), &options, &mut request),
-        ErrorCode::InvalidArgument as i32
-    );
-    assert_eq!(request, 0);
+    // 显式分类、只读池、相互冲突或未知标志不能让任意正文绕过校验。
+    for flags in [2, 6, 8, 12, 16] {
+        options.flags = flags;
+        request = 99;
+        assert_eq!(
+            pmac_get_response_async(client, wire.as_ptr(), wire.len(), &options, &mut request),
+            ErrorCode::InvalidArgument as i32
+        );
+        assert_eq!(request, 0);
+    }
+    for wire in ["dwell 10\nclose", "P1\0", " ", "P1\u{6}"] {
+        assert_eq!(
+            pmac_get_response_async(
+                client,
+                wire.as_ptr(),
+                wire.len(),
+                std::ptr::null(),
+                &mut request
+            ),
+            ErrorCode::InvalidArgument as i32
+        );
+        assert_eq!(request, 0);
+    }
     assert_eq!(pmac_client_close(client, 0, 1000), 0);
     assert_eq!(pmac_client_release(client), 0);
     assert_eq!(pmac_runtime_shutdown(runtime_id, 1000), 0);

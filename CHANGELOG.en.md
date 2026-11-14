@@ -19,9 +19,13 @@ This project follows semantic versioning. The public C ABI major/minor versions 
 
 ## Unreleased
 
+- Default GetResponse/command to passthrough; explicit opt-out enables online/program rules, while read-pool requests classify automatically. Add PMAC_REQUEST_CLASSIFY (8) without changing request layouts.
+- Check 66 case-insensitive structure roots by prefix and boundary only; custom arrays use parentheses.
+- Support Modbus Client/Server online commands and add exact-wire motion and jog/jogret buffer tests plus bilingual catalogs.
+
 - Fixed lost request-extraction diagnostics and incorrect execution-certainty reporting in bindings, inability to retry after a custom Session close panic, and lingering cached late SSH Close after cancellation of a wait; reduced repeated allocations in Gather line parsing; added Rust 1.100 documentation-table checks to CI.
 
-- Added optional GetResponse passthrough mode: sends a single GPASCII command unchanged, bypassing the rule table, online/program classification, and local open checks. Available in C/C++, C#, Python, and MATLAB; disabled by default, with error reporting preserved.
+- Added optional GetResponse passthrough mode: sends a single GPASCII command unchanged, bypassing the rule table, online/program classification, and local open checks. Available in C/C++, C#, Python, and MATLAB; enabled by default with an explicit opt-out, preserving error reporting.
 
 - Fixed repository-metadata inheritance in five crates following new Cargo manifest diagnostics in Rust 1.100.0; documented upgrade review and Windows NASM build requirements.
 

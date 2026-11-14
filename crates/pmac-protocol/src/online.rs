@@ -31,6 +31,59 @@ fn rules() -> &'static [Rule] {
     })
 }
 
+pub(crate) fn data_structure_indexed(root: &str) -> Option<bool> {
+    static STRUCTURES: OnceLock<Vec<(&'static str, bool)>> = OnceLock::new();
+    STRUCTURES
+        .get_or_init(|| {
+            include_str!("data-structures.tsv")
+                .lines()
+                .skip(1)
+                .map(|line| {
+                    let mut fields = line.split('\t');
+                    let name = fields.next().expect("structure root");
+                    let indexed = match fields.next().expect("structure index mode") {
+                        "indexed" => true,
+                        "singleton" => false,
+                        _ => panic!("invalid structure index mode"),
+                    };
+                    (name, indexed)
+                })
+                .collect()
+        })
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(root))
+        .map(|(_, indexed)| *indexed)
+}
+
+fn looks_like_structure_member(operation: &str) -> bool {
+    let length = operation
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    let tail = &operation[length..];
+    tail.starts_with('[')
+        || (tail.starts_with('.')
+            && tail
+                .as_bytes()
+                .get(1)
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_'))
+}
+
+fn valid_structure_root(operation: &str) -> bool {
+    let length = operation
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    let Some(indexed) = data_structure_indexed(&operation[..length]) else {
+        return false;
+    };
+    let tail = &operation[length..];
+    if indexed {
+        tail.starts_with('[')
+    } else {
+        tail.starts_with('.')
+    }
+}
 fn selected_target(segment: &str) -> Result<Option<(u8, &str, &str, CommandScope)>, ProtocolError> {
     let Some(prefix) = segment
         .as_bytes()
@@ -92,17 +145,6 @@ pub(crate) fn classify(segment: &str) -> Result<Option<Classification>, Protocol
     }
     let operation = selected.map_or(segment, |(_, _, op, _)| op);
     let lower = operation.to_ascii_lowercase();
-    for (root, maximum) in [("motor[", 255), ("coord[", 127), ("plc[", 31)] {
-        if let Some(rest) = lower.strip_prefix(root) {
-            if let Some((index, _)) = rest.split_once(']') {
-                if let Ok(value) = index.parse::<i32>() {
-                    if !(0..=maximum).contains(&value) {
-                        return Err(ProtocolError::AmbiguousTarget(segment.into()));
-                    }
-                }
-            }
-        }
-    }
     static NUMERIC_INDEX: OnceLock<Regex> = OnceLock::new();
     let indices = NUMERIC_INDEX.get_or_init(|| Regex::new(r"\[([0-9]+)\]").expect("index regex"));
     static VARIABLE_QUERY: OnceLock<Regex> = OnceLock::new();
@@ -113,6 +155,9 @@ pub(crate) fn classify(segment: &str) -> Result<Option<Classification>, Protocol
     for rule in rules() {
         if !rule.pattern.is_match(operation) {
             continue;
+        }
+        if looks_like_structure_member(operation) && !valid_structure_root(operation) {
+            return Err(ProtocolError::UnsupportedCommand(segment.into()));
         }
         let valid_scope = match rule.scope {
             "Motor" => selected.is_some_and(|(prefix, _, _, _)| prefix == b'#'),
@@ -195,6 +240,16 @@ pub(crate) fn classify(segment: &str) -> Result<Option<Classification>, Protocol
             MaintenanceKind::Device
         };
         return Ok(Some((effect, scope, maintenance)));
+    }
+    if valid_structure_root(operation) {
+        if selected.is_some() {
+            return Err(ProtocolError::AmbiguousTarget(segment.into()));
+        }
+        return Ok(Some((
+            CommandEffect::Control,
+            CommandScope::System,
+            MaintenanceKind::None,
+        )));
     }
     Ok(None)
 }
@@ -286,20 +341,107 @@ mod tests {
         );
     }
     #[test]
-    fn additional_structure_roots_are_not_restricted_by_a_prefix_list() {
-        for member in [
-            "Gather.Enable",
-            "Tdata[0].TestValue",
-            "UserAlgo.TestValue",
+    fn catalog_roots_match_case_insensitively_without_checking_member_dimensions() {
+        let mut roots = std::collections::HashSet::new();
+        for row in include_str!("data-structures.tsv").lines().skip(1) {
+            let columns: Vec<_> = row.split('\t').collect();
+            assert_eq!(columns.len(), 3);
+            assert!(roots.insert(columns[0].to_ascii_lowercase()));
+            let prefix = if columns[1] == "indexed" {
+                format!("{}[0].", columns[0])
+            } else {
+                format!("{}.", columns[0])
+            };
+            for reference in [prefix.to_ascii_lowercase(), prefix.to_ascii_uppercase()] {
+                let numeric = format!("{reference}AnyMember[1][2][3]");
+                assert_eq!(
+                    Command::raw(&numeric).unwrap().effect(),
+                    CommandEffect::ReadOnly
+                );
+                let opaque = format!("{reference}AnyMember[L0][P1+2].UnknownField");
+                assert_eq!(
+                    Command::raw(&opaque).unwrap().effect(),
+                    CommandEffect::Control
+                );
+                assert_eq!(
+                    Command::raw(format!("{numeric}=P1")).unwrap().effect(),
+                    CommandEffect::Control
+                );
+            }
+        }
+        assert_eq!(roots.len(), 66);
+        for text in [
+            "StimulusType[11]",
+            "MotorState_Mtr[11]",
             "MyUserStructure[2].Member",
+            "MotorExtra[0].ActPos",
+            "SysExtra.ServoCount",
+            "Motor.ActPos",
+            "Sys[0].ServoCount",
         ] {
-            let query = Command::raw(member).unwrap();
-            assert_eq!(query.effect(), CommandEffect::ReadOnly);
-            let assignment = format!("{member}=P1+5");
-            assert_eq!(
-                Command::raw(&assignment).unwrap().effect(),
-                CommandEffect::Control
-            );
+            assert!(Command::raw(text).is_err(), "{text}");
+        }
+        for text in [
+            "Motor[-1].ClosedLoop",
+            "Coord[128].AmpEna",
+            "Plc[32].Active",
+            "CamTable[m].",
+            "Motor[0].FutureMember[L0][L1][L2]",
+        ] {
+            assert!(Command::raw(text).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn custom_arrays_use_parentheses_and_preserve_original_identifiers() {
+        for text in [
+            "StimulusType",
+            "StimulusType(11)",
+            "MotorState_Mtr(11)",
+            "sTiMuLuStYpE(11)",
+            "MyArray(P1+2)",
+            "MyArray((P1+2)*3)",
+            "MyArray(Sys.Ddata[11])",
+            "MyArray(3)=P1+5",
+        ] {
+            let command = Command::raw(text).unwrap();
+            assert_eq!(command.effect(), CommandEffect::Control, "{text}");
+            assert_eq!(command.text(), text);
+            assert!(!command.is_passthrough());
+        }
+        for text in [
+            "StimulusType[]",
+            "StimulusType(11",
+            "StimulusType()",
+            "StimulusType(11)[2]",
+            "save(11)",
+            "kill(11)",
+        ] {
+            assert!(Command::raw(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn modbus_commands_remain_control_even_when_the_name_contains_read() {
+        for text in [
+            "ModbusRegisterRead 0,10,2,P100",
+            "ModbusCoilRead 0,10,12,mbarray(0)",
+            "ModbusFloatWrite 0,10,2,&1 mbcsarray(0)",
+            "ModbusServerState",
+            "ModbusAscii 0,P1=1;P2=2;abs",
+        ] {
+            let command = Command::raw(text).unwrap();
+            assert_eq!(command.effect(), CommandEffect::Control);
+            assert_eq!(command.text(), text);
+            assert!(!command.is_passthrough());
+        }
+        for text in [
+            "ModbusUnknown 0",
+            "ModbusRegisterReadExtra 0,1,2,P1",
+            "#1ModbusConnect 0",
+            "&1ModbusConnect 0",
+        ] {
+            assert!(Command::raw(text).is_err(), "{text}");
         }
     }
 }

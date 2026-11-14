@@ -130,4 +130,4 @@ If closing reports `PMAC_SHUTDOWN_PENDING` or resources still have uncertain rel
 
 Gather and geterrors are follow-up topics without current C# convenience wrappers. Wrap the C ABI yourself if needed and observe callbacks and stop barriers: [real-time Gather](gather.en.md), [geterrors state-change monitoring](geterrors.en.md).
 
-GetResponse also supports an optional passthrough request setting, disabled by default, to send one command verbatim while bypassing online/program classification. For language syntax, single-frame limits, and error semantics, see [passthrough mode](getresponse-examples.en.md#optional-passthrough-mode-bypass-onlineprogram-rules).
+GetResponse also supports an optional passthrough request setting, enabled by default, to send one command verbatim while bypassing online/program classification. For language syntax, single-frame limits, and error semantics, see [passthrough mode](getresponse-examples.en.md#optional-passthrough-mode-bypass-onlineprogram-rules).

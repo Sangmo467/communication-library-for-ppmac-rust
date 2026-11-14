@@ -223,13 +223,13 @@ void dispatch(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
         if (nlhs) plhs[0] = mxCreateLogicalScalar(true);
     } else if (operation == "getresponse") {
         if (nrhs < 2 || nrhs > 4) argument("Usage: bytes = pmac_mex('getresponse', command, pattern, options)");
-        bool passthrough = false;
+        bool passthrough = true;
         if (nrhs == 4) {
             scalarStruct(prhs[3]);
             for (int i = 0; i < mxGetNumberOfFields(prhs[3]); ++i)
                 if (std::string(mxGetFieldNameByNumber(prhs[3], i)) != "passthrough")
                     argument("Unknown request option");
-            passthrough = boolField(prhs[3], "passthrough", false);
+            passthrough = boolField(prhs[3], "passthrough", true);
         }
         const auto response = getresponse(text(prhs[1], "command"), nrhs >= 3 ? text(prhs[2], "pattern") : "", passthrough);
         if (nlhs) {

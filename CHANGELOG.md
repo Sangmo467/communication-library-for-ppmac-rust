@@ -19,9 +19,13 @@
 
 ## 未发布
 
+- GetResponse/command 默认开启透传；显式关闭启用 online/program 规则，只读池自动分类。新增 PMAC_REQUEST_CLASSIFY（8），请求结构布局不变。
+- 核对 66 个结构根名称，仅按前缀及边界匹配，不区分大小写；自定义数组使用圆括号。
+- 支持 Modbus Client/Server 在线命令，补齐运动及 jog/jogret 程序缓冲区原文上传测试和中英文目录。
+
 - 修复绑定层请求提取诊断丢失和执行确定性误报、自定义 Session 关闭 panic 后无法重试、取消等待后迟到 SSH Close 缓存残留；减少 Gather 行解析重复分配，CI 增加 Rust 1.100 文档表格检查。
 
-- GetResponse 新增可选 passthrough 模式：按原文发送单条 GPASCII 命令，跳过规则表、online/program 分类及本地 open 检查；C/C++、C#、Python、MATLAB 均可设置，默认关闭且保留错误上报。
+- GetResponse 新增可选 passthrough 模式：按原文发送单条 GPASCII 命令，跳过规则表、online/program 分类及本地 open 检查；C/C++、C#、Python、MATLAB 均可设置，默认开启、可显式关闭且保留错误上报。
 
 - 根据 Rust 1.100.0 新增 Cargo 清单诊断，修复五个 crate 的仓库元数据继承；补充升级审查和 Windows NASM 构建要求。
 

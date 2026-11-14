@@ -125,4 +125,4 @@ This example supports only GetResponse, without Gather/geterrors interfaces. In 
 
 After ordinary requests work, see the dedicated C/C++ interfaces for [Gather](gather.en.md) and [geterrors](geterrors.en.md). geterrors listens continuously until stopped with Ctrl+C, supports detection periods of 0.01–1.0 seconds, and uses system defaults when masks are unspecified.
 
-GetResponse also supports an optional passthrough request setting, disabled by default, to send one command verbatim while bypassing online/program classification. For language syntax, single-frame limits, and error semantics, see [passthrough mode](getresponse-examples.en.md#optional-passthrough-mode-bypass-onlineprogram-rules).
+GetResponse also supports an optional passthrough request setting, enabled by default, to send one command verbatim while bypassing online/program classification. For language syntax, single-frame limits, and error semantics, see [passthrough mode](getresponse-examples.en.md#optional-passthrough-mode-bypass-onlineprogram-rules).

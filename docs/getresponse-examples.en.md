@@ -131,7 +131,9 @@ Complete Requests, copy results, and release them before closing Client, then Ru
 
 ## Optional passthrough mode: bypass online/program rules
 
-The default GetResponse behavior is unchanged. Explicitly enabling `passthrough` for an individual request bypasses classification by `online-command-rules.tsv`, does not require a locally confirmed `open prog`, and makes no distinction between online commands and program commands. Original spaces, semicolons, and letter case are preserved; GPASCII still adds its normal frame terminator.
+GetResponse/command defaults to passthrough, bypassing online/program classification and local program-context checks while forwarding each line unchanged. Disable it explicitly for rule validation: C uses PMAC_REQUEST_CLASSIFY (8), C++ uses passthrough=false, C# uses Passthrough:false, Python uses passthrough=False, and MATLAB uses struct('passthrough', false). Read-pool requests automatically enable classification; explicit C PASSTHROUGH (4) cannot be combined with READ_POOL or CLASSIFY. Basic framing checks and remote error # reporting always apply.
+
+GetResponse defaults to passthrough, bypassing classification by `online-command-rules.tsv`. It does not require a locally confirmed `open prog`, and makes no distinction between online commands and program commands. Original spaces, semicolons, and letter case are preserved; GPASCII still adds its normal frame terminator.
 
 | Language | How to enable |
 | --- | --- |
@@ -160,11 +162,11 @@ raw = client.get_response('dwell 10', passthrough=True, timeout_ms=5000)
 raw = pmac_mex('getresponse', 'dwell 10', '', struct('passthrough', true));
 ```
 
-These calls send commands; whether the device accepts them depends on its current state. The example `dwell 10` normally requires the corresponding program buffer state on the device. The application must send open, body, and close sequentially on the same calling thread. Passthrough does not parse or maintain program buffer state, or automatically add maintenance barriers for commands such as reset/save. Use the same mode throughout a program operation to avoid mixing it with the default mode, which depends on local context.
+These calls send commands; whether the device accepts them depends on its current state. The example `dwell 10` normally requires the corresponding program buffer state on the device. The application must send open, body, and close sequentially on the same calling thread. Passthrough does not parse or maintain program buffer state, or automatically add maintenance barriers for commands such as reset/save. Use the same mode throughout a program operation to avoid mixing it with classification mode, which depends on local context.
 
-Passthrough requests are always scheduled as control writes with potential side effects and retain thread/channel affinity. They cannot also specify `read_pool` / `ReadPool`; doing so returns an argument error before transmission. Request timeouts, cancellation, response limits, resource quotas, error reporting, and the no-automatic-replay contract remain in effect. Every `error #N`, including #31, still returns failure with the original diagnostic; passthrough does not automatically send close or repair context based on program semantics.
+Passthrough requests are always scheduled as control writes with potential side effects and retain thread/channel affinity. Explicit C PASSTHROUGH cannot be combined with READ_POOL; that combination fails before transmission. Language bindings automatically select classification when the read pool is requested. Request timeouts, cancellation, response limits, resource quotas, error reporting, and the no-automatic-replay contract remain in effect. Every `error #N`, including #31, still returns failure with the original diagnostic; passthrough does not automatically send close or repair context based on program semantics.
 
-Passthrough still represents a single GPASCII frame: at most 1023 bytes. Blank commands, NUL, CR/LF, ACK, and NAK are rejected; multiple lines/frames cannot be combined in one string. Submit multiline programs one line per request. This option does not change response regex extraction. The C ABI RequestOptions layout is unchanged; the new flag has value 4. A native library containing this feature is required; older libraries reject unknown flags. `pmac_command_submit` supports the same option; other business interfaces do not use it to bypass rules.
+Passthrough still represents a single GPASCII frame: at most 1023 bytes. Blank commands, NUL, CR/LF, ACK, and NAK are rejected; multiple lines/frames cannot be combined in one string. Submit multiline programs one line per request. This option does not change response regex extraction. The C ABI RequestOptions layout is unchanged; passthrough uses flag 4 and explicit classification uses flag 8. A native library containing this feature is required; older libraries reject unknown flags. `pmac_command_submit` supports the same option; other business interfaces do not use it to bypass rules.
 
 ## 6. Next: Gather and geterrors
 

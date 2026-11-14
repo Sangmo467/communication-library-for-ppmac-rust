@@ -4,6 +4,8 @@
 
 命令目录依据 `Power_PMAC_Software_Reference_Manual`，Online Command Specification（手册页 1119–1319）。目录规则见 [online-command-rules.tsv](../crates/pmac-protocol/src/online-command-rules.tsv)；其中记录语法族、作用域、读写/维护分类和代表样例。规则覆盖手册各 Online 命令族，具体参数有效性和设备资源状态由控制器最终判断。
 
+本页的本地分类与程序上下文规则在显式关闭透传时生效。默认透传只保留帧校验；原始 Rust Command::raw 仍是显式规则解析器。
+
 ## Online Commands
 
 - 所有命令大小写不敏感；库保留原始文本发送。
@@ -20,20 +22,28 @@
 
 ## 数据结构变量
 
-结构成员采用通用语法，不使用固定结构名前缀白名单。`Sys`、`EncTable[n]`、`Motor[n]`、`ECAT[n]`、`Gate1/2/3[n]`、`Ldata`、`Macro`、`Eip[n]`、`Coord[n]`、`BufIO[n]`、`Gather`、`Tdata[n]`、`UserAlgo` 等均可接完整成员链和数组下标。`Sys.`、`Motor[n].` 是结构前缀示意，本身不是完整的成员查询。
+按手册核对的结构根名称和边界识别前缀，匹配不区分大小写；后续成员和多维下标不作白名单检查。完整目录及页码见[数据结构前缀](data-structures.md)。例如 Motor[1].ActPos、CompTable[0].Data[1][2][3]、BrickAC.Chan[0].I2tWarnOnly 均可提交，字段与下标是否合法由控制器判断。
 
-用户声明的合法标量、数组变量名也可直接下发，例如 `MyVariable`、`MyArray[3]`、`MyArray[P1]` 和相应赋值。未在本地验证声明的独立名称查询保守按控制请求路由，原文不改写；这不会把查询变成赋值。包含 `Jog`、`Kill` 或 `System` 的名称不会仅因子串匹配而被拦截。
+自定义变量支持 StimulusType、StimulusType(11)、MotorState_Mtr(11) 及相应赋值；自定义数组查询不允许 StimulusType[11]。原文保持不变，查询保守使用 Control 调度，不进入只读池。可静态识别的完整数值结构成员查询才按 ReadOnly 处理。
 
-完整数值下标成员查询和 `.a` 地址查询归为只读；赋值、复合赋值和自增/自减按写入处理。动态下标成员也允许下发，但因表达式可能产生副作用，按控制写入分类，不进入只读池。字段是否存在、可写及取值范围由对应控制器固件判断；本地语法允许并不意味着所有字段都支持写入。
+## Modbus 在线命令
+
+同时支持 Power PMAC On-Line Modbus Command Specification 2014-01.pdf 中的 Client 和 Server 在线命令；文件标题页标注 JULY-2015。包括 ModbusAscii、Close/CloseAll/CloseThread、Coil/CoilRead/CoilWrite、Connect、Discrete/DiscreteRead、ExceptionCode、Float/FloatRead/FloatWrite、Holding/HoldingRead、LinuxError、Ping、Query、Register/RegisterRead/RegisterWrite、Response、SocketError、State，以及 ModbusServerLinuxError/Query/Response/State（客户端短名称均带 Modbus 前缀）。
+
+命令名不区分大小写；显式 socket 编号为 0–7。后续参数交给控制器检查，ModbusAscii 的剩余单行 ASCII 正文保持原样，包括分号。Modbus[0].Config.ServerIPAddr[3]、ModbusServer[0].State、Sys.ModbusServerBuffer[0] 同样支持结构访问。这是通过现有 GPASCII 下发 PMAC 的 Modbus 命令，不是新增主机侧 Modbus TCP 传输接口。
+
+ModbusRegisterRead 等 Read 命令会写入本地 PMAC 变量；CloseThread 等具有通信线程语义。因此所有 Modbus 在线命令统一作为 Control 路由到主成员，不能设置 read_pool。为保持 socket 所属上下文，相关命令使用同一个 Client 和调用线程。
+
+调用示例：依次提交 ModbusConnect 0、ModbusRegisterRead 0,10,2,P100、ModbusServerState，并等待各自响应。
 
 ## Program Commands
 
 `GetResponse` / `pmac_command_submit` 自动使用调用线程已确认的程序缓冲区上下文，无需新参数：
 
 ```python
-client.get_response("open prog 100")  # 等待确认成功
-client.get_response("dwell 10")       # 程序正文，同一调用线程
-client.get_response("close")          # 单独提交并等待确认
+client.get_response("open prog 100", passthrough=False)  # 等待确认成功
+client.get_response("dwell 10", passthrough=False)       # 程序正文，同一调用线程
+client.get_response("close", passthrough=False)          # 单独提交并等待确认
 ```
 
 程序编号由应用选择。每次调用传输一行，沿用原有命令长度限制；NUL、CR/LF 和 ACK/NAK 控制字节仍不允许出现在命令文本中。
@@ -67,4 +77,8 @@ stdin:1:1: error #31: Buffer closed due to another thread:
 
 同一 Client 通过库发出的 `close all buffers` 会在维护屏障后清除已知本地程序上下文；旧正文可能在本地准入时被拒绝，合法在线命令也仍可能读到远端通道的延迟 error #31，错误同样返回给应用。每个 Client 的在线 GPASCII 通道总额度为 16，包含预建及释放不确定的占用；不得通过新线程或池修复绕过未确认释放的计数。
 
-GetResponse/command 可使用 PMAC_REQUEST_PASSTHROUGH（4）跳过 online/program 分类及本地程序上下文检查。默认关闭；不可与 READ_POOL 组合。仍受单条帧校验约束，远端 error # 继续原样上报。详见[透传模式](getresponse-examples.md#可选透传模式跳过-onlineprogram-规则)。
+GetResponse/command 默认开启透传：跳过 online/program 分类及本地程序上下文检查，原文逐行发送。显式关闭透传可启用规则校验：C 使用 PMAC_REQUEST_CLASSIFY（8），C++ 使用 passthrough=false，C# 使用 Passthrough:false，Python 使用 passthrough=False，MATLAB 使用 struct('passthrough', false)。只读池请求自动启用分类；C 显式 PASSTHROUGH（4）不可与 READ_POOL 或 CLASSIFY 组合。基础帧校验和远端 error # 上报始终生效。
+
+## 程序缓冲区 jog / jogret
+
+确认打开程序缓冲区后，支持逐行原样提交 jog / jogret 正文，包括列表与范围、星号、P/Q 表达式、方向、返回位置和尾部分号。例如 jog1..3,5..7:0;、jog=10000^-50;、jogret25..27=*、jog+ 1..5,8、jog-1,2,3;。这些行不按独立 Online 命令重新分类，也不需要请求级 PASSTHROUGH 标志；仍须使用同一 Client、调用线程和已确认的缓冲区。模拟测试验证上传原文和成员亲和，实际编译与执行合法性由控制器决定。

@@ -436,11 +436,14 @@ pub extern "C" fn pmac_command_submit(
         unsafe { write_id(out_id, 0)? };
         let parsed_options = unsafe { request_options(options)? };
         let command_text = unsafe { text(command, command_len)? };
-        let passthrough = if options.is_null() {
-            false
+        // Null/zero options use passthrough. Read-pool requests necessarily
+        // classify; CLASSIFY explicitly restores online/program validation.
+        let flags = if options.is_null() {
+            0
         } else {
-            unsafe { read_input::<PmacRequestOptions>(options)? }.flags & 4 != 0
+            unsafe { read_input::<PmacRequestOptions>(options)? }.flags
         };
+        let passthrough = flags & (2 | 8) == 0;
         let command = if passthrough {
             pmac_protocol::Command::passthrough(command_text)?
         } else {

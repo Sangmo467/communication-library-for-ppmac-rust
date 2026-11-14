@@ -63,12 +63,14 @@ impl Command {
                 })
                 .trim_start()
             });
-            if coordinate_operation.is_some_and(|op| {
-                ["cpx", "cx"].iter().any(|prefix| {
-                    op.strip_prefix(prefix)
-                        .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+            if lower.split_whitespace().next() == Some("modbusascii")
+                || coordinate_operation.is_some_and(|op| {
+                    ["cpx", "cx"].iter().any(|prefix| {
+                        op.strip_prefix(prefix)
+                            .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+                    })
                 })
-            }) {
+            {
                 // The rest of the line is opaque program/shell text, including semicolons.
                 break;
             }
@@ -406,11 +408,34 @@ fn classify_segment(
             MaintenanceKind::None,
         ));
     }
-    static SYMBOLIC_VARIABLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let variable = SYMBOLIC_VARIABLE.get_or_init(|| regex::Regex::new(r"^[a-z_][a-z0-9_]*(?:\[[^\r\n]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[^\r\n]+\])?)*(?:(?:\s*(?:=|\+=|-=|\*=|/=|->)).*|\+\+|--)?$").expect("symbolic variable regex"));
-    if !variable.is_match(&lower)
+    if !symbolic_variable(&lower) {
+        return Err(ProtocolError::UnsupportedCommand(segment.into()));
+    }
+    Ok((
+        CommandEffect::Control,
+        CommandScope::System,
+        MaintenanceKind::None,
+    ))
+}
+
+// User symbols use parentheses for array indices. Square brackets belong to
+// registered firmware structures and are handled by the online classifier.
+fn symbolic_variable(text: &str) -> bool {
+    if !text
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        return false;
+    }
+    let length = text
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    let root = &text[..length];
+    if crate::online::data_structure_indexed(root).is_some()
         || matches!(
-            lower.as_str(),
+            root,
             "system"
                 | "pread"
                 | "dread"
@@ -427,15 +452,59 @@ fn classify_segment(
                 | "endwhile"
         )
     {
-        return Err(ProtocolError::UnsupportedCommand(segment.into()));
+        return false;
     }
-    Ok((
-        CommandEffect::Control,
-        CommandScope::System,
-        MaintenanceKind::None,
-    ))
+    let mut tail = text[length..].trim_start();
+    if tail.starts_with('(') {
+        // A native online command cannot become a user-array query merely by
+        // appending parentheses; retain target and maintenance classification.
+        if !matches!(crate::online::classify(root), Ok(None)) {
+            return false;
+        }
+        let Some(rest) = parenthesized_index_tail(tail) else {
+            return false;
+        };
+        tail = rest.trim_start();
+    }
+    tail.is_empty()
+        || matches!(tail, "++" | "--")
+        || ["=", "+=", "-=", "*=", "/=", "->"]
+            .iter()
+            .any(|operator| tail.starts_with(operator))
 }
 
+fn parenthesized_index_tail(text: &str) -> Option<&str> {
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, byte) in text.bytes().enumerate() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => delimiters.push(b')'),
+            b'[' => delimiters.push(b']'),
+            b')' | b']' => {
+                if delimiters.pop() != Some(byte) {
+                    return None;
+                }
+                if delimiters.is_empty() {
+                    return (!text[1..index].trim().is_empty()).then_some(&text[index + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
 /// These global queries are safe to distribute only when their complete syntax
 /// is recognized. Assignments, operators, appended commands and implicit Q
 /// variables deliberately fall through to the conservative control path.
@@ -673,9 +742,6 @@ mod tests {
             "&128P",
             "&P",
             "#1jog=NaN",
-            "Motor[-1].ClosedLoop",
-            "Coord[128].AmpEna",
-            "Plc[32].Active",
         ] {
             assert!(Command::raw(text).is_err(), "accepted {text}");
         }
@@ -1111,15 +1177,15 @@ mod tests {
     fn user_declared_names_do_not_collide_with_command_substrings() {
         for text in [
             "MyVariable",
-            "MyArray[3]",
-            "MyArray[P1]",
+            "MyArray(3)",
+            "MyArray(P1)",
             "JogSpeed",
             "KillCounter",
             "AdisableStatus",
             "SystemTemperature",
             "JogSpeed=17.5",
             "SystemTemperature += 1",
-            "MyArray[3]=P1+5",
+            "MyArray(3)=P1+5",
         ] {
             for variant in [text.to_ascii_lowercase(), text.to_ascii_uppercase()] {
                 let command = Command::raw(&variant).unwrap();

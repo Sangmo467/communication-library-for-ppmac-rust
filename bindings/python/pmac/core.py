@@ -62,8 +62,9 @@ def options(value=None):
     timeout_ms = _checked_integer(value.get("timeout_ms", 5000), 0, 0xffffffff, "timeout_ms")
     max_response_bytes = _checked_integer(value.get("max_response_bytes", 1024 * 1024),
                                           0, 2**(8 * C.sizeof(C.c_size_t)) - 1, "max_response_bytes")
+    classify_command = not value.get("read_pool") and not value.get("passthrough", True)
     return N.RequestOptions(N.sizeof(N.RequestOptions), 2000, timeout_ms,
-                            (1 if value.get("infinite") else 0) | (2 if value.get("read_pool") else 0) | (4 if value.get("passthrough") else 0),
+                            (1 if value.get("infinite") else 0) | (2 if value.get("read_pool") else 0) | (8 if classify_command else 0),
                             max_response_bytes)
 
 

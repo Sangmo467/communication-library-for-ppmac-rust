@@ -4,6 +4,8 @@
 
 The command catalog follows the Online Command Specification in `Power_PMAC_Software_Reference_Manual` (manual pages 1119–1319). See [online-command-rules.tsv](../crates/pmac-protocol/src/online-command-rules.tsv) for catalog rules, including syntax families, scope, read/write/maintenance classification, and representative examples. Rules cover the manual's Online command families; the controller ultimately determines parameter validity and device resource state.
 
+The local classification and program-context rules on this page apply when passthrough is explicitly disabled. Default passthrough retains framing checks; Rust Command::raw remains an explicit rule parser.
+
 ## Online Commands
 
 - All commands are case-insensitive; the library preserves the original text when sending.
@@ -20,20 +22,28 @@ Only verified read-only syntax may set `read_pool`; control writes and maintenan
 
 ## Data-structure variables
 
-Structure members use general syntax rather than a fixed structure-name prefix allowlist. `Sys`, `EncTable[n]`, `Motor[n]`, `ECAT[n]`, `Gate1/2/3[n]`, `Ldata`, `Macro`, `Eip[n]`, `Coord[n]`, `BufIO[n]`, `Gather`, `Tdata[n]`, `UserAlgo`, and others may all be followed by complete member chains and array indices. `Sys.` and `Motor[n].` illustrate structure prefixes; they are not complete member queries themselves.
+Root names and delimiter boundaries are checked against the manual catalog, case-insensitively. Subsequent members and multidimensional indices are not checked against an allowlist. See the [structure catalog](data-structures.en.md) for roots and manual pages. Examples include Motor[1].ActPos, CompTable[0].Data[1][2][3] and BrickAC.Chan[0].I2tWarnOnly. The controller validates fields and index ranges.
 
-Valid user-declared scalar and array names may also be sent directly, such as `MyVariable`, `MyArray[3]`, `MyArray[P1]`, and corresponding assignments. Standalone-name queries whose declarations have not been locally verified are conservatively routed as control requests without rewriting the text; this does not turn a query into an assignment. Names containing `Jog`, `Kill`, or `System` are not blocked merely by substring matching.
+Custom variables support StimulusType, StimulusType(11), MotorState_Mtr(11) and assignments. Custom array queries must not use StimulusType[11]. Original text is preserved; custom-name queries conservatively use Control scheduling and cannot enter the read pool. Only complete, statically recognized numeric structure-member queries are ReadOnly.
 
-Complete numeric-index member queries and `.a` address queries are classified as read-only; assignments, compound assignments, and increment/decrement operations are writes. Dynamic-index member access is also allowed, but is classified as a control write and excluded from the read-only pool because expressions may have side effects. The relevant controller firmware determines whether fields exist, are writable, and accept particular ranges. Local syntax acceptance does not mean every field supports writes.
+## Modbus online commands
+
+Client and Server online commands from Power PMAC On-Line Modbus Command Specification 2014-01.pdf are supported; the document title page is marked JULY-2015. These include ModbusAscii, Close/CloseAll/CloseThread, Coil/CoilRead/CoilWrite, Connect, Discrete/DiscreteRead, ExceptionCode, Float/FloatRead/FloatWrite, Holding/HoldingRead, LinuxError, Ping, Query, Register/RegisterRead/RegisterWrite, Response, SocketError and State, plus ModbusServerLinuxError/Query/Response/State. All shortened client names in this list carry the Modbus prefix.
+
+Names are case-insensitive; explicit socket numbers are 0–7. The controller validates remaining parameters. The remaining single-line ModbusAscii payload is preserved, including semicolons. Structure access such as Modbus[0].Config.ServerIPAddr[3], ModbusServer[0].State and Sys.ModbusServerBuffer[0] is also supported. These are PMAC Modbus commands sent over the existing GPASCII transport; this does not add a host-side Modbus TCP transport API.
+
+Read commands such as ModbusRegisterRead write local PMAC variables, and CloseThread has communication-thread semantics. All Modbus online commands therefore use Control scheduling on the control member and cannot set read_pool. Use the same Client and calling thread for related socket commands.
+
+Example: submit ModbusConnect 0, then ModbusRegisterRead 0,10,2,P100, then ModbusServerState, waiting for each response.
 
 ## Program Commands
 
 `GetResponse` / `pmac_command_submit` automatically use the calling thread's confirmed program-buffer context without new parameters:
 
 ```python
-client.get_response("open prog 100")  # Wait for successful confirmation
-client.get_response("dwell 10")       # Program body, same calling thread
-client.get_response("close")          # Submit separately and wait for confirmation
+client.get_response("open prog 100", passthrough=False)  # Wait for successful confirmation
+client.get_response("dwell 10", passthrough=False)       # Program body, same calling thread
+client.get_response("close", passthrough=False)          # Submit separately and wait for confirmation
 ```
 
 The application chooses the program number. Each call transfers one line under the existing command-length limit; NUL, CR/LF, and ACK/NAK control bytes remain forbidden in command text.
@@ -67,4 +77,8 @@ After error #31, the library invalidates the affected old program context and re
 
 When the same Client issues `close all buffers` through the library, known local program contexts are cleared after the maintenance barrier. Old bodies may be rejected during local admission, while valid Online commands may still receive a delayed remote-channel error #31, which is likewise returned to the application. Each Client has a total quota of 16 live GPASCII channels, including prebuilt channels and occupancy with uncertain release. New threads or pool repair must not bypass counts whose release has not been confirmed.
 
-GetResponse/command may use PMAC_REQUEST_PASSTHROUGH (4) to skip online/program classification and local program-context checks. It is disabled by default and cannot be combined with READ_POOL. Single-frame validation still applies, and remote error # diagnostics continue to be reported unchanged. See [Passthrough mode](getresponse-examples.en.md#optional-passthrough-mode-bypass-onlineprogram-rules).
+GetResponse/command defaults to passthrough, bypassing online/program classification and local program-context checks while forwarding each line unchanged. Disable it explicitly for rule validation: C uses PMAC_REQUEST_CLASSIFY (8), C++ uses passthrough=false, C# uses Passthrough:false, Python uses passthrough=False, and MATLAB uses struct('passthrough', false). Read-pool requests automatically enable classification; explicit C PASSTHROUGH (4) cannot be combined with READ_POOL or CLASSIFY. Basic framing checks and remote error # reporting always apply.
+
+## Program-buffer jog / jogret
+
+After a successful buffer open, jog / jogret bodies are forwarded line by line, preserving lists, ranges, wildcards, P/Q expressions, directions, return positions and trailing semicolons. Examples include jog1..3,5..7:0;, jog=10000^-50;, jogret25..27=*, jog+ 1..5,8 and jog-1,2,3;. These lines are not reclassified as standalone Online commands and require no request-level PASSTHROUGH flag. Use the same Client, calling thread and confirmed buffer. Mock tests verify exact uploaded text and member affinity; the controller determines actual compilation and execution validity.

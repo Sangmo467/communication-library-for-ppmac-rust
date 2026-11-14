@@ -11,9 +11,22 @@ int main() {
     try {
         if (pmac_abi_version() / 1000 != PMAC_ABI_MAJOR) return 1;
 #ifdef PMAC_EXAMPLE_CPP98
+        pmac98::Options options;
+        if (options.native().flags != 0u) return 3;
+        options.passthrough = false;
+        if (options.native().flags != PMAC_REQUEST_CLASSIFY) return 3;
+        options.read_pool = true;
+        if (options.native().flags != PMAC_REQUEST_READ_POOL) return 3;
         pmac98::Runtime runtime;
         pmac98::Client client(runtime);
 #else
+        // 默认透传；显式关闭后启用分类；只读池总是分类，不携带透传标志。
+        pmac::RequestOptions options;
+        if (options.native().flags != 0u) return 3;
+        options.passthrough = false;
+        if (options.native().flags != PMAC_REQUEST_CLASSIFY) return 3;
+        options.readPool = true;
+        if (options.native().flags != PMAC_REQUEST_READ_POOL) return 3;
         pmac::Runtime runtime;
         pmac::Client client = runtime.createClient();
 #endif

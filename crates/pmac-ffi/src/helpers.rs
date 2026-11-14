@@ -93,8 +93,13 @@ pub(crate) unsafe fn request_options(
         options.abi_version,
         size_of::<PmacRequestOptions>(),
     )?;
-    if options.flags & !7 != 0 {
+    if options.flags & !15 != 0 {
         return Err(Error::invalid("unknown request flags"));
+    }
+    if options.flags & 4 != 0 && options.flags & (2 | 8) != 0 {
+        return Err(Error::invalid(
+            "passthrough conflicts with read-pool or classify",
+        ));
     }
     Ok(RequestOptions {
         timeout_ms: options.timeout_ms,

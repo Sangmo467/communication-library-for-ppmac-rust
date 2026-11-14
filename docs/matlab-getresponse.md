@@ -126,4 +126,4 @@ MATLAB 的 `loadlibrary` / `calllib` 可用于 C 共享库，但 `loadlibrary` �
 
 接通普通请求后再参阅 [Gather](gather.md)和 [geterrors](geterrors.md)的 C/C++ 专用接口。geterrors 持续监听直到 Ctrl+C 停止，检测周期支持 0.01～1.0 秒，掩码未指定时使用系统默认值。
 
-GetResponse 也支持可选的 passthrough 请求选项，以原文发送单条命令并跳过 online/program 分类；默认关闭。各语言写法、单帧限制与错误语义见[透传模式说明](getresponse-examples.md#可选透传模式跳过-onlineprogram-规则)。
+GetResponse 也支持可选的 passthrough 请求选项，以原文发送单条命令并跳过 online/program 分类；默认开启。各语言写法、单帧限制与错误语义见[透传模式说明](getresponse-examples.md#可选透传模式跳过-onlineprogram-规则)。

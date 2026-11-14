@@ -38,13 +38,13 @@ struct RequestOptions {
     bool infinite = false;
     bool readPool = false;
     size_t maxResponseBytes = 1024 * 1024;
-    bool passthrough = false;
+    bool passthrough = true;
     pmac_request_options native() const {
         pmac_request_options value{};
         value.struct_size = sizeof(value);
         value.abi_version = PMAC_ABI_VERSION;
         value.timeout_ms = timeoutMs;
-        value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (readPool ? PMAC_REQUEST_READ_POOL : 0u) | (passthrough ? PMAC_REQUEST_PASSTHROUGH : 0u);
+        value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (readPool ? PMAC_REQUEST_READ_POOL : 0u) | (readPool ? 0u : (passthrough ? 0u : PMAC_REQUEST_CLASSIFY));
         value.max_response_bytes = maxResponseBytes;
         return value;
     }

@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.en.md)
 
-GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](docs/getresponse-passthrough.md)**。
+GetResponse 默认开启透传，跳过规则表和 online/program 分类，原文提交单条命令；显式关闭后启用规则校验。详见 **[GetResponse 透传模式与各语言示例](docs/getresponse-passthrough.md)**。
 
 
 基于 Rust 与 russh 的 Power PPMAC 通信库，提供统一的 C ABI，以及 C++17、C++98、.NET 8 和 Python 绑定，并提供 MATLAB GetResponse MEX 示例。
@@ -109,6 +109,7 @@ int main() {
 - [认证与主机身份校验](docs/authentication.md)：密码、私钥、known_hosts 与固定指纹。
 - [GetResponse 模式](docs/pattern-migration.md)：兼容提取和字节正则规则。
 - [Online Commands 与程序透传](docs/online-commands.md)：手册命令目录、读写分类、显式目标和同线程程序缓冲区。
+- [数据结构前缀](docs/data-structures.md)：不区分大小写的结构根、自定义数组及手册核对目录。
 - [C ABI 契约](docs/abi-contract.md)：结构布局、ID、状态码、请求结果与恢复语义。
 - [DART 接口指南](docs/dart-api.md)：连接、数据类型、C/C++、Python 与 .NET 使用。
 - [实时连续 Gather](docs/gather.md)：普通请求接通后的连续采样、批次回调、停止和故障恢复。

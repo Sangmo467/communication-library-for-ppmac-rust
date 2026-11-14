@@ -58,11 +58,11 @@ struct Options {
     bool read_pool;
     size_t max_response_bytes;
     bool passthrough;
-    Options() : timeout_ms(5000), infinite(false), read_pool(false), max_response_bytes(1024 * 1024), passthrough(false) {}
+    Options() : timeout_ms(5000), infinite(false), read_pool(false), max_response_bytes(1024 * 1024), passthrough(true) {}
     pmac_request_options native() const {
         pmac_request_options value = {};
         value.struct_size = sizeof(value); value.abi_version = PMAC_ABI_VERSION;
-        value.timeout_ms = timeout_ms; value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (read_pool ? PMAC_REQUEST_READ_POOL : 0u) | (passthrough ? PMAC_REQUEST_PASSTHROUGH : 0u); value.max_response_bytes = max_response_bytes;
+        value.timeout_ms = timeout_ms; value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (read_pool ? PMAC_REQUEST_READ_POOL : 0u) | (read_pool ? 0u : (passthrough ? 0u : PMAC_REQUEST_CLASSIFY)); value.max_response_bytes = max_response_bytes;
         return value;
     }
 };

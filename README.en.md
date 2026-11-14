@@ -18,7 +18,7 @@ Version: **2.0.2** · C ABI: **2.1** · License: **MIT**
 - Request cancellation, execution deadlines, bounded admission, completion notifications and explicit execution-certainty reporting.
 - SSH host verification using known_hosts or a pinned SHA-256 fingerprint; password and private-key authentication.
 
-GetResponse passthrough can be enabled per request to bypass the online-command rule table and program classification, while preserving framing validation. See the [passthrough guide and examples (Chinese)](docs/getresponse-passthrough.en.md).
+GetResponse defaults to passthrough, bypassing the online-command rule table and program classification while preserving framing validation. Explicitly disable passthrough to enable rule validation. See the [passthrough guide and examples](docs/getresponse-passthrough.en.md).
 
 ## Prebuilt SDKs
 
@@ -111,6 +111,7 @@ The public user documentation below is available in English and Chinese. Each pa
 - [Authentication and host verification](docs/authentication.en.md), [C ABI contract](docs/abi-contract.en.md)
 - [.NET](docs/dotnet-getresponse.en.md), [Python](docs/python-getresponse.en.md), [MATLAB](docs/matlab-getresponse.en.md)
 - [DART](docs/dart-api.en.md), [online commands](docs/online-commands.en.md), [response extraction](docs/pattern-migration.en.md)
+- [Data-structure prefixes](docs/data-structures.en.md): case-insensitive roots, custom arrays and manual references.
 - [Continuous Gather](docs/gather.en.md), [geterrors monitoring](docs/geterrors.en.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.en.md), [changelog](CHANGELOG.en.md)
 

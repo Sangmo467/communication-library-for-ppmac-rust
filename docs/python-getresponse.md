@@ -148,4 +148,4 @@ except PmacError as error:
 
 `geterrors` 需要专用持续监听会话、以 Ctrl+C 退出远端程序；检测周期可配置为 0.01..1.0 秒，未指定的监控掩码沿用控制器默认值。不要把它当作普通单次 GetResponse 命令长期阻塞在 GPASCII 通道上。
 
-GetResponse 也支持可选的 passthrough 请求选项，以原文发送单条命令并跳过 online/program 分类；默认关闭。各语言写法、单帧限制与错误语义见[透传模式说明](getresponse-examples.md#可选透传模式跳过-onlineprogram-规则)。
+GetResponse 也支持可选的 passthrough 请求选项，以原文发送单条命令并跳过 online/program 分类；默认开启。各语言写法、单帧限制与错误语义见[透传模式说明](getresponse-examples.md#可选透传模式跳过-onlineprogram-规则)。
