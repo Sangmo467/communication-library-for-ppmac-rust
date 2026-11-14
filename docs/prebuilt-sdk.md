@@ -129,7 +129,7 @@ Linux 使用 `export NAME=value`；库路径换为 native/libpmac.so，可执行
 
 仓库：[Sangmo467/communication-library-for-ppmac-rust](https://github.com/Sangmo467/communication-library-for-ppmac-rust)。`.github/workflows/release.yml` 在 main/master 更新时自动构建全部目标平台，产生九组独立 ZIP 与校验文件（Actions artifacts 保留 30 天）。
 
-正式发布：公开分支干净提交的 Cargo 版本与 tag 一致，例如 Cargo version=2.0.1 对应 v2.0.1。执行 `git tag v2.0.1`、`git push github v2.0.1` 后，九平台构建与示例测试全部成功才创建 GitHub Release 并上传八个附件。无需设置 Gitee Token 或额外私人 Token；只有发布 job 使用 GitHub 提供的短期 Token 并获得 contents:write。手动运行默认只构建；选择版本 tag 并勾选 publish_release 才会发布。
+正式发布：公开分支干净提交的 Cargo 版本与 tag 一致，例如 Cargo version=2.0.1 对应 v2.0.1。执行 `git tag v2.0.1`、`git push github v2.0.1` 后，九平台构建与示例测试全部成功才创建 GitHub Release 并上传九个 ZIP 及九个 SHA-256 校验附件。无需设置 Gitee Token 或额外私人 Token；只有发布 job 使用 GitHub 提供的短期 Token 并获得 contents:write。手动运行默认只构建；选择版本 tag 并勾选 publish_release 才会发布。
 
 Linux 使用 Ubuntu 22.04 runner（glibc 2.35 环境），不承诺向更旧 glibc 兼容；Windows 使用 Windows Server 2022/MSVC。Linux x86 测试 Rust/C/C++，不运行不支持该架构的 .NET 8。Windows x86 使用独立 x86 Python 和 .NET runtime。
 

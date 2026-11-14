@@ -123,7 +123,7 @@ The GitHub workflow .github/workflows/release.yml builds nine targets after main
 
 The publishing job uses GitHub's automatic short-lived token with contents:write; no Gitee token or additional personal token is required. A manual workflow run builds only by default. Select a version tag and enable publish_release to publish manually.
 
-For manual validation/publication, collect the all required archives and sidecars in one directory:
+For manual validation/publication, collect all required archives and sidecars in one directory:
 
 ```powershell
 ./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.1 -Commit <40-character-public-commit> -ValidateOnly
