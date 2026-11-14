@@ -78,12 +78,13 @@ try {
         New-Item -ItemType Directory -Path (Split-Path $copyPath -Parent) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $copyPath
     }
-    Copy-Item -LiteralPath 'docs/prebuilt-sdk.md' -Destination (Join-Path $destination 'README.md')
+    $sdkReadme = (Get-Content -LiteralPath 'docs/prebuilt-sdk.md' -Raw -Encoding UTF8).Replace('(prebuilt-sdk.en.md)', '(README.en.md)')
+    [IO.File]::WriteAllText((Join-Path $destination 'README.md'), $sdkReadme, [Text.UTF8Encoding]::new($false))
     Copy-Item -LiteralPath 'docs/prebuilt-sdk.en.md' -Destination (Join-Path $destination 'README.en.md')
     New-Item -ItemType Directory -Path (Join-Path $destination 'third-party/russh') -Force | Out-Null
     Copy-Item -LiteralPath 'vendor/russh/LICENSE' -Destination (Join-Path $destination 'third-party/russh/LICENSE')
     Copy-Item -LiteralPath $SbomPath -Destination (Join-Path $destination 'sbom.spdx.json')
-    if (Test-Path -LiteralPath 'docs/dependency-patches.md') { Copy-Item -LiteralPath 'docs/dependency-patches.md' -Destination $destination }
+    foreach ($notice in @('docs/dependency-patches.md','docs/dependency-patches.en.md')) { Copy-Item -LiteralPath $notice -Destination $destination }
     foreach ($provenanceFile in @('vendor/russh-patch.json','vendor/russh-upstream-files.sha256')) { if (Test-Path -LiteralPath $provenanceFile) { Copy-Item -LiteralPath $provenanceFile -Destination $destination } }
     if ($EvidenceDirectory) {
         if (-not (Test-Path -LiteralPath $EvidenceDirectory -PathType Container)) { throw 'Evidence directory does not exist' }
