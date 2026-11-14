@@ -2,7 +2,7 @@
 
 [中文](gather.md) | [English](gather.en.md)
 
-当前提供 C ABI 和 C++17 封装。复用已连接 Client 的 SSH 认证和 GPASCII 请求，不需要再次传入控制器账号。反向数据连接必须通过控制器来源 IP 检查和本次会话随机握手，验证完成后才开始采样回调。
+当前提供 C ABI 和 C++17 封装。复用已连接 Client 的 SSH 认证和 GPASCII 请求，不需要再次传入控制器账号。反向数据连接必须通过控制器来源 IP 检查和本次会话随机握手，验证完成后才交付采样回调。
 
 ## C++17
 
@@ -70,7 +70,7 @@ int main() {
 | `port` | `0` | 本机 TCP 监听端口；可指定 18999 等端口，0 自动分配 |
 | `localIp` | 空 | 自动从 `SSH_CONNECTION` 获取 SSH 对端所见的本机 IP；可覆盖为本机数字 IP |
 | `maxSamples` | `2048` | 范围 2..=1048576；控制器环形采集缓冲的 `Gather.MaxSamples`，不是会话采样总数 |
-| `batchRows` | `128` | 范围 1..=4096；每批最多行数；不足一批时约每 20 ms 推送一次，实际受调度影响 |
+| `batchRows` | `128` | 范围 1..=4096；每批最多行数；本机已收到的数据不足一批时约每 20 ms 推送一次；控制器输出缓冲和调度会增加延迟 |
 | `queueBatches` | `32` | 范围 1..=1024；接收线程与回调线程之间的有界批次队列 |
 | `timeoutMs` | `5000` | 每个配置/清理请求及等待已验证反向连接的超时；拒绝连接不会重置等待截止时间，不限制采集总时长 |
 
@@ -91,9 +91,9 @@ int main() {
 
 ## 单会话约定和控制器要求
 
-沿用 scanner2 的连续采集方式：经 SSH 启动包含会话握手前缀的 `gather -W` 到 `nc` 的管道，写入地址、Period、Items、MaxSamples，然后执行 `Gather.Enable=1`、`Gather.Enable=0`、`Gather.Enable=3`。采集没有累计样本上限。
+先写入地址、Period、Items、MaxSamples，并执行 `Gather.Enable=1`、`Gather.Enable=0` 初始化；再经 SSH 启动包含会话握手前缀的 `gather -w` 到 `nc` 的管道，验证反向连接后执行 `Gather.Enable=3`。小写 `-w` 按控制器手册表示等待采集开始，停止采集后继续等待，进程由停止清理任务终止。采集没有累计样本上限。
 
-控制器需要可执行 `gather`、`stdbuf`、`nc`、`nohup`、`sh` 和 `killall`，并能够回连本机 TCP 端口。数据通道是控制器到本机的普通 TCP，适用于可直连的控制器网络。
+控制器需要可执行 `gather`、`stdbuf`、`nc`、`nohup`、`sh`、`mkfifo` 和 `killall`，并能够回连本机 TCP 端口。数据通道是控制器到本机的普通 TCP，适用于可直连的控制器网络。
 
 库从已认证 SSH Shell 的 `SSH_CONNECTION` 获取控制器地址，检查反向 TCP 的来源 IP，并要求发送端提供本次启动独立生成的 256 位安全随机握手值。握手值经 SSH 配置到远端管道；错误来源、错误或旧会话握手不会成为采样数据源，库关闭该连接并继续等待。每个候选连接的握手最多等待 200 ms，且不得超过同一个启动截止时间；控制器启动管道所用时间也计入该截止时间。沉默连接、错误来源或重复错误握手均不会延长启动等待。握手不作为采样数据交给用户。
 
@@ -109,7 +109,7 @@ Gather 配置为控制器全局状态，一台控制器同一时间只能运行�
 
 ```sh
 killall gather nc >/dev/null 2>&1 || true
-rm -f /tmp/pmac-library-gather.lock/owner
+rm -f /tmp/pmac-library-gather.lock/stdin /tmp/pmac-library-gather.lock/owner
 rmdir /tmp/pmac-library-gather.lock
 ```
 
@@ -319,3 +319,4 @@ C 的 `period`、`items`、`addresses` 必填；`struct_size=sizeof(pmac_gather_
 | Runtime 释放返回 `PMAC_SHUTDOWN_PENDING` | 先释放 Gather、Request 等子 ID，并完成 Client 关闭/释放；如果资源状态不确定，完成 ABI 文档规定的显式恢复后重试 |
 
 手工恢复远端锁只适用于已确认旧采集停止、且控制器由当前应用独占的情况。先通过已认证 GPASCII 连接执行 `Gather.Enable=0`，再通过 Shell 执行前文的 `killall` 和锁目录清理命令；检查返回状态并确认进程和锁已消失，之后创建新 Gather。SSH 断线时先恢复可用的控制连接再处理，不要以删除本机句柄代替远端状态核实。恢复会停止该控制器上的 gather/nc 进程，不恢复此前 Gather 配置。
+实机验证（2026-11-14）：无需 PTY。控制器上的 gather -w 在 stdin 为 /dev/null（EOF）时会重复输出等待提示而不交付数值。库在会话锁目录创建权限为 0600 的 FIFO，由后台 Shell 以读写方式打开，并作为 gather 的 stdin，保持输入打开且不发送数据；停止时终止 gather/nc 并移除 FIFO 和锁。无需额外常驻辅助进程。

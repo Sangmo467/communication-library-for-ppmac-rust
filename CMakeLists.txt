@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(pmac_rust VERSION 2.0.3 LANGUAGES C CXX)
+project(pmac_rust VERSION 2.0.4 LANGUAGES C CXX)
 include(CTest)
 include(GNUInstallDirs)
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)

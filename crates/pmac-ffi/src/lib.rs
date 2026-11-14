@@ -268,7 +268,7 @@ pub extern "C" fn pmac_get_runtime_info(out: *mut PmacRuntimeInfo) -> i32 {
                 struct_size: size_of::<PmacRuntimeInfo>() as u32,
                 abi_major: ABI_MAJOR,
                 abi_minor: ABI_MINOR,
-                version_number: 20_002,
+                version_number: 20_004,
                 feature_flags: 0x0000_01ff,
                 pointer_width: usize::BITS,
             })
@@ -283,7 +283,7 @@ pub extern "C" fn pmac_version_string() -> *const std::ffi::c_char {
 }
 #[no_mangle]
 pub extern "C" fn pmac_version_number() -> u32 {
-    20_002
+    20_004
 }
 #[no_mangle]
 pub extern "C" fn pmac_abi_version() -> u32 {

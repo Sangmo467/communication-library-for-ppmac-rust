@@ -7,7 +7,7 @@ GetResponse 默认开启透传，跳过规则表和 online/program 分类，原�
 
 基于 Rust 与 russh 的 Power PPMAC 通信库，提供统一的 C ABI，以及 C++17、C++98、.NET 8 和 Python 绑定，并提供 MATLAB GetResponse MEX 示例。
 
-当前版本：**2.0.3**；C ABI：**2.1**；开源协议：**MIT**。
+当前版本：**2.0.4**；C ABI：**2.1**；开源协议：**MIT**。
 
 ## 功能
 

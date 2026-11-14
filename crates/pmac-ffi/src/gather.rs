@@ -1,4 +1,4 @@
-//! Continuous Gather over the controller's gather -W text stream.
+//! Continuous Gather over the controller's gather -w text stream.
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
@@ -517,30 +517,6 @@ fn run(
             "killall gather nc >/dev/null 2>&1 || true".into(),
             c.timeout_ms,
         )?;
-        // Configure a fresh capability over SSH; plaintext TCP still needs a trusted network.
-        let authentication = authentication_line();
-        let deadline = Instant::now() + Duration::from_millis(c.timeout_ms as u64);
-        // nohup detaches the long-running pipeline; the normal Shell lane stays available.
-        let capability = authentication
-            .strip_prefix("PMAC-GATHER-1 ")
-            .and_then(|line| line.strip_suffix('\n'))
-            .ok_or_else(|| Error::internal("invalid Gather authentication framing"))?;
-        shell(client_id, format!("nohup sh -c '{{ printf \"PMAC-GATHER-1 %s\\n\" \"{capability}\"; stdbuf -oL gather -W; }} | nc -n {ip} {port}' >/dev/null 2>&1 </dev/null &"), c.timeout_ms).map_err(|mut error| {
-            // Remote diagnostics must never expose the capability carried by this command.
-            error.message = "Gather data pipeline startup failed".into();
-            error
-        })?;
-        let mut stream = accept_authenticated(
-            &listener,
-            controller,
-            authentication.as_bytes(),
-            s,
-            deadline,
-        )?;
-        drop(listener);
-        stream
-            .set_read_timeout(Some(Duration::from_millis(20)))
-            .map_err(io_error)?;
         // All GPASCII submissions originate on this one worker to retain channel affinity.
         for (i, address) in c.addresses.iter().enumerate() {
             check_stop(s)?;
@@ -556,11 +532,44 @@ fn run(
             format!("Gather.MaxSamples={}", c.max_samples),
             "Gather.Enable=1".into(),
             "Gather.Enable=0".into(),
-            "Gather.Enable=3".into(),
         ] {
             check_stop(s)?;
             command(client_id, text, c.timeout_ms)?;
         }
+        // Configure a fresh capability over SSH; plaintext TCP still needs a trusted network.
+        let authentication = authentication_line();
+        let deadline = Instant::now() + Duration::from_millis(c.timeout_ms as u64);
+        // nohup detaches the long-running pipeline; the normal Shell lane stays available.
+        let capability = authentication
+            .strip_prefix("PMAC-GATHER-1 ")
+            .and_then(|line| line.strip_suffix('\n'))
+            .ok_or_else(|| Error::internal("invalid Gather authentication framing"))?;
+        // Keep stdin open without a PTY or helper process. EOF makes gather -w spin
+        // on waiting messages on some controllers. Opening this FIFO read/write
+        // supplies no bytes and keeps its writer alive until the pipeline exits.
+        shell(
+            client_id,
+            "mkfifo -m 600 /tmp/pmac-library-gather.lock/stdin".into(),
+            c.timeout_ms,
+        )?;
+        shell(client_id, format!("nohup sh -c 'exec 3<>/tmp/pmac-library-gather.lock/stdin; {{ printf \"PMAC-GATHER-1 %s\\n\" \"{capability}\"; stdbuf -oL gather -w <&3; }} | nc -n {ip} {port}' >/dev/null 2>&1 </dev/null &"), c.timeout_ms).map_err(|mut error| {
+            // Remote diagnostics must never expose the capability carried by this command.
+            error.message = "Gather data pipeline startup failed".into();
+            error
+        })?;
+        let mut stream = accept_authenticated(
+            &listener,
+            controller,
+            authentication.as_bytes(),
+            s,
+            deadline,
+        )?;
+        drop(listener);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .map_err(io_error)?;
+        check_stop(s)?;
+        command(client_id, "Gather.Enable=3".into(), c.timeout_ms)?;
         let _ = ready.send(Ok(()));
         receive(&mut stream, c, s, tx)
     })();
@@ -572,7 +581,7 @@ fn run(
     }
     // The single-session contract reserves gather and nc for this API.
     // Verify ownership before killing processes or removing the lock.
-    let cleanup_command = format!("if [ \"$(cat /tmp/pmac-library-gather.lock/owner 2>/dev/null)\" = '{token}' ]; then killall gather nc >/dev/null 2>&1 || true; rm -f /tmp/pmac-library-gather.lock/owner; rmdir /tmp/pmac-library-gather.lock; fi");
+    let cleanup_command = format!("if [ \"$(cat /tmp/pmac-library-gather.lock/owner 2>/dev/null)\" = '{token}' ]; then killall gather nc >/dev/null 2>&1 || true; rm -f /tmp/pmac-library-gather.lock/stdin /tmp/pmac-library-gather.lock/owner; rmdir /tmp/pmac-library-gather.lock; fi");
     if let Err(e) = shell(client_id, cleanup_command, c.timeout_ms) {
         cleanup = Some(e);
     }
@@ -631,7 +640,7 @@ impl Decoder {
                         "controller Gather buffer overrun; samples were lost",
                     ));
                 }
-                // gather -W emits alphabetic headings. Numeric special values are errors.
+                // gather emits alphabetic headings. Numeric special values are errors.
                 if lower.contains("error") || lower.contains("failed") {
                     return Err(Error::new(
                         ErrorCode::RemoteError,

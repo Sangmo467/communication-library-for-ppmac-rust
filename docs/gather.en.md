@@ -69,7 +69,7 @@ See [gather.cpp](../examples/cpp/gather.cpp) for a complete integration example.
 | `port` | `0` | Local TCP listening port; specify a port such as 18999, or 0 for automatic allocation |
 | `localIp` | Empty | Automatically obtains the local IP seen by the SSH peer from `SSH_CONNECTION`; may be overridden with a local numeric IP |
 | `maxSamples` | `2048` | Range 2..=1048576; `Gather.MaxSamples` for the controller's circular acquisition buffer, not the total session sample count |
-| `batchRows` | `128` | Range 1..=4096; maximum rows per batch; partial batches are pushed about every 20 ms, subject to scheduling |
+| `batchRows` | `128` | Range 1..=4096; maximum rows per batch; partial batches of locally received data are pushed about every 20 ms; controller buffering and scheduling add latency |
 | `queueBatches` | `32` | Range 1..=1024; bounded batch queue between the receiver and callback threads |
 | `timeoutMs` | `5000` | Timeout for each configuration/cleanup request and waiting for a verified reverse connection; rejected connections do not reset the deadline; does not limit total acquisition duration |
 
@@ -90,9 +90,9 @@ The receiver thread continuously reads TCP, parses text, and enqueues data into 
 
 ## Single-session convention and controller requirements
 
-The implementation follows scanner2 continuous acquisition: over SSH, it starts a pipeline from `gather -W` to `nc` with a session-handshake prefix, writes addresses, Period, Items, and MaxSamples, then executes `Gather.Enable=1`, `Gather.Enable=0`, and `Gather.Enable=3`. There is no cumulative sample limit.
+The implementation configures the sampler and initializes it with `Gather.Enable=1`, `Gather.Enable=0`, starts the authenticated reverse pipeline with `gather -w`, then executes `Gather.Enable=3`. Lowercase -w requests waiting for acquisition and remains alive across stops. There is no cumulative sample limit.
 
-The controller requires executable `gather`, `stdbuf`, `nc`, `nohup`, `sh`, and `killall`, and must be able to connect back to the local TCP port. The data channel is plain TCP from the controller to the local host, suitable for directly reachable controller networks.
+The controller requires executable `gather`, `stdbuf`, `nc`, `nohup`, `sh`, `mkfifo`, and `killall`, and must be able to connect back to the local TCP port. The data channel is plain TCP from the controller to the local host, suitable for directly reachable controller networks.
 
 The library obtains the controller address from `SSH_CONNECTION` in the authenticated SSH Shell, verifies the reverse TCP source IP, and requires the sender to provide an independently generated 256-bit cryptographically secure random handshake value for this startup. SSH configures the handshake value in the remote pipeline. Wrong sources and incorrect or previous-session handshakes cannot become sample sources: the library closes those connections and continues waiting. Each candidate handshake waits at most 200 ms and cannot exceed the shared startup deadline. Time spent starting the controller pipeline also counts toward that deadline. Silent connections, wrong sources, and repeated incorrect handshakes do not extend startup waiting. The handshake is not delivered to users as sample data.
 
@@ -108,7 +108,7 @@ After a process crash or SSH interruption, the library may be unable to confirm 
 
 ```sh
 killall gather nc >/dev/null 2>&1 || true
-rm -f /tmp/pmac-library-gather.lock/owner
+rm -f /tmp/pmac-library-gather.lock/stdin /tmp/pmac-library-gather.lock/owner
 rmdir /tmp/pmac-library-gather.lock
 ```
 
@@ -319,3 +319,5 @@ Numeric queue capacity is `batchRows × queueBatches × items × sizeof(double)`
 | Runtime release returns `PMAC_SHUTDOWN_PENDING` | Release Gather, Request, and other child IDs first and finish closing/releasing Client; if resource state is uncertain, perform the explicit recovery required by the ABI document before retrying |
 
 Manual remote-lock recovery is only appropriate after confirming that the old acquisition has stopped and that the current application exclusively owns the controller. First execute `Gather.Enable=0` through authenticated GPASCII, then execute the earlier `killall` and lock-directory cleanup commands through Shell. Check return statuses and verify that processes and the lock are gone before creating a new Gather. If SSH is disconnected, restore a usable control connection first; deleting local handles does not substitute for verifying remote state. Recovery stops gather/nc processes on that controller and does not restore previous Gather configuration.
+
+Controller compatibility (2026-11-14): no PTY is required. stdin EOF can make gather -w repeatedly print waiting messages without delivering samples. The library creates a mode-0600 FIFO in its session lock directory, opens it read/write in the background shell, and supplies it as gather stdin. It stays open without sending bytes or adding a helper process. Stop terminates gather/nc and removes the FIFO and lock.

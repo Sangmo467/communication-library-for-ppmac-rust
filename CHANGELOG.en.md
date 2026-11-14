@@ -4,6 +4,11 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.4
+
+- Fix continuous Gather delivery with lowercase gather -w and a session-private FIFO that keeps stdin open without a PTY. Configure acquisition, start the reader, then set Gather.Enable=3.
+- Clean up the FIFO and session lock on stop; update the native numeric version to 20004. C ABI remains 2.1.
+
 ## 2.0.3
 
 - Derive the native version string from Cargo and add a C-export version consistency regression test.
