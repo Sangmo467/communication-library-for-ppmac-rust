@@ -93,4 +93,4 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          ./scripts/Publish-GitHubRelease.ps1 -AssetDirectory release-assets -Tag $env:RELEASE_TAG -Commit $env:RELEASE_COMMIT
+          ./scripts/Publish-GitHubRelease.ps1 -AssetDirectory release-assets -Tag $env:RELEASE_TAG -Commit $env:RELEASE_COMMIT -Owner $env:GITHUB_REPOSITORY_OWNER -Repository ($env:GITHUB_REPOSITORY.Split('/')[1])

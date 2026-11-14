@@ -129,3 +129,5 @@ Linux 使用 `export NAME=value`；库路径换为 native/libpmac.so，可执行
 Linux 使用 Ubuntu 22.04 runner（glibc 2.35 环境），不承诺向更旧 glibc 兼容；Windows 使用 Windows Server 2022/MSVC。Linux x86 测试 Rust/C/C++，不运行不支持该架构的 .NET 8。Windows x86 使用独立 x86 Python 和 .NET runtime。
 
 分支构建的 Actions artifacts 用于评估；正式稳定下载入口是 GitHub Releases。发布脚本拒绝缺包、校验失败、脏源码、不同提交/不同源码摘要的四包组合，且不覆盖已发布的同名 Release。
+
+发布阶段失败、四平台构建已成功时，可在 Actions 手动运行 **Publish validated SDK artifacts**，填写原构建 run ID 和已有版本 tag。该入口只下载原有四包、验证其提交与远端 tag 后重试发布，不重新编译，也不移动标签。

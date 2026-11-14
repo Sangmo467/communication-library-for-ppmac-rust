@@ -127,3 +127,5 @@ For manual validation/publication, collect the four archives and sidecars in one
 ```
 
 Validation checks all four targets, versions, clean-source flags, identical commits/source snapshots and archive/member hashes. The remote tag must match the manifests. Existing releases are not overwritten; inspect any partial upload before retrying. Do not move a published version tag or silently replace assets already downloaded by users.
+
+If compilation succeeded but publishing failed, manually run **Publish validated SDK artifacts** in Actions. Supply the original build run ID and existing version tag. This workflow downloads the original four packages, verifies their commit against the remote tag and retries publication without recompiling or moving the tag.
