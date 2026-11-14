@@ -33,7 +33,7 @@ foreach ($target in $targets) {
             throw "Asset provenance/version/target does not match the clean public release commit: $name"
         }
         if (-not $snapshot) { $snapshot = $manifest.sourceSnapshotSha256 }
-        if (-not $snapshot -or $manifest.sourceSnapshotSha256 -ne $snapshot) { throw 'Four platform assets must have identical source snapshots' }
+        if (-not $snapshot -or $manifest.sourceSnapshotSha256 -ne $snapshot) { throw 'All required target assets must have identical source snapshots' }
         $prefix = $entries[0].FullName.Substring(0, $entries[0].FullName.Length - 'manifest.json'.Length)
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($entry in $manifest.files) {
@@ -48,7 +48,7 @@ foreach ($target in $targets) {
     } finally { $zip.Dispose() }
     $files += @($path, $sidecar)
 }
-if ($ValidateOnly) { Write-Host 'All four release archives passed validation; no network request made.'; return }
+if ($ValidateOnly) { Write-Host 'All required release archives passed validation; no network request made.'; return }
 if (-not $env:GH_TOKEN -and -not $env:GITHUB_TOKEN) { throw 'Configure GH_TOKEN or GITHUB_TOKEN before publishing' }
 $repo = "$Owner/$Repository"
 # --verify-tag 防止意外创建与源码清单不一致的版本标签。
