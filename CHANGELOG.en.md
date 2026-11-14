@@ -4,6 +4,12 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.3
+
+- Default GetResponse/command to passthrough; explicit opt-out enables online/program validation and read-pool requests classify automatically. Add PMAC_REQUEST_CLASSIFY (8), retaining C ABI 2.1.
+- Check 66 case-insensitive structure roots against the software reference and independent DART/Modbus specifications. Delegate subsequent members and multidimensional indices to the controller; custom arrays use parentheses.
+- Support Modbus Client/Server online commands and verify exact-wire upload of the motion program and 16 jog/jogret body forms, with bilingual catalogs and guides.
+
 ## 2.0.2
 
 - Add a LoongArch64 Linux SDK with LP64D new-world ABI and glibc 2.36 baseline checks.

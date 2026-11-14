@@ -5,7 +5,7 @@
 GetResponse supports per-request passthrough: skip the rule table and online/program classification, and submit a single command unchanged. See **[GetResponse Passthrough Mode and Language Examples](getresponse-passthrough.en.md)**.
 
 
-Applies to library version 2.0.2 and C ABI 2.1. This document covers everyday use of the public SDKs. For complete function and structure definitions, refer to `include/pmac.h`, the language binding sources, and the [C ABI Contract](abi-contract.en.md).
+Applies to library version 2.0.3 and C ABI 2.1. This document covers everyday use of the public SDKs. For complete function and structure definitions, refer to `include/pmac.h`, the language binding sources, and the [C ABI Contract](abi-contract.en.md).
 
 For initial integration, start with [GetResponse Multilanguage Examples](getresponse-examples.en.md), covering build, connection, and complete call sequences for C/C++, [C#](dotnet-getresponse.en.md), [Python](python-getresponse.en.md), and [MATLAB MEX](matlab-getresponse.en.md). Gather and geterrors are follow-up topics.
 
