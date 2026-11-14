@@ -65,7 +65,8 @@ if ($object.type -ne 'commit' -or $object.sha -ne $Commit) { throw 'GitHub tag c
 & gh release view $Tag --repo $repo *> $null
 if ($LASTEXITCODE -eq 0) { throw 'Release already exists; refusing to overwrite published artifacts' }
 $notes = "Prebuilt Windows/Linux x86/x64 SDKs, buildable examples and SHA-256 checksums. English guides are attached to this release. Windows/Linux x86/x64 SDK。包含预编译库、C/C++/Python/.NET 绑定、详细中文注释调用例程、独立 CMake 工程及 SHA-256 校验。全部目标已完成 Rust 和 C/C++ 离线测试；支持的架构另验证 Python/.NET。"
-& gh release create $Tag @files --repo $repo --verify-tag --target $Commit --title "PMAC $Tag — Windows/Linux x86/x64 SDK" --notes $notes
+ # Existing tag was verified above; do not pass target_commitish for an older workflow revision.
+& gh release create $Tag @files --repo $repo --verify-tag --title "PMAC $Tag — Windows/Linux x86/x64 SDK" --notes $notes
 if ($LASTEXITCODE -ne 0) { throw 'GitHub release upload failed; inspect remote state before retrying' }
 # 英文文档可作为独立附件补充，不修改已经验证的二进制 ZIP 或版本标签。
 $sourceRoot = Split-Path $PSScriptRoot -Parent

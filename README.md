@@ -12,6 +12,7 @@ GetResponse 支持按请求启用透传：跳过规则表和 online/program 分�
 ## 功能
 
 - GPASCII 命令、同步/异步 GetResponse、响应与正则捕获。
+- **DART 高速二进制数据接口**：通过独立 TCP 连接读写 P 变量及用户共享内存（USHM），支持 char/int/float/double；提供同步/异步 API，自动发现端口并转换网络字节序。
 - 严格调用线程与 GPASCII Channel 亲和，同一 Client 最多 16 个在线通道，支持显式连接池和故障隔离。
 - 持久 Shell、隔离 exec、SFTP 上传/下载和程序 buffer 上传。
 - 电机、坐标系、PLC 常用操作及状态查询。

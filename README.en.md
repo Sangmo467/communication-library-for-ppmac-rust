@@ -9,6 +9,7 @@ Version: **2.0.0** · C ABI: **2.1** · License: **MIT**
 ## Features
 
 - GPASCII commands, synchronous/asynchronous GetResponse, response copying and regular-expression extraction.
+- **DART binary data interface**: an independent TCP connection for reading/writing P variables and user shared memory (USHM), supporting char/int/float/double, synchronous/asynchronous APIs, automatic port discovery and network byte-order conversion.
 - Calling-thread/channel affinity, up to 16 online GPASCII channels per Client, explicit connection pools and member fault isolation.
 - Persistent shell sessions, isolated exec requests, SFTP upload/download and program-buffer upload.
 - Common motor, coordinate-system and PLC operations and status queries.
