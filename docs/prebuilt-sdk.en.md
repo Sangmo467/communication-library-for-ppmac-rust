@@ -1,4 +1,4 @@
-# Prebuilt SDKs: Windows/Linux x86 and x64
+# Prebuilt SDKs: Windows/Linux/macOS on x86, x64 and ARM
 
 **English** | [简体中文](https://github.com/Sangmo467/communication-library-for-ppmac-rust/blob/main/docs/prebuilt-sdk.md)
 
@@ -12,10 +12,15 @@ Download stable SDKs from [GitHub Releases](https://github.com/Sangmo467/communi
 | Windows | x64, 64-bit | x86_64-pc-windows-msvc | native/pmac.dll and pmac.dll.lib |
 | Linux | x86, 32-bit | i686-unknown-linux-gnu | native/libpmac.so |
 | Linux | x64, 64-bit | x86_64-unknown-linux-gnu | native/libpmac.so |
+| Windows | ARM64 | aarch64-pc-windows-msvc | native/pmac.dll and pmac.dll.lib |
+| Linux | ARM64 | aarch64-unknown-linux-gnu | native/libpmac.so |
+| Linux | ARMv7 hard-float, 32-bit | armv7-unknown-linux-gnueabihf | native/libpmac.so |
+| macOS | Intel x64 | x86_64-apple-darwin | native/libpmac.dylib |
+| macOS | Apple Silicon ARM64 | aarch64-apple-darwin | native/libpmac.dylib |
 
-Archive names follow pmac-2.0.0-<target>-release.zip, with a matching .zip.sha256 file. Choose by **process architecture**, not only by the operating system: a 32-bit application on 64-bit Windows still needs the x86 SDK. Python and .NET processes must match the library architecture too.
+Archive names follow pmac-2.0.1-<target>-release.zip, with a matching .zip.sha256 file. Choose by **process architecture**, not only by the operating system: a 32-bit application on 64-bit Windows still needs the x86 SDK. Python and .NET processes must match the library architecture too.
 
-Windows packages use the MSVC ABI. Linux packages use glibc and are built on Ubuntu 22.04; they are not musl/Alpine packages and do not promise compatibility with older glibc installations. Build and validate in a suitable environment if your controller-facing application uses an older industrial Linux distribution. ARM and macOS releases are outside the initial four-target release.
+Windows packages use the MSVC ABI. Linux packages use glibc and are built on Ubuntu 22.04; they are not musl/Alpine packages and do not promise compatibility with older glibc installations. Build and validate in a suitable environment if your controller-facing application uses an older industrial Linux distribution. Version 2.0.1 adds ARM and macOS packages; version 2.0.0 remains available with its original four targets.
 
 The SDK contains native/, include/, bindings/, cmake/PmacConfig.cmake, examples/, licenses, an SPDX SBOM and manifest.json with individual file hashes. Rust is not required on a consumer's machine.
 
@@ -42,7 +47,7 @@ ctest --test-dir ../pmac-example-build --output-on-failure
 
 To build against the x86 Linux SDK on an x64 host, install gcc-multilib/g++-multilib and add -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 to configuration.
 
-Five offline tests verify C, C++17 and C++98 ABI/lifecycle integration and GetResponse --check modes. They do not connect to a controller or send motion commands. The Gather/geterrors executables are built too, but require a real controller and are not run by offline CTest. The examples contain detailed Chinese source comments; this guide explains their setup and behavior in English.
+Six offline tests verify C, C++17 and C++98 ABI/lifecycle integration and GetResponse --check modes. They do not connect to a controller or send motion commands. The Gather/geterrors executables are built too, but require a real controller and are not run by offline CTest. The examples contain detailed Chinese source comments; this guide explains their setup and behavior in English.
 
 The Windows example build copies the DLL next to each executable. Linux build-tree executables use the imported library path. For your own CMake project:
 
@@ -114,18 +119,36 @@ On each target OS, a PowerShell 7 runner with Rust 1.100.0, CMake and the releva
 
 Windows builds need NASM in addition to MSVC. Linux x86 builds need multilib. The script runs target Rust tests, builds the release library, validates the native architecture, generates and checks the SBOM/manifest, builds SDK examples and produces a ZIP plus SHA-256 sidecar. Existing outputs are not overwritten. -AllowUncommitted is for development candidates only; publication rejects dirty source.
 
-The GitHub workflow .github/workflows/release.yml builds four targets after main/master changes. Actions artifacts are temporary build outputs retained for 30 days. For a stable release, ensure that the Cargo version and tag agree, such as version 2.0.0 and tag v2.0.0, then push the public tag. Only after all four builds and their SDK tests succeed will the publishing job create the GitHub Release and attach four ZIPs plus four SHA-256 files.
+The GitHub workflow .github/workflows/release.yml builds nine targets after main/master changes. Actions artifacts are temporary build outputs retained for 30 days. For a stable release, ensure that the Cargo version and tag agree, such as version 2.0.1 and tag v2.0.1, then push the public tag. Only after all required builds and their SDK tests succeed will the publishing job create the GitHub Release and attach nine ZIPs plus nine SHA-256 files.
 
 The publishing job uses GitHub's automatic short-lived token with contents:write; no Gitee token or additional personal token is required. A manual workflow run builds only by default. Select a version tag and enable publish_release to publish manually.
 
-For manual validation/publication, collect the four archives and sidecars in one directory:
+For manual validation/publication, collect the all required archives and sidecars in one directory:
 
 ```powershell
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.0 -Commit <40-character-public-commit> -ValidateOnly
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.1 -Commit <40-character-public-commit> -ValidateOnly
 # Configure GH_TOKEN securely and install the official GitHub CLI before publishing.
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.0 -Commit <40-character-public-commit>
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.1 -Commit <40-character-public-commit>
 ```
 
-Validation checks all four targets, versions, clean-source flags, identical commits/source snapshots and archive/member hashes. The remote tag must match the manifests. Existing releases are not overwritten; inspect any partial upload before retrying. Do not move a published version tag or silently replace assets already downloaded by users.
+Validation checks all nine targets, versions, clean-source flags, identical commits/source snapshots and archive/member hashes. The remote tag must match the manifests. Existing releases are not overwritten; inspect any partial upload before retrying. Do not move a published version tag or silently replace assets already downloaded by users.
 
-If compilation succeeded but publishing failed, manually run **Publish validated SDK artifacts** in Actions. Supply the original build run ID and existing version tag. This workflow downloads the original four packages, verifies their commit against the remote tag and retries publication without recompiling or moving the tag.
+If compilation succeeded but publishing failed, manually run **Publish validated SDK artifacts** in Actions. Supply the original build run ID and existing version tag. This workflow downloads the original required packages, verifies their commit against the remote tag and retries publication without recompiling or moving the tag.
+
+## ARM and macOS (version 2.0.1 and later)
+
+scripts/release-targets.json is the single target registry. Linux ARM64 runs on a native ARM64 runner. ARMv7 uses a hard-float cross compiler; Rust and C/C++ tests execute through QEMU with serialized Rust test scheduling. Windows ARM64 uses a native runner, ARM64 Python/.NET and the VS 2022 ARM64 compiler.
+
+macOS packages contain separate thin Intel x64 and Apple Silicon ARM64 Mach-O dylibs, not a Universal Binary. The application, interpreter/runtime and library architectures must match. The library deployment target is macOS 11.0; your Python/.NET/MATLAB version can impose a newer OS requirement. Libraries use @rpath/libpmac.dylib and an ad-hoc signature. They are not Developer ID signed or notarized; no Apple distribution certification is claimed.
+
+Install Xcode Command Line Tools and CMake, then run from the extracted SDK:
+
+```sh
+cmake -S examples -B ../pmac-macos-build -DCMAKE_BUILD_TYPE=Release
+cmake --build ../pmac-macos-build --parallel 2
+ctest --test-dir ../pmac-macos-build --output-on-failure
+python examples/python/sdk_smoke.py
+dotnet run --project examples/dotnet/getresponse/Pmac.GetResponse.csproj -- --check
+```
+
+All public guides in docs/ have English .en.md counterparts. The macOS library is native/libpmac.dylib; Python, C# and CMake examples select it automatically. Configure an appropriate runtime search path for @rpath when deploying your own application. The MATLAB MEX build entry accepts maci64/maca64 environments, but must be verified separately with a supported, installed MATLAB/compiler combination; MATLAB is not covered by the CI runtime checks.

@@ -11,5 +11,6 @@
     <ProjectReference Include="../../../bindings/dotnet/Pmac/Pmac.csproj" />
     <None Include="$(PmacNativeDirectory)/pmac.dll" Condition="Exists('$(PmacNativeDirectory)/pmac.dll')" Link="pmac.dll" CopyToOutputDirectory="PreserveNewest" />
     <None Include="$(PmacNativeDirectory)/libpmac.so" Condition="Exists('$(PmacNativeDirectory)/libpmac.so')" Link="libpmac.so" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(PmacNativeDirectory)/libpmac.dylib" Condition="Exists('$(PmacNativeDirectory)/libpmac.dylib')" Link="libpmac.dylib" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

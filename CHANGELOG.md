@@ -1,6 +1,15 @@
 # 变更记录
 
+[中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
+
 本项目采用语义化版本。公开 C ABI 的 major/minor 独立记录；ABI major 2 内保持既有输入结构布局兼容。
+
+## 2.0.1
+
+- 增加 Linux ARM64/ARMv7、Windows ARM64、macOS Intel/Apple Silicon 的构建与发布流程，保留现有四平台。
+- 统一平台目标目录、动态库名称及 PE/ELF/Mach-O 架构校验，增加逐目标 C/Rust ABI 对照。
+- 补齐公开用户文档英文版及中英文导航，保留中文注释调用例程。
+- C ABI 保持 2.1；macOS 提供独立的 x64/ARM64 dylib 包。
 
 ## 未发布
 

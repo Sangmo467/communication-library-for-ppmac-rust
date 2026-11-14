@@ -28,7 +28,8 @@ cmake --build $BuildDirectory --config Release --parallel 2
 if ($LASTEXITCODE -ne 0) { throw 'SDK example compilation failed' }
 ctest --test-dir $BuildDirectory -C Release --output-on-failure
 if ($LASTEXITCODE -ne 0) { throw 'SDK C/C++ offline tests failed' }
-$library = Join-Path $package $(if ($manifest.target -like '*windows*') { 'native/pmac.dll' } else { 'native/libpmac.so' })
+$targetProfile = & (Join-Path $PSScriptRoot 'Get-ReleaseTarget.ps1') -Target $manifest.target
+$library = Join-Path $package ('native/' + $targetProfile.library)
 $oldLibrary = $env:PMAC_LIBRARY
 $oldPythonPath = $env:PYTHONPATH
 try {

@@ -3,14 +3,14 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'Run ID containing all four successful sdk-* artifacts'
+        description: 'Run ID containing all required successful sdk-* artifacts'
         type: string
         required: true
       tag:
         description: 'Existing public version tag'
         type: string
         required: true
-        default: 'v2.0.0'
+        default: 'v2.0.1'
 permissions:
   actions: read
   contents: write

@@ -9,7 +9,7 @@ sys.path.insert(0, str(root / "bindings" / "python"))
 from pmac import Runtime
 
 # 显式使用绝对路径，避免 PATH 中旧版本 DLL/so 被意外加载。
-library = root / "native" / ("pmac.dll" if os.name == "nt" else "libpmac.so")
+library = root / "native" / ("pmac.dll" if os.name == "nt" else ("libpmac.dylib" if sys.platform == "darwin" else "libpmac.so"))
 with Runtime(library_path=str(library)) as runtime:
     print(f"PMAC {runtime.native_version}, ABI={runtime.native_abi_version}")
     # Client 先释放，Runtime 后释放；离线例程仅检查本地资源生命周期。

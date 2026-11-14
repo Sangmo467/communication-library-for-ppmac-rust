@@ -1,5 +1,7 @@
 # GetResponse 透传模式
 
+[English](getresponse-passthrough.en.md) | [简体中文](getresponse-passthrough.md)
+
 适用于 C/C++、C#、Python 和 MATLAB。设置为 true 只影响当前请求；后续请求不指定时仍使用默认规则。连接步骤见 [GetResponse 基础指南](getresponse-examples.md)。
 
 GetResponse 默认行为保持不变。对单个请求显式启用 `passthrough` 后，字符串不再经过 `online-command-rules.tsv` 分类，也不要求本地确认 `open prog`，不区分 online command 与 program command。发送时保留空格、分号、大小写等原始文本；仍由 GPASCII 添加正常的帧结束符。

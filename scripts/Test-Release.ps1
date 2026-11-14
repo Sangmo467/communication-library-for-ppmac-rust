@@ -34,6 +34,7 @@ foreach ($required in @('cmake/PmacConfig.cmake','examples/CMakeLists.txt',
     if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $required) -PathType Leaf)) { throw "Missing SDK consumer file: $required" }
 }
 if ($manifest.target -like '*windows*' -and -not (Test-Path -LiteralPath (Join-Path $packageRoot 'native/pmac.dll.lib'))) { throw 'Windows SDK requires the MSVC import library' }
-$library = if ($manifest.target -like '*windows*') { 'pmac.dll' } else { 'libpmac.so' }
+$targetProfile = & (Join-Path $PSScriptRoot 'Get-ReleaseTarget.ps1') -Target $manifest.target
+$library = $targetProfile.library
 $identity = & (Join-Path $PSScriptRoot 'Test-NativeTarget.ps1') -Library (Join-Path $packageRoot "native/$library") -Target $manifest.target
 [pscustomobject]@{ integrity = 'passed'; target = $identity.target; files = $manifest.files.Count; dependencyPackages = $sbom.packages.Count; acceptance = $manifest.acceptance }

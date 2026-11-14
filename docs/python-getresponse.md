@@ -1,5 +1,7 @@
 # Python 调用：优先使用 GetResponse
 
+[English](python-getresponse.en.md) | [简体中文](python-getresponse.md)
+
 GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](getresponse-passthrough.md)**。
 
 

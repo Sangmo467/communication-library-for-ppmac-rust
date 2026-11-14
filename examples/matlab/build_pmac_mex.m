@@ -21,7 +21,11 @@ profile = validatestring(profile, {'debug', 'release'}, mfilename, 'profile');
 exampleDir = fileparts(mfilename('fullpath'));
 repoDir = fileparts(fileparts(exampleDir));
 if nargin < 2 || isempty(libraryDir)
-    libraryDir = fullfile(repoDir, 'target', profile);
+    if isfolder(fullfile(repoDir, 'native'))
+        libraryDir = fullfile(repoDir, 'native'); % 解压 SDK 后直接引用其预编译库。
+    else
+        libraryDir = fullfile(repoDir, 'target', profile);
+    end
 end
 if ~(ischar(libraryDir) || (isstring(libraryDir) && isscalar(libraryDir)))
     error('pmac:BuildArgument', 'libraryDir must be a character vector or string scalar.');
@@ -64,8 +68,17 @@ elseif isunix && ~ismac
     % MATLAB passes LDFLAGS through the compiler driver; quote paths with spaces.
     rpath = ['LDFLAGS=$LDFLAGS -Wl,-rpath,"' libraryDir '"'];
     args = [args, {'CXXFLAGS=$CXXFLAGS -std=c++17', rpath, ['-L' libraryDir], '-lpmac'}];
+elseif ismac
+    library = fullfile(libraryDir, 'libpmac.dylib');
+    requireFile(library);
+    if ~ismember(computer('arch'), {'maci64', 'maca64'})
+        error('pmac:BuildArchitecture', 'Use an Intel/Apple Silicon SDK matching the MATLAB process.');
+    end
+    % dylib 的 install name 为 @rpath/libpmac.dylib；编译器架构必须与 MATLAB 一致。
+    rpath = ['LDFLAGS=$LDFLAGS -Wl,-rpath,"' libraryDir '"'];
+    args = [args, {'CXXFLAGS=$CXXFLAGS -std=c++17', rpath, ['-L' libraryDir], '-lpmac'}];
 else
-    error('pmac:BuildPlatform', 'This example currently supports Windows and Linux.');
+    error('pmac:BuildPlatform', 'This example supports Windows, Linux and macOS.');
 end
 mex(args{:});
 addpath(exampleDir);

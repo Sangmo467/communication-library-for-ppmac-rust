@@ -7,7 +7,7 @@ GetResponse 支持按请求启用透传：跳过规则表和 online/program 分�
 
 基于 Rust 与 russh 的 Power PPMAC 通信库，提供统一的 C ABI，以及 C++17、C++98、.NET 8 和 Python 绑定，并提供 MATLAB GetResponse MEX 示例。
 
-当前版本：**2.0.0**；C ABI：**2.1**；开源协议：**MIT**。
+当前版本：**2.0.1**；C ABI：**2.1**；开源协议：**MIT**。
 
 ## 功能
 
@@ -30,11 +30,11 @@ GetResponse 支持按请求启用透传：跳过规则表和 online/program 分�
 - `pmac-protocol`：GPASCII/Shell 协议、数值解析、状态位与模式提取。
 - `pmac-core`：Runtime、Client、Request、连接池、取消和生命周期。
 - `pmac-transport-russh`：SSH、GPASCII、Shell 与 SFTP 传输。
-- `pmac-ffi`：稳定的 `pmac_` C ABI，生成 `pmac.dll` 或 `libpmac.so`。
+- `pmac-ffi`：稳定的 `pmac_` C ABI，生成 `pmac.dll`、`libpmac.so` 或 `libpmac.dylib`。
 
 ## 预编译 SDK
 
-Windows/Linux 的 x86、x64 SDK 包结构、GitHub Release 发布与带中文注释的可编译调用例程见 **[预编译 SDK 使用及发布说明](docs/prebuilt-sdk.md)**。源码仓库不存放二进制；正式版本附件由目标平台构建验证后上传至 GitHub Release。
+Windows x86/x64/ARM64、Linux x86/x64/ARM64/ARMv7、macOS x64/ARM64 SDK 包结构、GitHub Release 发布与带中文注释的可编译调用例程见 **[预编译 SDK 使用及发布说明](docs/prebuilt-sdk.md)**。源码仓库不存放二进制；正式版本附件由目标平台构建验证后上传至 GitHub Release。
 
 ## 构建
 

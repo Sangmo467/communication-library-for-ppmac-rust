@@ -4,7 +4,7 @@
 
 A Rust/russh communication library for Power PPMAC, with a stable C ABI, C++17 and C++98 wrappers, .NET 8 and Python bindings, and a MATLAB GetResponse MEX example.
 
-Version: **2.0.0** · C ABI: **2.1** · License: **MIT**
+Version: **2.0.1** · C ABI: **2.1** · License: **MIT**
 
 ## Features
 
@@ -18,11 +18,11 @@ Version: **2.0.0** · C ABI: **2.1** · License: **MIT**
 - Request cancellation, execution deadlines, bounded admission, completion notifications and explicit execution-certainty reporting.
 - SSH host verification using known_hosts or a pinned SHA-256 fingerprint; password and private-key authentication.
 
-GetResponse passthrough can be enabled per request to bypass the online-command rule table and program classification, while preserving framing validation. See the [passthrough guide and examples (Chinese)](docs/getresponse-passthrough.md).
+GetResponse passthrough can be enabled per request to bypass the online-command rule table and program classification, while preserving framing validation. See the [passthrough guide and examples (Chinese)](docs/getresponse-passthrough.en.md).
 
 ## Prebuilt SDKs
 
-Download packages from [GitHub Releases](https://github.com/Sangmo467/communication-library-for-ppmac-rust/releases). The initial release targets **Windows x86/x64** and **Linux x86/x64**. ARM and macOS packages are deferred until their build and test paths are implemented and verified.
+Download packages from [GitHub Releases](https://github.com/Sangmo467/communication-library-for-ppmac-rust/releases). The release matrix covers **Windows x86/x64/ARM64**, **Linux x86/x64/ARM64/ARMv7**, and **macOS Intel x64/Apple Silicon ARM64**. Each package is published only after its target build and offline tests pass.
 
 Each SDK contains the native library, C headers, language bindings, independently buildable examples with detailed Chinese comments, CMake integration, licenses, an SPDX dependency inventory and a SHA-256 manifest. Consumers do not need Rust to use a prebuilt SDK.
 
@@ -35,7 +35,7 @@ Read the [English SDK setup and release guide](docs/prebuilt-sdk.en.md) for pack
 | pmac-protocol | GPASCII/shell framing, numeric parsing, status bits and extraction patterns |
 | pmac-core | Runtime, Client, Request, pools, cancellation and lifecycle management |
 | pmac-transport-russh | SSH, GPASCII, shell and SFTP transport |
-| pmac-ffi | The stable pmac_ C ABI, producing pmac.dll or libpmac.so |
+| pmac-ffi | The stable pmac_ C ABI, producing pmac.dll, libpmac.so or libpmac.dylib |
 | pmac-testkit | Deterministic mock transports and regression tests |
 
 The repository includes source code, public documentation, bindings, examples, offline tests, build scripts and locked dependencies. Compiled SDKs are distributed as release assets. Internal review records and site-specific data are not part of the public source snapshot.
@@ -104,15 +104,15 @@ For complete, buildable C, C++, C# and Python examples, including offline checks
 
 ## Documentation
 
-The following detailed references are currently in Chinese; the repository introduction and SDK guide are available in English.
+The public user documentation below is available in English and Chinese. Each page links to its counterpart.
 
-- [GetResponse examples](docs/getresponse-examples.md), [passthrough mode](docs/getresponse-passthrough.md)
-- [User manual](docs/user-manual.md), [source build and installation](docs/build-and-install.md)
-- [Authentication and host verification](docs/authentication.md), [C ABI contract](docs/abi-contract.md)
-- [.NET](docs/dotnet-getresponse.md), [Python](docs/python-getresponse.md), [MATLAB](docs/matlab-getresponse.md)
-- [DART](docs/dart-api.md), [online commands](docs/online-commands.md), [response extraction](docs/pattern-migration.md)
-- [Continuous Gather](docs/gather.md), [geterrors monitoring](docs/geterrors.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md), [changelog](CHANGELOG.md)
+- [GetResponse examples](docs/getresponse-examples.en.md), [passthrough mode](docs/getresponse-passthrough.en.md)
+- [User manual](docs/user-manual.en.md), [source build and installation](docs/build-and-install.en.md)
+- [Authentication and host verification](docs/authentication.en.md), [C ABI contract](docs/abi-contract.en.md)
+- [.NET](docs/dotnet-getresponse.en.md), [Python](docs/python-getresponse.en.md), [MATLAB](docs/matlab-getresponse.en.md)
+- [DART](docs/dart-api.en.md), [online commands](docs/online-commands.en.md), [response extraction](docs/pattern-migration.en.md)
+- [Continuous Gather](docs/gather.en.md), [geterrors monitoring](docs/geterrors.en.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.en.md), [changelog](CHANGELOG.en.md)
 
 ## Operational boundaries
 
@@ -125,4 +125,4 @@ The following detailed references are currently in Chinese; the repository intro
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE). The modified russh 0.65.1 dependency retains its Apache-2.0 license and notices; see [third-party notices](THIRD_PARTY_NOTICES.md).
+This project is licensed under the [MIT License](LICENSE). The modified russh 0.65.1 dependency retains its Apache-2.0 license and notices; see [third-party notices](THIRD_PARTY_NOTICES.en.md).

@@ -28,6 +28,9 @@ jobs:
           ./scripts/Update-AbiProbe.ps1 -OutputPath build/abi_layout.c -RustOutputPath crates/pmac-ffi/examples/abi_layout.rs
           git diff --exit-code -- crates/pmac-ffi/examples/abi_layout.rs
           if ($LASTEXITCODE -ne 0) { throw 'Regenerate the Rust ABI probe after changing pmac.h' }
+      - name: Verify release target validators
+        shell: pwsh
+        run: ./scripts/Test-ReleaseTargets.ps1
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Check API documentation

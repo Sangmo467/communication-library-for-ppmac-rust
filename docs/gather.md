@@ -1,5 +1,7 @@
 # 实时连续 Gather
 
+[中文](gather.md) | [English](gather.en.md)
+
 当前提供 C ABI 和 C++17 封装。复用已连接 Client 的 SSH 认证和 GPASCII 请求，不需要再次传入控制器账号。反向数据连接必须通过控制器来源 IP 检查和本次会话随机握手，验证完成后才开始采样回调。
 
 ## C++17

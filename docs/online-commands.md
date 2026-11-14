@@ -1,6 +1,8 @@
 # Online Commands 与程序正文透传
 
-命令目录依据仓库中的 `Power_PMAC_Software_Reference_Manual_3.pdf`，Online Command Specification（手册页 1119–1319）。目录规则见 [online-command-rules.tsv](../crates/pmac-protocol/src/online-command-rules.tsv)；其中记录语法族、作用域、读写/维护分类和代表样例。规则覆盖手册各 Online 命令族，具体参数有效性和设备资源状态由控制器最终判断。
+[中文](online-commands.md) | [English](online-commands.en.md)
+
+命令目录依据 `Power_PMAC_Software_Reference_Manual`，Online Command Specification（手册页 1119–1319）。目录规则见 [online-command-rules.tsv](../crates/pmac-protocol/src/online-command-rules.tsv)；其中记录语法族、作用域、读写/维护分类和代表样例。规则覆盖手册各 Online 命令族，具体参数有效性和设备资源状态由控制器最终判断。
 
 ## Online Commands
 

@@ -1,5 +1,7 @@
 # 认证与主机身份校验
 
+[English](authentication.en.md)
+
 所有 SDK 都通过同一个 `pmac_connect_submit` 和 russh 认证路径，不维护第二套 SSH 实现。
 
 ## 登录方式

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('i686-pc-windows-msvc','x86_64-pc-windows-msvc','aarch64-pc-windows-msvc','i686-unknown-linux-gnu','x86_64-unknown-linux-gnu','armv7-unknown-linux-gnueabihf','aarch64-unknown-linux-gnu')][string]$Target,
+    [Parameter(Mandatory)][string]$Target,
     [ValidateSet('debug','release')][string]$Profile = 'release',
     [string]$ArtifactDirectory = '',
     [string]$OutputDirectory = 'dist',
@@ -27,7 +27,8 @@ try {
     }
     if (-not $ArtifactDirectory) { $ArtifactDirectory = "target/$Target/$Profile" }
     if (-not [System.IO.Path]::IsPathRooted($ArtifactDirectory)) { $ArtifactDirectory = Join-Path $root $ArtifactDirectory }
-    $library = if ($Target -like '*windows*') { 'pmac.dll' } else { 'libpmac.so' }
+    $targetProfile = & (Join-Path $PSScriptRoot 'Get-ReleaseTarget.ps1') -Target $Target
+    $library = $targetProfile.library
     $nativePath = Join-Path $ArtifactDirectory $library
     if (-not (Test-Path -LiteralPath $nativePath -PathType Leaf)) { throw "Native artifact does not exist: $nativePath" }
     $nativeIdentity = & (Join-Path $PSScriptRoot 'Test-NativeTarget.ps1') -Library $nativePath -Target $Target
@@ -55,14 +56,22 @@ try {
     foreach ($file in @('LICENSE','THIRD_PARTY_NOTICES.md','Cargo.lock','rust-toolchain.toml')) { Copy-Item -LiteralPath $file -Destination $destination }
     # 白名单复制可独立编译的公开例程，排除内部审核和独立测试 fixture。
     $sdkFiles = @('cmake/PmacConfig.cmake','examples/CMakeLists.txt',
-        'examples/c/sdk_smoke.c','examples/c/getresponse.c','examples/c/geterrors.c',
+        'examples/c/abi_layout.c','examples/c/sdk_smoke.c','examples/c/getresponse.c','examples/c/geterrors.c',
         'examples/cpp/sdk_smoke.cpp','examples/cpp/getresponse.cpp','examples/cpp/geterrors.cpp','examples/cpp/gather.cpp',
         'examples/python/getresponse.py','examples/python/sdk_smoke.py',
         'examples/dotnet/getresponse/Program.cs','examples/dotnet/getresponse/Pmac.GetResponse.csproj',
         'examples/matlab/build_pmac_mex.m','examples/matlab/pmac_mex.cpp','examples/matlab/example_getresponse.m',
-        'bindings/python/pyproject.toml','scripts/Test-SdkExamples.ps1',
+        'bindings/python/pyproject.toml','scripts/Test-SdkExamples.ps1','scripts/Get-ReleaseTarget.ps1','scripts/release-targets.json',
         'docs/prebuilt-sdk.md','docs/prebuilt-sdk.en.md','docs/gather.md','docs/geterrors.md',
         'docs/abi-contract.md','docs/authentication.md','docs/getresponse-passthrough.md')
+    # 所有公开使用文档均按中英文对打包；只按明确白名单选择，排除内部审核资料。
+    foreach ($manual in @('abi-contract','authentication','build-and-install','dart-api','dependency-patches','dotnet-getresponse',
+        'gather','geterrors','getresponse-examples','getresponse-passthrough','matlab-getresponse',
+        'online-commands','pattern-migration','prebuilt-sdk','python-getresponse','user-manual')) {
+        $sdkFiles += @("docs/$manual.md", "docs/$manual.en.md")
+    }
+    $sdkFiles += @('THIRD_PARTY_NOTICES.en.md','CHANGELOG.md','CHANGELOG.en.md')
+    $sdkFiles = @($sdkFiles | Sort-Object -Unique)
     foreach ($relative in $sdkFiles) {
         $copyPath = Join-Path $destination $relative
         New-Item -ItemType Directory -Path (Split-Path $copyPath -Parent) -Force | Out-Null
@@ -79,8 +88,10 @@ try {
         if (-not (Test-Path -LiteralPath $EvidenceDirectory -PathType Container)) { throw 'Evidence directory does not exist' }
         Copy-Item -LiteralPath $EvidenceDirectory -Destination (Join-Path $destination 'evidence') -Recurse
     }
-    $sourcePaths = @(& git ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml CMakeLists.txt cmake include crates bindings examples scripts vendor docs/dependency-patches.md docs/prebuilt-sdk.md docs/prebuilt-sdk.en.md README.en.md .github)
+    $sourcePaths = @(& git ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml CMakeLists.txt cmake include crates bindings examples scripts vendor docs/dependency-patches.md docs/*.md README.md README.en.md THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.en.md CHANGELOG.md CHANGELOG.en.md .github)
     if ($LASTEXITCODE -ne 0) { throw 'Unable to enumerate source snapshot' }
+    $publicDocs = @($sdkFiles | Where-Object { $_ -like 'docs/*' })
+    $sourcePaths = @($sourcePaths | Where-Object { $_ -notlike 'docs/*' -or $_ -in $publicDocs -or $_ -eq 'docs/dependency-patches.md' })
     $sourceHashes = @($sourcePaths | Sort-Object -Unique | ForEach-Object {
         if (Test-Path -LiteralPath $_ -PathType Leaf) { "$_`t$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant())" }
     })

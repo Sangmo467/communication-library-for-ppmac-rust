@@ -1,5 +1,7 @@
 # C# / .NET GetResponse 接入
 
+[English](dotnet-getresponse.en.md) | [简体中文](dotnet-getresponse.md)
+
 GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](getresponse-passthrough.md)**。
 
 

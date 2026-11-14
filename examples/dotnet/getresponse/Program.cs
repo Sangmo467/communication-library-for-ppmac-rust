@@ -32,7 +32,7 @@ internal static class Program
             // 进程位数必须与库一致，Windows x86 请使用 x86 .NET 运行时。
             var library = Environment.GetEnvironmentVariable("PMAC_LIBRARY");
             if (string.IsNullOrWhiteSpace(library))
-                library = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "pmac.dll" : "libpmac.so");
+                library = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "pmac.dll" : (OperatingSystem.IsMacOS() ? "libpmac.dylib" : "libpmac.so"));
             library = Path.GetFullPath(library);
             Environment.SetEnvironmentVariable("PMAC_LIBRARY", library);
             if (!File.Exists(library)) throw new FileNotFoundException("PMAC_LIBRARY does not name an existing native library.", library);

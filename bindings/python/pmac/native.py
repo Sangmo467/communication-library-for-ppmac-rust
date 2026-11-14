@@ -1,5 +1,6 @@
 import ctypes as C
 import os
+import sys
 
 sizeof = C.sizeof
 byref = C.byref
@@ -34,7 +35,7 @@ class PoolMember(C.Structure):
 
 def load(path=None):
     if path is None:
-        path = "pmac.dll" if os.name == "nt" else "libpmac.so"
+        path = "pmac.dll" if os.name == "nt" else ("libpmac.dylib" if sys.platform == "darwin" else "libpmac.so")
     lib = C.CDLL(path)
     lib.pmac_version_string.restype = C.c_char_p
     lib.pmac_version_number.restype = C.c_uint32
