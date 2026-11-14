@@ -139,7 +139,7 @@ Linux 使用 Ubuntu 22.04 runner（glibc 2.35 环境），不承诺向更旧 gli
 
 ## ARM 与 macOS（2.0.1 起）
 
-目标清单统一保存在 scripts/release-targets.json。Linux ARM64 使用原生 ARM64 runner；ARMv7 使用 hard-float GCC 交叉工具链，Rust 及 C/C++ 测试均实际通过 QEMU 执行，采用单测试线程降低模拟调度的影响。Windows ARM64 使用原生 runner、ARM64 Python/.NET 与 VS 2022 ARM64 编译器。
+目标清单统一保存在 scripts/release-targets.json。Linux ARM64 使用原生 ARM64 runner；ARMv7 使用 hard-float GCC 交叉工具链，Rust 及 C/C++ 测试均实际通过 QEMU 执行，采用单测试线程降低模拟调度的影响。Windows ARM64 使用原生 runner、ARM64 Python/.NET 与 Visual Studio ARM64 编译器。
 
 macOS 提供两个独立的薄 Mach-O dylib 包，不是 Universal Binary。运行进程、Python/.NET/MATLAB 和库的架构必须一致。构建部署下限设为 macOS 11.0；还需满足所用 Python/.NET/MATLAB 自身的系统版本要求。发布库使用 @rpath/libpmac.dylib install name 并带 ad-hoc 签名，未使用 Apple Developer ID 或公证服务；不要把它描述为已完成 Apple 分发认证。
 
@@ -154,3 +154,5 @@ dotnet run --project examples/dotnet/getresponse/Pmac.GetResponse.csproj -- --ch
 ```
 
 本机双语使用文档位于 docs/，目录下每份公开指南均有 .en.md 英文对应文件。动态库名在 macOS 为 native/libpmac.dylib；Python、C# 和 CMake 示例会自动选择。自行部署时需为 @rpath 设置适当的运行时搜索路径。MATLAB MEX 构建入口支持选择 maci64/maca64，但须在已安装、受支持的 MATLAB/编译器环境中单独验证，不属于 CI 验证结论。
+
+Windows 例程验证脚本会检测实际安装的 Visual Studio 生成器；若使用 VS 2026，CMake 须为 4.2 或更高版本。

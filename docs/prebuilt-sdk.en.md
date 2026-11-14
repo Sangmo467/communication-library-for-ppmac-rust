@@ -137,7 +137,7 @@ If compilation succeeded but publishing failed, manually run **Publish validated
 
 ## ARM and macOS (version 2.0.1 and later)
 
-scripts/release-targets.json is the single target registry. Linux ARM64 runs on a native ARM64 runner. ARMv7 uses a hard-float cross compiler; Rust and C/C++ tests execute through QEMU with serialized Rust test scheduling. Windows ARM64 uses a native runner, ARM64 Python/.NET and the VS 2022 ARM64 compiler.
+scripts/release-targets.json is the single target registry. Linux ARM64 runs on a native ARM64 runner. ARMv7 uses a hard-float cross compiler; Rust and C/C++ tests execute through QEMU with serialized Rust test scheduling. Windows ARM64 uses a native runner, ARM64 Python/.NET and the installed Visual Studio ARM64 compiler. Test-SdkExamples.ps1 detects the Visual Studio generator; VS 2026 requires CMake 4.2 or later.
 
 macOS packages contain separate thin Intel x64 and Apple Silicon ARM64 Mach-O dylibs, not a Universal Binary. The application, interpreter/runtime and library architectures must match. The library deployment target is macOS 11.0; your Python/.NET/MATLAB version can impose a newer OS requirement. Libraries use @rpath/libpmac.dylib and an ad-hoc signature. They are not Developer ID signed or notarized; no Apple distribution certification is claimed.
 

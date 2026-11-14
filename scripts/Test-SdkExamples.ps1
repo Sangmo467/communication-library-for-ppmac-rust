@@ -18,7 +18,20 @@ if ($BuildDirectory.StartsWith($package.TrimEnd([char]92,[char]47) + [IO.Path]::
 $arguments = @('-S',(Join-Path $package 'examples'),'-B',$BuildDirectory,'-DCMAKE_BUILD_TYPE=Release')
 if ($IsWindows) {
     $arch = if ($manifest.target -like 'i686-*') { 'Win32' } elseif ($manifest.target -like 'aarch64-*') { 'ARM64' } else { 'x64' }
-    $arguments += @('-G','Visual Studio 17 2022','-A',$arch)
+    # runner 可安装 VS 2022 或更新版本；按实际实例选择 CMake 支持的生成器。
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+        $installedVersion = & $vswhere -latest -products '*' -property installationVersion
+        if ($LASTEXITCODE -ne 0 -or -not $installedVersion) { throw 'No Visual Studio C++ installation found' }
+        $major = ([version]($installedVersion | Select-Object -First 1)).Major
+        $capabilitiesText = & cmake -E capabilities
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect CMake generators' }
+        $capabilities = ($capabilitiesText -join "`n") | ConvertFrom-Json
+        $generator = @($capabilities.generators | Where-Object { $_.name -like "Visual Studio $major *" })
+        if ($generator.Count -ne 1) { throw "Upgrade CMake to support installed Visual Studio $major (VS 2026 requires CMake 4.2+)" }
+        $arguments += @('-G', $generator[0].name)
+    }
+    $arguments += @('-A', $arch)
 } elseif ($manifest.target -like 'i686-*') {
     $arguments += @('-DCMAKE_C_FLAGS=-m32','-DCMAKE_CXX_FLAGS=-m32')
 }
