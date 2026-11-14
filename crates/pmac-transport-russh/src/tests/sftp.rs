@@ -452,7 +452,11 @@ fn deadline_during_publish_reports_publish_unknown_without_replaying() {
             pmac_core::RequestOptions {
                 // ARMv7 的 QEMU 执行需先完成 SSH/SFTP 握手，再在发布门控处等待超时。
                 // 保持门控阻塞及全部结果断言，只给模拟器更充足的前置阶段时间。
-                timeout_ms: if cfg!(target_arch = "arm") { 3_000 } else { 250 },
+                timeout_ms: if cfg!(target_arch = "arm") {
+                    3_000
+                } else {
+                    250
+                },
                 ..pmac_core::RequestOptions::default()
             },
         )
