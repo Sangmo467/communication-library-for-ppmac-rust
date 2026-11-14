@@ -22,6 +22,12 @@ jobs:
       - name: Verify minimal dependency patch
         shell: pwsh
         run: ./scripts/Test-DependencyPatch.ps1
+      - name: Verify generated Rust ABI probe is current
+        shell: pwsh
+        run: |
+          ./scripts/Update-AbiProbe.ps1 -OutputPath build/abi_layout.c -RustOutputPath crates/pmac-ffi/examples/abi_layout.rs
+          git diff --exit-code -- crates/pmac-ffi/examples/abi_layout.rs
+          if ($LASTEXITCODE -ne 0) { throw 'Regenerate the Rust ABI probe after changing pmac.h' }
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Check API documentation
