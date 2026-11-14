@@ -25,6 +25,6 @@ fn main() {
     layout!(PmacPoolProfile, "pmac_pool_profile"; struct_size, abi_version, target_size, max_members, min_ready, connect_timeout_ms);
     layout!(PmacPoolState, "pmac_pool_state"; struct_size, abi_version, revision, desired, ready, busy, creating, failed, retiring, release_uncertain, max_members, unknown_write, maintenance_active, maintenance_failed, last_create_error);
     layout!(PmacPoolMember, "pmac_pool_member"; struct_size, abi_version, member_id, epoch, state, control, last_valid_response_unix_ms, last_error, reserved);
-    layout!(PmacGeterrorsConfig, "pmac_geterrors_config"; struct_size, abi_version, period_seconds, coord_mask, motor_mask, ring_mask, global_mask, flags, timeout_ms, queue_lines, max_line_bytes);
+    layout!(PmacGetErrorsConfig, "pmac_geterrors_config"; struct_size, abi_version, period_seconds, coord_mask, motor_mask, ring_mask, global_mask, flags, timeout_ms, queue_lines, max_line_bytes);
     layout!(PmacGatherConfig, "pmac_gather_config"; struct_size, abi_version, period, items, addresses, local_ip, port, reserved, max_samples, batch_rows, queue_batches, timeout_ms);
 }

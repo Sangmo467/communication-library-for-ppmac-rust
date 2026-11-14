@@ -60,6 +60,7 @@ if ($RustOutputPath) {
     foreach ($struct in $structs) {
         $name = $struct.Groups['name'].Value
         $rustName = -join @($name.Split('_') | ForEach-Object { $_.Substring(0,1).ToUpperInvariant() + $_.Substring(1) })
+        if ($name -eq 'pmac_geterrors_config') { $rustName = 'PmacGetErrorsConfig' }
         $fields = @($struct.Groups['body'].Value.Split(';') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
             $_.Split(',') | ForEach-Object { [regex]::Match($_, '(?<name>[A-Za-z_]\w*)\s*(?:\[[^\]]+\])?\s*$').Groups['name'].Value }
         })
