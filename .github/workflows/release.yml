@@ -30,7 +30,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $profiles = @(./scripts/Get-ReleaseTarget.ps1)
+          $profiles = @(./scripts/Get-ReleaseTarget.ps1 | Where-Object { -not $_.preview })
           $matrix = @{ include=$profiles } | ConvertTo-Json -Compress -Depth 5
           "matrix=$matrix" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8NoBOM
           $reuse = ''

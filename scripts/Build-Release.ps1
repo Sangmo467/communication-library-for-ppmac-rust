@@ -26,10 +26,25 @@ try {
             '-DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc','-DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++',
             '-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-arm;-L;/usr/arm-linux-gnueabihf')
     }
+    $runnerExecutable = 'qemu-arm'
+    $runnerSysroot = '/usr/arm-linux-gnueabihf'
+    if ($Target -eq 'loongarch64-unknown-linux-gnu') {
+        if (-not $env:PMAC_LOONGARCH_SYSROOT -or -not $env:PMAC_LOONGARCH_LINKER) { throw 'Use Build-LoongArchSdk.ps1 to prepare the validated LoongArch toolchain/sysroot' }
+        $runnerExecutable = 'qemu-loongarch64'
+        $runnerSysroot = $env:PMAC_LOONGARCH_SYSROOT
+        $env:CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER = $env:PMAC_LOONGARCH_LINKER
+        $env:CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUNNER = "$runnerExecutable -L $runnerSysroot"
+        $env:CC_loongarch64_unknown_linux_gnu = $env:PMAC_LOONGARCH_LINKER
+        $env:CFLAGS_loongarch64_unknown_linux_gnu = '-std=gnu11'
+        # SDK C++ 例程使用 Debian 交叉工具链及匹配的 libstdc++；库本身按 glibc 2.36 构建。
+        $sdkCmakeArguments = @('-DCMAKE_SYSTEM_NAME=Linux','-DCMAKE_SYSTEM_PROCESSOR=loongarch64',
+            '-DCMAKE_C_COMPILER=loongarch64-linux-gnu-gcc-15','-DCMAKE_CXX_COMPILER=loongarch64-linux-gnu-g++-15',
+            '-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-loongarch64;-L;/usr/loongarch64-linux-gnu')
+    }
     if ($IsMacOS) { $env:MACOSX_DEPLOYMENT_TARGET = $targetProfile.deployment }
     if (-not $SkipRustTests) {
         $arguments = @('test','--workspace','--locked','--target',$Target)
-        if ($targetProfile.qemu) { $arguments += @('--','--test-threads=1') }
+        if ($targetProfile.qemu -or $targetProfile.emulated) { $arguments += @('--','--test-threads=1') }
         cargo @arguments
         if ($LASTEXITCODE -ne 0) { throw 'Target Rust tests failed' }
     }
@@ -47,6 +62,11 @@ try {
     }
     $evidence = "build/release-$Target"
     New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+    if ($Target -eq 'loongarch64-unknown-linux-gnu') {
+        $compatibility = & (Join-Path $PSScriptRoot 'Test-LoongArchCompatibility.ps1') -Library "target/$Target/release/libpmac.so"
+        $compatibility | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'loongarch-compatibility.json') -Encoding utf8NoBOM
+        $compatibility | Format-List | Out-Host
+    }
     $sbom = Join-Path $evidence 'sbom.spdx.json'
     & (Join-Path $PSScriptRoot 'Write-Sbom.ps1') -Target $Target -OutputPath $sbom | Out-Host
     $arguments = @{ Target=$Target; OutputDirectory=$OutputDirectory; SbomPath=$sbom; EvidenceDirectory=$evidence; AllowUncommitted=$AllowUncommitted }
@@ -58,7 +78,7 @@ try {
     $cProbe = Join-Path $sdkBuild $(if ($IsWindows) { 'Release/sdk_abi.exe' } else { 'sdk_abi' })
     $cLayout = Join-Path $evidence 'abi-c.txt'
     $rustLayout = Join-Path $evidence 'abi-rust.txt'
-    if ($targetProfile.qemu) { & qemu-arm -L /usr/arm-linux-gnueabihf $cProbe | Set-Content -LiteralPath $cLayout -Encoding utf8NoBOM }
+    if ($targetProfile.qemu -or $targetProfile.emulated) { & $runnerExecutable -L $runnerSysroot $cProbe | Set-Content -LiteralPath $cLayout -Encoding utf8NoBOM }
     else { & $cProbe | Set-Content -LiteralPath $cLayout -Encoding utf8NoBOM }
     if ($LASTEXITCODE -ne 0) { throw 'C ABI probe execution failed' }
     cargo run -p pmac-ffi --example abi_layout --release --locked --target $Target | Set-Content -LiteralPath $rustLayout -Encoding utf8NoBOM

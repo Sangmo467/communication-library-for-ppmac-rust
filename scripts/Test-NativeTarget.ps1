@@ -46,5 +46,6 @@ try {
         throw "Artifact format/machine/width $format/$machine/$bits does not match $Target"
     }
     if ($Target -eq 'armv7-unknown-linux-gnueabihf' -and ($abiFlags -band 0x400) -eq 0) { throw 'ARMv7 candidate does not declare the hard-float ABI' }
+    if ($Target -eq 'loongarch64-unknown-linux-gnu' -and ($abiFlags -band 0xc7) -ne 0x43) { throw 'LoongArch requires LP64D and new-world ELF object ABI v1' }
     [pscustomobject]@{ target=$Target; format=$format; machine=$machine; pointerBits=$bits; elfFlags=$abiFlags; machFileType=$machFileType }
 } finally { $reader.Dispose(); $stream.Dispose() }

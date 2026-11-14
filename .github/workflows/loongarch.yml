@@ -1,0 +1,25 @@
+name: LoongArch64 validation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sdk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.0'
+          targets: loongarch64-unknown-linux-gnu
+      - name: Build glibc baseline, SDK and execute QEMU tests
+        shell: pwsh
+        run: ./scripts/Build-LoongArchSdk.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loongarch64-preview
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error

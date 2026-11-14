@@ -5,7 +5,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $work = Join-Path $root ('build/native-header-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $profiles = @(& (Join-Path $PSScriptRoot 'Get-ReleaseTarget.ps1'))
-if ($profiles.Count -ne 9) { throw 'Release matrix must include nine targets' }
+if ($profiles.Count -ne 10) { throw 'Release matrix must include ten targets' }
 $legacy = @(& (Join-Path $PSScriptRoot 'Get-ReleaseTarget.ps1') -Version v2.0.0)
 if ($legacy.Count -ne 4) { throw 'Legacy release target compatibility regressed' }
 foreach ($item in $profiles) {
@@ -22,6 +22,7 @@ foreach ($item in $profiles) {
         $bytes[4]=if($item.bits -eq 64){2}else{1}; $bytes[5]=1
         [BitConverter]::GetBytes([uint16]3).CopyTo($bytes,16)
         [BitConverter]::GetBytes([uint16]$item.machine).CopyTo($bytes,18)
+        if ($item.target -eq 'loongarch64-unknown-linux-gnu') { [BitConverter]::GetBytes([uint32]0x43).CopyTo($bytes,48) }
         if ($item.target -like 'armv7-*') { [BitConverter]::GetBytes([uint32]0x400).CopyTo($bytes,36) }
     } else {
         $bytes[0]=0xcf; $bytes[1]=0xfa; $bytes[2]=0xed; $bytes[3]=0xfe
@@ -48,4 +49,4 @@ foreach ($bad in @([byte[]](0xcf,0xfa,0xed,0xfe),[byte[]](0xca,0xfe,0xba,0xbe)))
     catch { $rejected=$true }
     if (-not $rejected) { throw 'Invalid Mach-O header accepted' }
 }
-Write-Host 'Nine target headers, wrong-CPU rejection, Mach-O truncation/fat rejection and legacy target coverage passed (synthetic headers only).'
+Write-Host 'Ten target headers, wrong-CPU rejection, Mach-O truncation/fat rejection and legacy target coverage passed (synthetic headers only).'
