@@ -1088,6 +1088,8 @@ mod tests {
         let authentication = authentication_line();
         let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         peer.write_all(authentication.as_bytes()).unwrap();
+        // Linux may report ENOTCONN after the rejected socket has been reset.
+        let peer_ip = peer.peer_addr().unwrap().ip();
         let error = accept_authenticated(
             &listener,
             "127.0.0.2".parse().unwrap(),
@@ -1100,7 +1102,7 @@ mod tests {
         assert!(!error.message.contains(authentication.trim()));
         assert_eq!(
             "::ffff:127.0.0.1".parse::<IpAddr>().unwrap().to_canonical(),
-            peer.peer_addr().unwrap().ip()
+            peer_ip
         );
     }
     #[test]

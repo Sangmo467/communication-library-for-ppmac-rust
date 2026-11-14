@@ -16,11 +16,14 @@ rand.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
 sha2.workspace = true
-tempfile = "3"
 tokio.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 
 
+[target.'cfg(windows)'.dependencies]
+tempfile = "3"
+
 [dev-dependencies]
+tempfile = "3"
 rand10 = { package = "rand", version = "0.10" }

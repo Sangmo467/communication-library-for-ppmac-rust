@@ -30,6 +30,8 @@ jobs:
       AWS_LC_SYS_PREBUILT_NASM: '1'
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.100.0'

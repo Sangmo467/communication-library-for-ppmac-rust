@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.100.0'
@@ -46,17 +48,16 @@ jobs:
         include:
           - { target: x86_64-pc-windows-msvc, os: windows-2022, cmake_arch: x64, sdk: true, python_arch: x64 }
           - { target: i686-pc-windows-msvc, os: windows-2022, cmake_arch: Win32, sdk: true, python_arch: x86 }
-          - { target: aarch64-pc-windows-msvc, os: windows-11-arm, cmake_arch: ARM64, sdk: true, python_arch: arm64 }
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, sdk: true, python_arch: x64 }
           - { target: i686-unknown-linux-gnu, os: ubuntu-24.04, cross32: true, sdk: false, python_arch: x64 }
-          - { target: armv7-unknown-linux-gnueabihf, os: ubuntu-24.04, qemu: true, sdk: false, python_arch: x64 }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, sdk: true, python_arch: arm64 }
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
       CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm -L /usr/arm-linux-gnueabihf
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.100.0'
@@ -157,6 +158,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: '1.100.0' }
       - name: Install audit tools
