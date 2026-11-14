@@ -737,3 +737,613 @@ fn receive(
     }
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::{client_kind, registry, Entry};
+    use pmac_core::{ClientConfig, ConnectOptions};
+    use pmac_testkit::MockTransport;
+    use std::io::Write;
+
+    #[test]
+    fn decoder_handles_every_fragment_boundary_and_dynamic_columns() {
+        let input = b"Gather Data\r\n1 -2.5 3e2\r\n4 5 6\n";
+        for split in 0..=input.len() {
+            let mut d = Decoder::new(3);
+            let mut rows = Vec::new();
+            d.push(&input[..split], |r| {
+                rows.push(r);
+                Ok(())
+            })
+            .unwrap();
+            d.push(&input[split..], |r| {
+                rows.push(r);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(rows, vec![vec![1., -2.5, 300.], vec![4., 5., 6.]]);
+        }
+    }
+    #[test]
+    fn decoder_reports_loss_invalid_rows_and_unbounded_lines() {
+        for (line, code) in [
+            ("Buffer OVERrun\n", ErrorCode::ResourceLimit),
+            ("1 2\n", ErrorCode::ParseError),
+            ("NaN 2 3\n", ErrorCode::ParseError),
+            ("1 inf 3\n", ErrorCode::ParseError),
+            ("1 nope 3\n", ErrorCode::ParseError),
+        ] {
+            assert_eq!(
+                Decoder::new(3)
+                    .push(line.as_bytes(), |_| Ok(()))
+                    .unwrap_err()
+                    .code,
+                code
+            );
+        }
+        assert_eq!(
+            Decoder::new(1)
+                .push(&vec![b'1'; 65537], |_| Ok(()))
+                .unwrap_err()
+                .code,
+            ErrorCode::ProtocolError
+        );
+    }
+    #[test]
+    fn decoder_mixed_case_diagnostics_survive_byte_fragmentation() {
+        for (line, expected) in [
+            ("Gather ErRoR: offline\r\n", ErrorCode::RemoteError),
+            ("Gather FaIlEd: stopped\n", ErrorCode::RemoteError),
+            ("Buffer OvErRuN\n", ErrorCode::ResourceLimit),
+        ] {
+            let mut decoder = Decoder::new(3);
+            let mut rows = Vec::new();
+            let mut error = None;
+            for byte in line.as_bytes() {
+                if let Err(value) = decoder.push(&[*byte], |row| {
+                    rows.push(row);
+                    Ok(())
+                }) {
+                    error = Some(value);
+                    break;
+                }
+            }
+            assert_eq!(error.unwrap().code, expected);
+            assert!(rows.is_empty());
+        }
+    }
+    #[test]
+    fn bounded_queue_reports_overflow_and_preserves_sequence() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut next = 0;
+        enqueue(&tx, &mut vec![1., 2., 3., 4.], &mut next, 2).unwrap();
+        assert_eq!(next, 2);
+        assert_eq!(
+            enqueue(&tx, &mut vec![5., 6.], &mut next, 2)
+                .unwrap_err()
+                .code,
+            ErrorCode::ResourceLimit
+        );
+        assert_eq!(next, 2);
+        let batch = rx.recv().unwrap();
+        assert_eq!(batch.first, 0);
+        assert_eq!(batch.values, vec![1., 2., 3., 4.]);
+    }
+    fn bytes(value: &str) -> PmacBytes {
+        PmacBytes {
+            data: value.as_ptr(),
+            len: value.len(),
+        }
+    }
+    fn config(addresses: &[PmacBytes]) -> PmacGatherConfig {
+        PmacGatherConfig {
+            struct_size: size_of::<PmacGatherConfig>() as u32,
+            abi_version: crate::types::ABI_VERSION,
+            period: 3,
+            items: addresses.len() as u32,
+            addresses: addresses.as_ptr(),
+            local_ip: bytes("127.0.0.1"),
+            port: 0,
+            reserved: 0,
+            max_samples: 0,
+            batch_rows: 2,
+            queue_batches: 32,
+            timeout_ms: 1000,
+        }
+    }
+    unsafe extern "C" fn ignored(
+        _: *mut std::ffi::c_void,
+        _: i32,
+        _: *const f64,
+        _: usize,
+        _: usize,
+        _: u64,
+        _: *const u8,
+        _: usize,
+    ) -> i32 {
+        0
+    }
+    #[test]
+    fn config_validates_before_starting_and_zeroes_handle() {
+        let addresses = [bytes("Motor[1].ActPos.a\nGather.Enable=3")];
+        let c = config(&addresses);
+        let mut id = 99;
+        assert_eq!(
+            pmac_gather_start(0, &c, Some(ignored), std::ptr::null_mut(), &mut id),
+            ErrorCode::InvalidArgument as i32
+        );
+        assert_eq!(id, 0);
+        let addresses = [bytes("Motor[1].ActPos.a")];
+        let mut c = config(&addresses);
+        c.period = 0;
+        assert_eq!(
+            pmac_gather_start(0, &c, Some(ignored), std::ptr::null_mut(), &mut id),
+            ErrorCode::InvalidArgument as i32
+        );
+        c.period = 1;
+        c.items = 129;
+        assert_eq!(
+            pmac_gather_start(0, &c, Some(ignored), std::ptr::null_mut(), &mut id),
+            ErrorCode::InvalidArgument as i32
+        );
+        assert_eq!(
+            parse_ip("0.0.0.0").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        assert!(parse_ip("127.0.0.1;echo").is_err());
+    }
+
+    struct Fixture {
+        client_id: u64,
+        runtime: Arc<Runtime>,
+        mock: Arc<MockTransport>,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let runtime = Runtime::new(2).unwrap();
+            // Keep the core runtime directly; avoid consuming the shared 16-ID FFI quota.
+            let mock = Arc::new(MockTransport::default());
+            let client_id = registry().reserve(client_kind()).unwrap();
+            let client = runtime
+                .create_client_with_id(client_id, mock.clone(), ClientConfig::default())
+                .unwrap();
+            registry()
+                .put(
+                    client_id,
+                    Entry::Client {
+                        client: client.clone(),
+                        runtime: runtime.clone(),
+                    },
+                )
+                .unwrap();
+            let connect = submit_owned(
+                client_id,
+                Operation::Connect(ConnectOptions::new("gather-mock", "root")),
+                RequestOptions::default(),
+            )
+            .unwrap();
+            let (r, _) = request(connect).unwrap();
+            assert!(r.wait(5000).completed);
+            finish_request(r).unwrap();
+            Self {
+                client_id,
+                runtime,
+                mock,
+            }
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            assert_eq!(crate::pmac_client_close(self.client_id, 0, 5000), 0);
+            assert_eq!(crate::pmac_client_release(self.client_id), 0);
+            self.runtime.shutdown_clients(5000).unwrap();
+        }
+    }
+    struct Event {
+        status: i32,
+        values: Vec<f64>,
+        rows: usize,
+        items: usize,
+        first: u64,
+    }
+    unsafe extern "C" fn collect(
+        user: *mut std::ffi::c_void,
+        status: i32,
+        data: *const f64,
+        rows: usize,
+        items: usize,
+        first: u64,
+        _: *const u8,
+        _: usize,
+    ) -> i32 {
+        let sender = unsafe { &*(user as *const mpsc::Sender<Event>) };
+        let values = if rows == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(data, rows * items).to_vec() }
+        };
+        let _ = sender.send(Event {
+            status,
+            values,
+            rows,
+            items,
+            first,
+        });
+        0
+    }
+    fn pipeline_authentication(mock: &MockTransport, deadline: Instant) -> String {
+        loop {
+            for command in mock.session.shell_commands() {
+                if command.starts_with("nohup sh -c") {
+                    let marker = "printf \"PMAC-GATHER-1 %s\\n\" \"";
+                    let start = command
+                        .find(marker)
+                        .expect("missing authenticated pipeline")
+                        + marker.len();
+                    let capability = command[start..].split('"').next().unwrap();
+                    assert_eq!(capability.len(), 64);
+                    assert!(capability.bytes().all(|v| v.is_ascii_hexdigit()));
+                    return format!("PMAC-GATHER-1 {capability}\n");
+                }
+            }
+            assert!(Instant::now() < deadline, "pipeline never started");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    fn gather_state(f: &Fixture) -> Arc<Gather> {
+        Arc::new(Gather {
+            runtime: f.runtime.clone(),
+            client: client(f.client_id).unwrap().0,
+            stop: AtomicBool::new(false),
+            error: Mutex::new(None),
+            threads: Mutex::new(Vec::new()),
+        })
+    }
+    #[test]
+    fn authenticated_accept_has_one_deadline_for_silent_and_repeated_bad_peers() {
+        for silent in [true, false] {
+            let f = Fixture::new();
+            let state = gather_state(&f);
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let halt = stop.clone();
+            let peer = thread::spawn(move || {
+                if silent {
+                    let _socket = TcpStream::connect(address).unwrap();
+                    while !halt.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                } else {
+                    while !halt.load(Ordering::Acquire) {
+                        if let Ok(mut socket) =
+                            TcpStream::connect_timeout(&address, Duration::from_millis(20))
+                        {
+                            let _ = socket.write_all(b"PMAC-GATHER-1 invalid\n");
+                        }
+                    }
+                }
+            });
+            let began = Instant::now();
+            let error = accept_authenticated(
+                &listener,
+                "127.0.0.1".parse().unwrap(),
+                authentication_line().as_bytes(),
+                &state,
+                began + Duration::from_millis(70),
+            )
+            .unwrap_err();
+            stop.store(true, Ordering::Release);
+            drop(listener);
+            peer.join().unwrap();
+            assert_eq!(error.code, ErrorCode::ConnectError);
+            assert!(began.elapsed() < Duration::from_millis(500));
+        }
+    }
+    #[test]
+    fn silent_handshake_is_interruptible_by_stop_and_client_close() {
+        for close in [false, true] {
+            let f = Fixture::new();
+            let state = gather_state(&f);
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let worker = state.clone();
+            let interrupter = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(25));
+                if close {
+                    worker.runtime.shutdown_clients(1000).unwrap();
+                } else {
+                    worker.stop.store(true, Ordering::Release);
+                }
+            });
+            let began = Instant::now();
+            let error = accept_authenticated(
+                &listener,
+                "127.0.0.1".parse().unwrap(),
+                authentication_line().as_bytes(),
+                &state,
+                began + Duration::from_secs(5),
+            )
+            .unwrap_err();
+            interrupter.join().unwrap();
+            assert_eq!(
+                error.code,
+                if close {
+                    ErrorCode::Closing
+                } else {
+                    ErrorCode::Cancelled
+                }
+            );
+            assert!(began.elapsed() < Duration::from_secs(1));
+        }
+    }
+    #[test]
+    fn wrong_source_is_rejected_even_with_the_correct_capability() {
+        let f = Fixture::new();
+        let state = gather_state(&f);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let authentication = authentication_line();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        peer.write_all(authentication.as_bytes()).unwrap();
+        let error = accept_authenticated(
+            &listener,
+            "127.0.0.2".parse().unwrap(),
+            authentication.as_bytes(),
+            &state,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ConnectError);
+        assert!(!error.message.contains(authentication.trim()));
+        assert_eq!(
+            "::ffff:127.0.0.1".parse::<IpAddr>().unwrap().to_canonical(),
+            peer.peer_addr().unwrap().ip()
+        );
+    }
+    #[test]
+    fn mapped_controller_source_authenticates_without_consuming_first_sample() {
+        let f = Fixture::new();
+        let state = gather_state(&f);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let authentication = authentication_line();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        peer.write_all(format!("{authentication}1 2\n").as_bytes())
+            .unwrap();
+        let mut accepted = accept_authenticated(
+            &listener,
+            "::ffff:127.0.0.1".parse().unwrap(),
+            authentication.as_bytes(),
+            &state,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        accepted
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut first = [0; 4];
+        accepted.read_exact(&mut first).unwrap();
+        assert_eq!(&first, b"1 2\n");
+    }
+    #[test]
+    fn missing_or_invalid_authenticated_endpoint_discovery_fails_closed() {
+        for value in [
+            b"".as_slice(),
+            b"127.0.0.1 22".as_slice(),
+            b"127.0.0.1 22 invalid-controller 22".as_slice(),
+            b"127.0.0.1 22 0.0.0.0 22".as_slice(),
+            b"\xff".as_slice(),
+        ] {
+            assert!(ssh_endpoints(value).is_err());
+        }
+        let f = Fixture::new();
+        for value in ["", "127.0.0.1 22 invalid-controller 22"] {
+            f.mock.session.set_ssh_connection(value);
+            let addresses = [bytes("Motor[1].ActPos.a")];
+            // A bindable local override cannot bypass controller discovery.
+            let c = config(&addresses);
+            let mut id = 77;
+            let (events, receiver) = mpsc::channel::<Event>();
+            assert_ne!(
+                pmac_gather_start(
+                    f.client_id,
+                    &c,
+                    Some(collect),
+                    &events as *const _ as *mut _,
+                    &mut id,
+                ),
+                0
+            );
+            assert_eq!(id, 0);
+            let error = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_ne!(error.status, 0);
+            assert!(error.values.is_empty());
+            assert!(receiver.try_recv().is_err());
+            assert!(!has_children(&f.runtime));
+            assert!(f.mock.session.commands().is_empty());
+            assert!(!f
+                .mock
+                .session
+                .shell_commands()
+                .iter()
+                .any(|cmd| cmd.starts_with("nohup")));
+        }
+    }
+
+    // Real localhost TCP, production coordinator/dispatcher, mocked controller commands.
+    fn integration(payload: &'static [u8], expected_status: i32, callback: GatherCallback) {
+        let f = Fixture::new();
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        drop(reserved);
+        let mock = f.mock.clone();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let peer = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let socket = loop {
+                match TcpStream::connect(("127.0.0.1", port)) {
+                    Ok(s) => break s,
+                    Err(_) => {
+                        assert!(Instant::now() < deadline);
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            };
+            let authentication = pipeline_authentication(&mock, deadline);
+            // A wrong capability, a capability from an old session, and raw sample data
+            // must all be discarded before the legitimate peer authenticates.
+            drop(socket);
+            for bad in [
+                b"PMAC-GATHER-1 wrong\n".as_slice(),
+                authentication_line().as_bytes(),
+                b"1 2\n".as_slice(),
+            ] {
+                let mut rejected = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                rejected.write_all(bad).unwrap();
+            }
+            let silent = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let mut socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            // Coalescing the first sample with the handshake must preserve every byte.
+            let mut packet = authentication.into_bytes();
+            packet.extend_from_slice(payload);
+            socket.write_all(&packet).unwrap();
+            drop(silent);
+            let _ = finish_rx.recv_timeout(Duration::from_secs(5));
+        });
+        let addresses = [bytes("Motor[1].ActPos.a"), bytes("Motor[2].ActPos.a")];
+        let mut c = config(&addresses);
+        c.port = port;
+        let (events_tx, events_rx) = mpsc::channel::<Event>();
+        let mut id = 0;
+        assert_eq!(
+            pmac_gather_start(
+                f.client_id,
+                &c,
+                Some(callback),
+                &events_tx as *const _ as *mut _,
+                &mut id
+            ),
+            0
+        );
+        assert!(has_children(&f.runtime));
+        let event = events_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(event.status, expected_status);
+        if expected_status == 0 {
+            assert_eq!(event.values, vec![1., 2., 3., 4.]);
+            assert_eq!((event.rows, event.items, event.first), (2, 2, 0));
+        }
+        assert_eq!(pmac_gather_stop(id), expected_status);
+        assert_eq!(pmac_gather_release(id), expected_status);
+        assert!(!has_children(&f.runtime));
+        assert_eq!(
+            pmac_gather_request_stop(id),
+            ErrorCode::InvalidHandle as i32
+        );
+        assert_eq!(events_rx.try_recv().err(), Some(mpsc::TryRecvError::Empty));
+        assert_eq!(f.mock.session.commands().last().unwrap(), "Gather.Enable=0");
+        finish_tx.send(()).unwrap();
+        peer.join().unwrap();
+    }
+    #[test]
+    fn continuous_gather_configures_delivers_and_joins_callbacks() {
+        integration(b"Gather Data\n1 2\n3 4\n", 0, collect);
+    }
+    #[test]
+    fn controller_overrun_is_a_terminal_callback_and_stop_error() {
+        integration(
+            b"Gather buffer overrun\n",
+            ErrorCode::ResourceLimit as i32,
+            collect,
+        );
+    }
+    unsafe extern "C" fn collect_and_stop(
+        user: *mut std::ffi::c_void,
+        status: i32,
+        data: *const f64,
+        rows: usize,
+        items: usize,
+        first: u64,
+        message: *const u8,
+        message_len: usize,
+    ) -> i32 {
+        let id = IN_CALLBACK.with(|v| v.get());
+        let valid = pmac_gather_stop(id) == ErrorCode::InvalidArgument as i32
+            && pmac_gather_release(id) == ErrorCode::InvalidArgument as i32
+            && pmac_gather_request_stop(id) == 0;
+        unsafe {
+            collect(
+                user,
+                if valid {
+                    status
+                } else {
+                    ErrorCode::Internal as i32
+                },
+                data,
+                rows,
+                items,
+                first,
+                message,
+                message_len,
+            )
+        };
+        1
+    }
+    #[test]
+    fn callback_can_request_stop_and_blocking_reentrant_operations_are_rejected() {
+        integration(b"1 2\n3 4\n", 0, collect_and_stop);
+    }
+    #[test]
+    fn failed_reverse_connection_rolls_back_local_session_and_callbacks() {
+        let f = Fixture::new();
+        let addresses = [bytes("Motor[1].ActPos.a")];
+        let mut c = config(&addresses);
+        c.timeout_ms = 50;
+        let (sender, receiver) = mpsc::channel::<Event>();
+        let mut id = 77;
+        assert_eq!(
+            pmac_gather_start(
+                f.client_id,
+                &c,
+                Some(collect),
+                &sender as *const _ as *mut _,
+                &mut id
+            ),
+            ErrorCode::ConnectError as i32
+        );
+        assert_eq!(id, 0);
+        assert!(!has_children(&f.runtime));
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .status,
+            ErrorCode::ConnectError as i32
+        );
+        assert_eq!(receiver.try_recv().err(), Some(mpsc::TryRecvError::Empty));
+    }
+    #[test]
+    fn selected_port_conflict_returns_before_controller_configuration() {
+        let f = Fixture::new();
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addresses = [bytes("Motor[1].ActPos.a")];
+        let mut c = config(&addresses);
+        c.port = occupied.local_addr().unwrap().port();
+        let mut id = 77;
+        assert_eq!(
+            pmac_gather_start(
+                f.client_id,
+                &c,
+                Some(ignored),
+                std::ptr::null_mut(),
+                &mut id
+            ),
+            ErrorCode::ConnectError as i32
+        );
+        assert_eq!(id, 0);
+        assert!(!has_children(&f.runtime));
+        assert!(f.mock.session.commands().is_empty());
+    }
+}

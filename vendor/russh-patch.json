@@ -1,0 +1,11 @@
+{
+  "archiveSha256": "94be3d86c71b9ed220a675c405e35c7a02565a009bf8da2e9cc13a700320a5c5",
+  "verifiedSourceFiles": 90,
+  "upstreamCargoTomlSha256": "00f0172e07ff5a538feeb9fb37448f2769045060bd8ae799bc2cfee333596ab0",
+  "patchedCargoTomlSha256": "1da2a0a51aac0fede21418e4884fb9003cf51b4dab951ffa0fb9220a2bb0374e",
+  "patchedPkcs8Sha256": "1d781fd78da9a45714b3bc96cdb32054e1f2c1691b63cdc08f72aa8f9e134772",
+  "upstreamPkcs8Sha256": "69db6690bcedeaabac613859967b6ddc8ea156b41c9a0a4ca0b36614487c99d3",
+  "patchedKnownHostsSha256": "50e0e153eab010230221eb6f3bce7d7309abb03882ba4938becf6126e78da96c",
+  "upstreamFormatModSha256": "867e0971d5b396acff2b7857dbc322bc5b26225a9dec3048d9e7b533db1b323e",
+  "patchedFormatModSha256": "fc1afb28803e09a736c871971c43584ef4d313192379adcc7d89ec98ec5e796a"
+}

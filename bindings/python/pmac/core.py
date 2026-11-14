@@ -1,7 +1,7 @@
 import asyncio
 import ctypes as C
 from enum import IntEnum
-from collections import namedtuple
+from collections import deque, namedtuple
 import os
 import queue
 import threading
@@ -105,6 +105,7 @@ class Request:
             check(function(self.id, N.byref(member_id), N.byref(epoch)), "request route")
             return RequestRoute(member_id.value, epoch.value)
     def wait(self, wait_ms=0xFFFFFFFF):
+        _checked_integer(wait_ms, 0, 0xffffffff, "wait_ms")
         request_id = self.id
         info = N.RequestInfo()
         status = self.runtime.lib.pmac_request_wait(request_id, wait_ms, N.byref(info))
@@ -148,6 +149,7 @@ class Request:
         return self._copy(True)
 
     def match(self, pattern, group=0):
+        _checked_integer(group, 0, 0xffffffff, "group")
         view, buffer = N.view(pattern)
         with self._lock:
             request_id = self.id
@@ -288,7 +290,7 @@ class _CompletionPump:
         self._wake()
 
     def run(self):
-        pending = []
+        pending = deque()
         cursor = C.c_uint64()
         try:
             while True:
@@ -297,10 +299,11 @@ class _CompletionPump:
                         pending.append(self.queue.get_nowait())
                     except queue.Empty:
                         break
-                for reference in pending[:]:
+                # Visit each current entry once; survivors wait for the next round.
+                for _ in range(len(pending)):
+                    reference = pending.popleft()
                     request = reference()
                     if request is None:
-                        pending.remove(reference)
                         self.slots.release()
                         continue
                     try:
@@ -310,8 +313,9 @@ class _CompletionPump:
                             request._finish_locked(None, error)
                         complete = True
                     if complete:
-                        pending.remove(reference)
                         self.slots.release()
+                    else:
+                        pending.append(reference)
                     request = None
                 if self.stopping.is_set() and not pending and self.queue.empty():
                     return
@@ -355,6 +359,7 @@ def _finalize_runtime(lib, runtime_id, pump, created_pid):
 
 class Runtime:
     def __init__(self, workers=2, library_path=None, completion_capacity=1024):
+        _checked_integer(workers, 1, 256, "workers")
         if completion_capacity < 1:
             raise ValueError("completion_capacity must be positive")
         self.lib = N.load(library_path)
@@ -391,6 +396,9 @@ class Runtime:
         check(self.lib.pmac_get_runtime_info(N.byref(result)), "runtime info")
         return result
     def create_client(self, max_requests=64, max_retained_bytes=80 * 1024 * 1024, max_file_tasks=1):
+        _checked_integer(max_requests, 1, 0xffffffff, "max_requests")
+        _checked_integer(max_file_tasks, 1, 0xffffffff, "max_file_tasks")
+        _checked_integer(max_retained_bytes, 1, 2**(8 * C.sizeof(C.c_size_t)) - 1, "max_retained_bytes")
         with self._lock:
             self._check_open()
             config = N.ClientConfig(N.sizeof(N.ClientConfig), 2000, max_requests, max_file_tasks, max_retained_bytes)

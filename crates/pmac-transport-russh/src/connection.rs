@@ -410,3 +410,62 @@ fn authentication_error(error: russh::Error) -> Error {
 pub(crate) fn disconnected(message: impl Into<String>) -> Error {
     Error::disconnected(message).sent()
 }
+
+#[cfg(test)]
+mod close_event_tests {
+    use super::*;
+    use russh::keys::ssh_encoding::Decode;
+
+    fn id() -> ChannelId {
+        ChannelId::decode(&mut &7u32.to_be_bytes()[..]).unwrap()
+    }
+
+    #[test]
+    fn canceled_registration_consumes_late_close_without_retaining_id() {
+        let id = id();
+        let events = CloseEvents::default();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        events.lock().unwrap().waiting.insert(id, Some(sender));
+        let registration = CloseEventRegistration {
+            channel: id,
+            events: events.clone(),
+        };
+        drop(receiver);
+        drop(registration);
+        let mut state = events.lock().unwrap();
+        state.confirm(id);
+        assert!(state.waiting.is_empty());
+        assert!(
+            state.closed.is_empty(),
+            "late close must not become an unconsumable cached ID"
+        );
+    }
+
+    #[test]
+    fn confirmed_registration_drop_does_not_recreate_a_tombstone() {
+        let id = id();
+        let events = CloseEvents::default();
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
+        events.lock().unwrap().waiting.insert(id, Some(sender));
+        let registration = CloseEventRegistration {
+            channel: id,
+            events: events.clone(),
+        };
+        events.lock().unwrap().confirm(id);
+        assert_eq!(receiver.try_recv(), Ok(()));
+        drop(registration);
+        let state = events.lock().unwrap();
+        assert!(state.waiting.is_empty());
+        assert!(state.closed.is_empty());
+    }
+
+    #[test]
+    fn early_close_stays_available_for_subsequent_registration() {
+        let id = id();
+        let mut state = CloseState::default();
+        state.confirm(id);
+        assert!(state.closed.remove(&id));
+        assert!(state.closed.is_empty());
+        assert!(state.waiting.is_empty());
+    }
+}

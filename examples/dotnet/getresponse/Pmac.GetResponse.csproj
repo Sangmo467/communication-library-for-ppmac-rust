@@ -4,8 +4,12 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- SDK 下载包会将当前平台的动态库复制到可执行文件旁，支持直接 dotnet run。 -->
+    <PmacNativeDirectory Condition="'$(PmacNativeDirectory)' == ''">$(MSBuildThisFileDirectory)../../../native</PmacNativeDirectory>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../bindings/dotnet/Pmac/Pmac.csproj" />
+    <None Include="$(PmacNativeDirectory)/pmac.dll" Condition="Exists('$(PmacNativeDirectory)/pmac.dll')" Link="pmac.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(PmacNativeDirectory)/libpmac.so" Condition="Exists('$(PmacNativeDirectory)/libpmac.so')" Link="libpmac.so" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

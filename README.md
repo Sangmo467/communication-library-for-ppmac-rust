@@ -20,7 +20,7 @@ GetResponse 支持按请求启用透传：跳过规则表和 online/program 分�
 
 ## 仓库内容
 
-公开仓库包含核心源码、公开头文件、语言绑定、使用示例、构建配置、依赖锁和使用文档。不包含编译产物、独立测试程序、烟测程序、内部审核记录或现场验证数据。
+公开仓库包含核心源码、公开头文件、语言绑定、使用示例、构建配置、依赖锁和使用文档。编译产物通过 Release 附件提供；仓库包含离线测试和调用例程，不包含内部审核记录或现场验证数据。
 
 核心 crate：
 
@@ -28,6 +28,10 @@ GetResponse 支持按请求启用透传：跳过规则表和 online/program 分�
 - `pmac-core`：Runtime、Client、Request、连接池、取消和生命周期。
 - `pmac-transport-russh`：SSH、GPASCII、Shell 与 SFTP 传输。
 - `pmac-ffi`：稳定的 `pmac_` C ABI，生成 `pmac.dll` 或 `libpmac.so`。
+
+## 预编译 SDK
+
+Windows/Linux 的 x86、x64 SDK 包结构、GitHub Release 发布与带中文注释的可编译调用例程见 **[预编译 SDK 使用及发布说明](docs/prebuilt-sdk.md)**。源码仓库不存放二进制；正式版本附件由目标平台构建验证后上传至 GitHub Release。
 
 ## 构建
 

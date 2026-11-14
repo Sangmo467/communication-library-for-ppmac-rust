@@ -28,11 +28,17 @@ internal static class Program
         var exitCode = 0;
         try
         {
-            var library = RequiredEnvironment("PMAC_LIBRARY");
+            // 可显式指定 PMAC_LIBRARY；否则使用随 SDK 工程复制到输出目录的库。
+            // 进程位数必须与库一致，Windows x86 请使用 x86 .NET 运行时。
+            var library = Environment.GetEnvironmentVariable("PMAC_LIBRARY");
+            if (string.IsNullOrWhiteSpace(library))
+                library = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "pmac.dll" : "libpmac.so");
+            library = Path.GetFullPath(library);
+            Environment.SetEnvironmentVariable("PMAC_LIBRARY", library);
             if (!File.Exists(library)) throw new FileNotFoundException("PMAC_LIBRARY does not name an existing native library.", library);
             if (args.Length == 1 && args[0] == "--check")
             {
-                // Load the library and inspect ABI information without opening a connection.
+                // --check 只加载本地库并检查 ABI，不读取凭据，也不建立网络连接。
                 var info = PmacRuntime.NativeInfo;
                 Console.WriteLine($"pmac {PmacRuntime.NativeVersion}; ABI {info.AbiMajor}.{info.AbiMinor}; {info.PointerWidth}-bit");
                 if (info.AbiMajor != 2 || info.PointerWidth != (uint)(IntPtr.Size * 8))
@@ -53,12 +59,14 @@ internal static class Program
                 if (args.Length > 0)
                     Console.Error.WriteLine("Executing the supplied command once; it may change controller state. No automatic retry.");
 
+                // Runtime 先创建、最后释放；所有 GPASCII 调用保持在当前线程。
                 runtime = new PmacRuntime();
                 client = runtime.CreateClient();
                 using (var request = client.Connect(connection))
                 {
                     request.Wait(); // synchronous: connection and command stay on this calling thread
                 }
+                // 单次提交并复制 bytes，超时/未知执行结果时不自动重发。
                 var response = client.GetResponse(command, pattern);
                 var text = Encoding.UTF8.GetString(response);
                 Console.Write(text);
@@ -77,7 +85,7 @@ internal static class Program
         }
         finally
         {
-            // Report cleanup failures separately, preserving any earlier device error text.
+            // 逆序释放 Client/Runtime；单独记录清理异常，不覆盖设备原始错误。
             exitCode |= Dispose(client);
             exitCode |= Dispose(runtime);
         }

@@ -198,3 +198,108 @@ pub(crate) fn classify(segment: &str) -> Result<Option<Classification>, Protocol
     }
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Command;
+
+    #[test]
+    fn manual_rule_samples_are_supported_case_insensitively() {
+        for line in include_str!("online-command-rules.tsv").lines().skip(1) {
+            let columns: Vec<_> = line.split('\t').collect();
+            let sample = columns[3];
+            let expected = match columns[2] {
+                "Read" => CommandEffect::ReadOnly,
+                "Write" => CommandEffect::Control,
+                "Maintenance" => CommandEffect::Maintenance,
+                _ => unreachable!(),
+            };
+            for text in [sample.to_ascii_lowercase(), sample.to_ascii_uppercase()] {
+                let command = Command::raw(&text)
+                    .unwrap_or_else(|e| panic!("manual line {} / {text}: {e}", columns[4]));
+                assert_eq!(command.effect(), expected, "{text}");
+                assert_eq!(command.text(), text);
+            }
+        }
+    }
+
+    #[test]
+    fn writes_and_dynamic_indices_never_masquerade_as_queries() {
+        for text in [
+            "&1Q1++",
+            "&1Q(P1++)",
+            "P1++",
+            "Motor[1].ActPos++",
+            "Motor[P1++].ActPos",
+            "Sys.ServoCount++",
+            "mxread0,M1,P1",
+        ] {
+            if let Ok(command) = Command::raw(text) {
+                assert_ne!(command.effect(), CommandEffect::ReadOnly, "{text}");
+            }
+        }
+    }
+    #[test]
+    fn data_structure_namespaces_accept_members_and_classify_updates() {
+        for member in [
+            "Sys.ServoCount",
+            "EncTable[1].type",
+            "Motor[1].ActPos",
+            "ECAT[0].Enable",
+            "Gate2[0].Chan[1].Dac[0]",
+            "Gate3[0].Chan[1].OutCtrl",
+            "Ldata.Motor",
+            "Macro.TestValue",
+            "Gate1[0].Chan[1].Dac[0].a",
+            "Eip[0].TestValue",
+            "Coord[1].InPos",
+            "BufIO[0].TestValue",
+        ] {
+            for reference in [member.to_ascii_lowercase(), member.to_ascii_uppercase()] {
+                let query = Command::raw(&reference).unwrap();
+                assert_eq!(query.effect(), CommandEffect::ReadOnly, "{reference}");
+                for operator in [
+                    "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
+                ] {
+                    let text = format!("{reference} {operator} P1+5");
+                    let command = Command::raw(&text).unwrap();
+                    assert_eq!(command.effect(), CommandEffect::Control, "{text}");
+                    assert_eq!(command.text(), text);
+                }
+            }
+        }
+        for text in [
+            "Gate3[P1].Chan[Q1].TestValue",
+            "Sys.Ddata[L0]",
+            "Motor[n].ActPos",
+        ] {
+            assert_eq!(Command::raw(text).unwrap().effect(), CommandEffect::Control);
+        }
+        let query = Command::raw("Sys.ServoCount;Gate3[0].TestValue;BufIO[0].TestValue").unwrap();
+        assert_eq!(query.effect(), CommandEffect::ReadOnly);
+        assert_eq!(
+            Command::raw("Sys.ServoCount;Gate3[0].TestValue=1")
+                .unwrap()
+                .effect(),
+            CommandEffect::Control
+        );
+    }
+    #[test]
+    fn additional_structure_roots_are_not_restricted_by_a_prefix_list() {
+        for member in [
+            "Gather.Enable",
+            "Tdata[0].TestValue",
+            "UserAlgo.TestValue",
+            "MyUserStructure[2].Member",
+        ] {
+            let query = Command::raw(member).unwrap();
+            assert_eq!(query.effect(), CommandEffect::ReadOnly);
+            let assignment = format!("{member}=P1+5");
+            assert_eq!(
+                Command::raw(&assignment).unwrap().effect(),
+                CommandEffect::Control
+            );
+        }
+    }
+}

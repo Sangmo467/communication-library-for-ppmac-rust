@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(pmac_rust VERSION 2.0.0 LANGUAGES C CXX)
+include(CTest)
 include(GNUInstallDirs)
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build configuration" FORCE)
@@ -25,6 +26,79 @@ add_custom_target(pmac_native ALL
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building pmac Rust C ABI"
     COMMAND_EXPAND_LISTS VERBATIM)
+add_custom_target(pmac_check
+    COMMAND "${CARGO_EXECUTABLE}" test --workspace ${PMAC_CARGO_ARGS}
+    COMMAND "${CARGO_EXECUTABLE}" clippy --workspace --all-targets ${PMAC_CARGO_ARGS} -- -D warnings
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMAND_EXPAND_LISTS VERBATIM)
+
+option(PMAC_BUILD_EXAMPLES "Build C, C++17 and C++98 smoke examples and ABI probe" ON)
+if(PMAC_BUILD_EXAMPLES)
+    add_library(pmac_shared SHARED IMPORTED GLOBAL)
+    set_target_properties(pmac_shared PROPERTIES IMPORTED_CONFIGURATIONS "DEBUG;RELEASE;RELWITHDEBINFO;MINSIZEREL")
+    if(WIN32)
+        set(PMAC_SHARED_NAME pmac.dll)
+        foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+            if(config STREQUAL "DEBUG")
+                set(profile debug)
+            else()
+                set(profile release)
+            endif()
+            set_target_properties(pmac_shared PROPERTIES
+                IMPORTED_LOCATION_${config} "${PMAC_CARGO_DIR}/${profile}/pmac.dll"
+                IMPORTED_IMPLIB_${config} "${PMAC_CARGO_DIR}/${profile}/pmac.dll.lib")
+        endforeach()
+    else()
+        set(PMAC_SHARED_NAME libpmac.so)
+        foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+            if(config STREQUAL "DEBUG")
+                set(profile debug)
+            else()
+                set(profile release)
+            endif()
+            set_target_properties(pmac_shared PROPERTIES IMPORTED_LOCATION_${config} "${PMAC_CARGO_DIR}/${profile}/${PMAC_SHARED_NAME}")
+        endforeach()
+    endif()
+
+    add_executable(pmac_c_smoke examples/c/minimal.c)
+    set_target_properties(pmac_c_smoke PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+    add_executable(pmac_cpp_smoke examples/cpp/minimal.cpp)
+    set_target_properties(pmac_cpp_smoke PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    add_executable(pmac_cpp98_smoke examples/cpp98/minimal.cpp)
+    set_target_properties(pmac_cpp98_smoke PROPERTIES CXX_STANDARD 98 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    add_executable(pmac_cpp_no_throw examples/cpp/no_throw.cpp)
+    target_compile_definitions(pmac_cpp_no_throw PRIVATE PMAC_TEST_CPP17)
+    set_target_properties(pmac_cpp_no_throw PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    add_executable(pmac_cpp98_no_throw examples/cpp/no_throw.cpp)
+    set_target_properties(pmac_cpp98_no_throw PROPERTIES CXX_STANDARD 98 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    find_program(PWSH_EXECUTABLE pwsh REQUIRED)
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/abi_layout.c"
+        COMMAND "${PWSH_EXECUTABLE}" -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Update-AbiProbe.ps1"
+            -OutputPath "${CMAKE_CURRENT_BINARY_DIR}/abi_layout.c"
+        DEPENDS include/pmac.h scripts/Update-AbiProbe.ps1
+        VERBATIM)
+    add_executable(pmac_abi_layout "${CMAKE_CURRENT_BINARY_DIR}/abi_layout.c")
+    set_target_properties(pmac_abi_layout PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+
+    foreach(example pmac_c_smoke pmac_cpp_smoke pmac_cpp98_smoke pmac_cpp_no_throw pmac_cpp98_no_throw pmac_abi_layout)
+        target_include_directories(${example} PRIVATE include bindings/cpp)
+        target_link_libraries(${example} PRIVATE pmac_shared)
+        add_dependencies(${example} pmac_native)
+        if(MSVC)
+            target_compile_options(${example} PRIVATE /W4 /WX)
+        else()
+            target_compile_options(${example} PRIVATE -Wall -Wextra -Werror)
+        endif()
+        if(WIN32)
+            add_custom_command(TARGET ${example} POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:pmac_shared>" "$<TARGET_FILE_DIR:${example}>"
+                VERBATIM)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME ${example} COMMAND ${example})
+        endif()
+    endforeach()
+endif()
 
 install(FILES include/pmac.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY bindings/cpp/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/pmac FILES_MATCHING PATTERN "*.hpp")

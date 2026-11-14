@@ -548,13 +548,14 @@ impl Client {
                     }
                     notified.await;
                 }
-                let sessions = client
+                let mut sessions = client
                     .pool
                     .lock()
                     .members
                     .iter()
                     .filter_map(|m| m.session.clone().map(|session| (m.id, m.epoch, session)))
                     .collect::<Vec<_>>();
+                let mut close_uncertain = Vec::new();
                 loop {
                     let results =
                         futures::future::join_all(sessions.iter().map(|(_, _, session)| async {
@@ -574,16 +575,24 @@ impl Client {
                     {
                         let mut pool = client.pool.lock();
                         for ((id, epoch, _), result) in sessions.iter().zip(&results) {
+                            if result.is_ok() && close_uncertain.contains(&(*id, *epoch)) {
+                                pool.uncertain.retain(|entry| entry != &(*id, *epoch));
+                                close_uncertain.retain(|entry| entry != &(*id, *epoch));
+                            }
                             if result
                                 .as_ref()
                                 .is_err_and(|error| error.code == ErrorCode::ShutdownPending)
                                 && !pool.uncertain.contains(&(*id, *epoch))
                             {
                                 pool.uncertain.push((*id, *epoch));
+                                close_uncertain.push((*id, *epoch));
                             }
                         }
                     }
-                    if results.iter().all(Result::is_ok) {
+                    // A confirmed close needs no further retries.
+                    let mut results = results.into_iter();
+                    sessions.retain(|_| results.next().is_some_and(|result| result.is_err()));
+                    if sessions.is_empty() {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;

@@ -225,3 +225,110 @@ fn discovery_error(error: Error) -> Error {
 fn dart_io_error(operation: &str, error: std::io::Error) -> Error {
     Error::new(ErrorCode::Disconnected, format!("{operation}: {error}")).sent()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dart_budget_is_shared_bounded_and_released() {
+        let budget = DartBudget::shared("dart-budget-test");
+        let mut permits = (0..10)
+            .map(|_| budget.reserve().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            budget.reserve().err().unwrap().code,
+            ErrorCode::ResourceLimit
+        );
+        drop(permits.pop());
+        assert!(DartBudget::shared("DART-BUDGET-TEST").reserve().is_ok());
+    }
+
+    async fn test_connection() -> (DartConnection, tokio::net::TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (peer, _) = listener.accept().await.unwrap();
+        let permit = DartBudget::shared("dart-fault-test").reserve().unwrap();
+        (
+            DartConnection {
+                stream,
+                _permit: permit,
+                port: 0,
+            },
+            peer,
+        )
+    }
+
+    #[tokio::test]
+    async fn read_disconnect_after_partial_response_reports_uncertain() {
+        let (mut connection, mut peer) = test_connection().await;
+        let server = tokio::spawn(async move {
+            let mut header = [0; 12];
+            peer.read_exact(&mut header).await.unwrap();
+            peer.write_all(&[1, 2, 3]).await.unwrap();
+        });
+        let request = DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap();
+        let error = transfer(&mut connection, request).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Disconnected);
+        assert_eq!(
+            error.certainty,
+            pmac_core::ExecutionCertainty::MayHaveExecuted
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_disconnect_before_ack_reports_uncertain() {
+        let (mut connection, mut peer) = test_connection().await;
+        let server = tokio::spawn(async move {
+            let mut request = [0; 20];
+            peer.read_exact(&mut request).await.unwrap();
+        });
+        let request =
+            DartTransfer::set(pmac_protocol::DartCommand::SetPVariable, 1, vec![0; 8]).unwrap();
+        let error = transfer(&mut connection, request).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Disconnected);
+        assert_eq!(
+            error.certainty,
+            pmac_core::ExecutionCertainty::MayHaveExecuted
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn silent_server_causes_timeout_and_connection_can_be_dropped() {
+        let (mut connection, mut peer) = test_connection().await;
+        let server = tokio::spawn(async move {
+            let mut header = [0; 12];
+            peer.read_exact(&mut header).await.unwrap();
+            let mut byte = [0; 1];
+            assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+        });
+        let request = DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            transfer(&mut connection, request)
+        )
+        .await
+        .is_err());
+        drop(connection);
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn discovery_accepts_plain_or_exact_named_values_only() {
+        assert_eq!(
+            discovery_value(b"Dart.Enable=1\r\n", "Dart.Enable").unwrap(),
+            1
+        );
+        assert_eq!(discovery_value(b"1027\r\n", "Dart.Port").unwrap(), 1027);
+        assert!(discovery_value(b"Dart.Port=1027", "Dart.Enable").is_err());
+        assert!(discovery_value(b"Dart.Enable=1=0", "Dart.Enable").is_err());
+        assert!(discovery_value(b"enabled", "Dart.Enable").is_err());
+    }
+}

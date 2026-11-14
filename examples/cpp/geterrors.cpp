@@ -1,3 +1,4 @@
+/* C++17 geterrors：设置周期与各类状态掩码，只在状态变化时接收输出。回调不是 UI 线程；交给其他线程时必须复制文本并使用有界队列。主线程按 Enter 后 stop 等待远端退出和回调屏障；monitor 必须先于 Client/Runtime 销毁。本例需真实设备，不由离线 CTest 执行。 */
 #include "pmac.hpp"
 #include <cstdlib>
 #include <iostream>

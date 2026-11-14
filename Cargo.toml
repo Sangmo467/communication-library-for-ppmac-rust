@@ -4,6 +4,7 @@ members = [
     "crates/pmac-core",
     "crates/pmac-transport-russh",
     "crates/pmac-ffi",
+    "crates/pmac-testkit",
 ]
 resolver = "2"
 
@@ -18,6 +19,7 @@ repository = "https://gitee.com/sangmomo/communication-library-for-ppmac-rust"
 async-trait = "0.1"
 futures = "0.3"
 md5 = "0.7"
+proptest = "1"
 rand = "0.9"
 regex = "1"
 russh = "=0.65.1"

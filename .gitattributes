@@ -1,3 +1,5 @@
-* text=auto
-*.pdf binary
-/vendor/russh/** -text
+# 所有平台使用相同源码字节，保证四平台源码摘要一致。
+* text=auto eol=lf
+# TSV 的末尾制表符表示空字段；上游 README 保留原字节用于来源校验。
+*.tsv whitespace=-blank-at-eol
+vendor/russh/README.md whitespace=-blank-at-eol

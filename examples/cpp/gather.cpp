@@ -1,3 +1,4 @@
+/* C++17 连续 Gather：配置采样周期、变量地址和反向 TCP 端口。控制器需可访问本机端口；配置会修改设备全局 Gather 状态。batch 数据仅在回调期间有效，跨线程使用必须 batch.copy()。回调内请求停止用 requestStop，阻塞 stop 由主线程执行。本例需真实设备，不由离线 CTest 执行。 */
 #include "pmac.hpp"
 #include <atomic>
 #include <cstdlib>

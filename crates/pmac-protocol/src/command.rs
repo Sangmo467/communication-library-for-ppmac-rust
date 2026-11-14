@@ -638,6 +638,30 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_abort_and_resume_require_explicit_target_and_are_control_commands() {
+        for (text, coord) in [("&1abort", 1), ("&127ABORT", 127)] {
+            let command = Command::raw(text).unwrap();
+            assert_eq!(command.text(), text);
+            assert_eq!(command.scope(), CommandScope::Coord(coord));
+            assert_eq!(command.effect(), CommandEffect::Control);
+            assert_eq!(command.maintenance(), MaintenanceKind::None);
+        }
+        for text in [
+            "&abort",
+            "&resume",
+            "&128abort",
+            "&128resume",
+            "&1abort extra",
+            "&1resumeX",
+        ] {
+            assert!(Command::raw(text).is_err(), "accepted {text}");
+        }
+        let compound = Command::raw("&1abort;Sys.ServoCount").unwrap();
+        assert_eq!(compound.scope(), CommandScope::Coord(1));
+        assert_eq!(compound.effect(), CommandEffect::Control);
+    }
+
+    #[test]
     fn rejects_ambiguous_motion_and_bad_numbers() {
         for text in [
             "#jog=1",
@@ -749,16 +773,6 @@ mod tests {
         MaintenanceKind::EtherCat
     );
     maintenance_alias_regression!(
-        ecatslaves_variants_use_device_maintenance,
-        "ecatslaves",
-        MaintenanceKind::EtherCat
-    );
-    maintenance_alias_regression!(
-        ecat_slaves_variants_use_device_maintenance,
-        "ecat slaves",
-        MaintenanceKind::EtherCat
-    );
-    maintenance_alias_regression!(
         save_variants_use_device_maintenance,
         "save",
         MaintenanceKind::Save
@@ -820,7 +834,9 @@ mod tests {
             "ecatreset_extra",
             "ecat slaves_extra",
         ] {
-            let command = Command::raw(wire).unwrap();
+            let Ok(command) = Command::raw(wire) else {
+                continue;
+            };
             assert_eq!(command.maintenance(), MaintenanceKind::None, "{wire:?}");
             assert_ne!(command.effect(), CommandEffect::Maintenance, "{wire:?}");
         }
@@ -993,4 +1009,149 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn requested_online_commands_follow_read_write_classification() {
+        for line in include_str!("../tests/online-command-corpus.tsv").lines() {
+            let (kind, text) = line.split_once('\t').expect("kind and command");
+            let command = Command::raw(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            let expected = match kind {
+                "R" => CommandEffect::ReadOnly,
+                "W" => CommandEffect::Control,
+                "M" => CommandEffect::Maintenance,
+                _ => panic!("bad kind"),
+            };
+            assert_eq!(command.effect(), expected, "{text}");
+            assert_eq!(command.text(), text);
+        }
+    }
+
+    #[test]
+    fn manual_scoped_commands_require_matching_explicit_targets() {
+        for text in [
+            "abort",
+            "adisable",
+            "cpx X10",
+            "start 5",
+            "rotfree",
+            "open rotary",
+            "Q1=1",
+            "kill",
+            "k",
+            "hm",
+            "j+",
+            "j-",
+            "j/",
+            "%100",
+            "&1kill",
+            "&1k",
+            "#1abort",
+            "#1cpx X1",
+            "&128stop",
+            "#256j+",
+            "&1..128r",
+        ] {
+            assert!(Command::raw(text).is_err(), "accepted {text}");
+        }
+    }
+    #[test]
+    fn online_commands_are_case_insensitive_and_preserve_wire_text() {
+        for line in include_str!("../tests/online-command-corpus.tsv").lines() {
+            let (kind, text) = line.split_once('\t').unwrap();
+            for variant in [text.to_ascii_lowercase(), text.to_ascii_uppercase()] {
+                let command = Command::raw(&variant).unwrap_or_else(|e| panic!("{variant}: {e}"));
+                let expected = match kind {
+                    "R" => CommandEffect::ReadOnly,
+                    "W" => CommandEffect::Control,
+                    "M" => CommandEffect::Maintenance,
+                    _ => unreachable!(),
+                };
+                assert_eq!(command.effect(), expected, "{variant}");
+                assert_eq!(command.text(), variant);
+            }
+        }
+        for text in ["&2q", "&2Q"] {
+            assert_eq!(Command::raw(text).unwrap().effect(), CommandEffect::Control);
+        }
+    }
+    #[test]
+    fn ecat_slaves_reports_topology_without_a_maintenance_effect() {
+        for text in ["ecat slaves", "ECAT SLAVES", "ecatslaves", "ecat slaves 0"] {
+            assert_eq!(
+                Command::raw(text).unwrap().effect(),
+                CommandEffect::ReadOnly
+            );
+        }
+    }
+    #[test]
+    fn opaque_inline_programs_keep_semicolons_and_case() {
+        for text in [
+            "&1cpx if (Q10<0) Q300=72; arbitrary text",
+            "&2CX\tQ1=1; arbitrary text",
+        ] {
+            let command = Command::raw(text).unwrap();
+            assert_eq!(command.text(), text);
+            assert_eq!(command.effect(), CommandEffect::Control);
+        }
+        for text in ["&1resume", "&1,3resume", "&1..3RESUME", "&*resume"] {
+            assert_eq!(Command::raw(text).unwrap().effect(), CommandEffect::Control);
+        }
+        for text in [
+            "resume",
+            "#1resume",
+            "&1kill",
+            "&1k",
+            "system anything",
+            "&1pread",
+            "&1dread",
+        ] {
+            assert!(Command::raw(text).is_err(), "{text}");
+        }
+    }
+    #[test]
+    fn user_declared_names_do_not_collide_with_command_substrings() {
+        for text in [
+            "MyVariable",
+            "MyArray[3]",
+            "MyArray[P1]",
+            "JogSpeed",
+            "KillCounter",
+            "AdisableStatus",
+            "SystemTemperature",
+            "JogSpeed=17.5",
+            "SystemTemperature += 1",
+            "MyArray[3]=P1+5",
+        ] {
+            for variant in [text.to_ascii_lowercase(), text.to_ascii_uppercase()] {
+                let command = Command::raw(&variant).unwrap();
+                assert_eq!(command.effect(), CommandEffect::Control, "{variant}");
+                assert_eq!(command.text(), variant);
+            }
+        }
+        for text in ["kill", "jog+", "adisable", "system \"ls\""] {
+            assert!(Command::raw(text).is_err(), "{text}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn passthrough_is_opaque_and_keeps_frame_validation() {
+    for text in [
+        "  abort  ",
+        "dwell 10",
+        "Vendor.FutureCommand(7)",
+        "P1;;open prog 1",
+    ] {
+        let command = Command::passthrough(text).unwrap();
+        assert_eq!(command.text(), text);
+        assert!(command.is_passthrough());
+        assert!(!command.is_program_line());
+        assert_eq!(command.effect(), CommandEffect::Control);
+        assert_eq!(command.maintenance(), MaintenanceKind::None);
+    }
+    for text in ["", "  ", "P1\nP2", "P1\r", "P1\0", "P1\x06", "P1\x15"] {
+        assert!(Command::passthrough(text).is_err());
+    }
+    assert!(Command::passthrough("x".repeat(MAX_COMMAND_LEN + 1)).is_err());
+    assert!(!Command::raw("P1").unwrap().is_passthrough());
 }

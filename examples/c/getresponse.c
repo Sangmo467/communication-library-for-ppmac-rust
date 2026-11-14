@@ -8,7 +8,7 @@ static pmac_bytes bytes(const char* value) {
     pmac_bytes result = { (const uint8_t*)value, value ? strlen(value) : 0 };
     return result;
 }
-/* Copy error details before any unrelated PMAC call or Request release. */
+/* 错误正文必须在释放 Request 或调用其他 PMAC API 前复制，以保留设备 error # 与执行确定性。 */
 static void report_error(int32_t status, pmac_request_id request) {
     pmac_error_info info = {0};
     size_t required = 0;
@@ -38,6 +38,9 @@ static int32_t wait_request(pmac_request_id request) {
     do { status = pmac_request_wait(request, 1000, &info); } while (status == PMAC_WAIT_PENDING);
     return status;
 }
+/* 完整 C 调用链：创建 Runtime/Client -> 连接 -> 提交一条命令 -> 等待 -> 两次调用复制响应 -> 逆序释放。
+ * --check 仅检查动态库和 ABI，用于离线编译测试；正常运行才需要设备环境变量。
+ * 请求等待超时只说明本次等待未完成，不能据此重发命令，以免重复执行有副作用的操作。 */
 int main(int argc, char** argv) {
     pmac_runtime_id runtime = 0;
     pmac_client_id client = 0;
@@ -59,6 +62,15 @@ int main(int argc, char** argv) {
              "Set PMAC_HOST, PMAC_KNOWN_HOSTS and authentication environment variables.");
         return argc > 3 ? 2 : 0;
     }
+    if (argc == 2 && strcmp(argv[1], "--check") == 0) {
+        pmac_runtime_info info = {0};
+        status = pmac_get_runtime_info(&info);
+        if (status != PMAC_OK || info.abi_major != PMAC_ABI_MAJOR ||
+            info.pointer_width != (uint32_t)(sizeof(void*) * 8u)) return 1;
+        printf("PMAC %s, ABI %u.%u, %u-bit\n", pmac_version_string(), info.abi_major, info.abi_minor, info.pointer_width);
+        return 0;
+    }
+    /* 连接前校验 SSH 主机身份；凭据从环境读取，不能写入源码或日志。 */
     if (!host || !*host || !known_hosts || !*known_hosts) {
         fputs("Set PMAC_HOST and PMAC_KNOWN_HOSTS\n", stderr); return 2;
     }
@@ -86,15 +98,18 @@ int main(int argc, char** argv) {
     if (status != PMAC_OK) goto error;
     options.struct_size = sizeof(options); options.abi_version = PMAC_ABI_VERSION;
     options.timeout_ms = 5000; options.max_response_bytes = 1024u * 1024u;
+    /* 此处只提交一次；后续 wait/copy 都针对同一个 Request ID。 */
     status = pmac_get_response_async(client, (const uint8_t*)command, strlen(command), &options, &request);
     if (status != PMAC_OK) goto error;
     status = wait_request(request);
     if (status != PMAC_OK) { report_error(status, request); goto cleanup; }
+    /* 第一次查询所需字节数，第二次提供缓冲区；返回数据不保证以 NUL 结尾。 */
     status = *pattern ? pmac_request_copy_match(request, (const uint8_t*)pattern, strlen(pattern), 0, NULL, 0, &required)
                       : pmac_request_copy_response(request, NULL, 0, &required);
     if (status != PMAC_OK && status != PMAC_BUFFER_TOO_SMALL) goto error;
     response = required ? (uint8_t*)malloc(required) : NULL;
     if (required && !response) { fputs("Response allocation failed\n", stderr); goto cleanup; }
+    /* 第一次查询所需字节数，第二次提供缓冲区；返回数据不保证以 NUL 结尾。 */
     status = *pattern ? pmac_request_copy_match(request, (const uint8_t*)pattern, strlen(pattern), 0, response, required, &required)
                       : pmac_request_copy_response(request, response, required, &required);
     if (status != PMAC_OK) goto error;

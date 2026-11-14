@@ -20,3 +20,7 @@ tempfile = "3"
 tokio.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
+
+
+[dev-dependencies]
+rand10 = { package = "rand", version = "0.10" }

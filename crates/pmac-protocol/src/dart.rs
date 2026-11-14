@@ -203,3 +203,68 @@ impl DartTransfer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_values_and_big_endian_header_match_the_document() {
+        let transfer = DartTransfer::get(DartCommand::GetPVariable, 65_535, 8).unwrap();
+        assert_eq!(
+            transfer.wire_header(),
+            [0, 0, 0, 0x90, 0, 0, 0xff, 0xff, 0, 0, 0, 8]
+        );
+        assert_eq!(
+            DartCommand::try_from(0x10).unwrap(),
+            DartCommand::GetUshmChar
+        );
+        assert!(DartCommand::try_from(0x20).is_err());
+        assert!(DartCommand::try_from(0x21).is_err());
+        assert!(DartCommand::try_from(0x92).is_err());
+    }
+
+    #[test]
+    fn every_element_type_requires_aligned_nonempty_bounded_data() {
+        for (command, width) in [
+            (DartCommand::GetUshmChar, 1),
+            (DartCommand::GetUshmInt, 4),
+            (DartCommand::GetUshmFloat, 4),
+            (DartCommand::GetUshmDouble, 8),
+            (DartCommand::GetPVariable, 8),
+        ] {
+            assert!(DartTransfer::get(command, 0, width).is_ok());
+            assert!(DartTransfer::get(command, 0, 0).is_err());
+            if width > 1 {
+                assert!(DartTransfer::get(command, 0, width + 1).is_err());
+            }
+            assert!(DartTransfer::get(command, 0, DART_MAX_DATA_BYTES + 1).is_err());
+        }
+    }
+
+    #[test]
+    fn ushm_and_p_variable_ranges_include_the_exact_last_element() {
+        assert!(DartTransfer::get(DartCommand::GetUshmDouble, DART_USHM_BYTES - 8, 8).is_ok());
+        assert!(DartTransfer::get(DartCommand::GetUshmDouble, DART_USHM_BYTES - 7, 8).is_err());
+        assert!(DartTransfer::get(DartCommand::GetPVariable, 65_535, 8).is_ok());
+        assert!(DartTransfer::get(DartCommand::GetPVariable, 65_535, 16).is_err());
+        assert!(DartTransfer::get(DartCommand::GetPVariable, 65_536, 8).is_err());
+    }
+
+    #[test]
+    fn set_moves_the_buffer_and_rejects_direction_or_length_mismatch() {
+        let data = vec![1; 16];
+        let pointer = data.as_ptr();
+        let transfer = DartTransfer::set(DartCommand::SetPVariable, 1, data).unwrap();
+        assert_eq!(transfer.data().as_ptr(), pointer);
+        assert!(DartTransfer::set(DartCommand::GetPVariable, 0, vec![0; 8]).is_err());
+        assert!(DartTransfer::get(DartCommand::SetPVariable, 0, 8).is_err());
+    }
+
+    #[test]
+    fn big_endian_conversion_reverses_each_element_without_crossing_boundaries() {
+        let mut data = [1, 2, 3, 4, 5, 6, 7, 8];
+        swap_elements(&mut data, 4);
+        assert_eq!(data, [4, 3, 2, 1, 8, 7, 6, 5]);
+    }
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one GetResponse request; configuration comes from PMAC_* variables."""
+"""单次 GetResponse 示例：使用 PMAC_* 环境变量，--native-version 仅离线检查库。"""
 
 import argparse
 import os
@@ -46,6 +46,7 @@ def report_pmac_error(error):
 def main():
     args = arguments()  # --help needs neither the binding nor a native library.
     try:
+        # 安装 SDK 内的 bindings/python，或把该目录加入 PYTHONPATH；不需要编译 Rust。
         from pmac import PmacError, Runtime
     except ImportError as error:
         print(f"Cannot import pmac: {error}. Install ./bindings/python or set PYTHONPATH.", file=sys.stderr)
@@ -54,6 +55,7 @@ def main():
     try:
         library = str(Path(required_env("PMAC_LIBRARY")).expanduser().resolve(strict=True))
         if args.native_version:
+            # 离线加载与版本查询，不创建网络连接。
             with Runtime(library_path=library) as runtime:
                 print(f"native={runtime.native_version}, ABI={runtime.native_abi_version}")
             return 0
@@ -62,11 +64,13 @@ def main():
         known_hosts = str(Path(required_env("PMAC_KNOWN_HOSTS")).expanduser().resolve(strict=True))
         password = required_env("PMAC_PASSWORD")
         username = os.environ.get("PMAC_USER", "root")
+        # Python 解释器位数必须与动态库一致；with 保证 Client 先于 Runtime 释放。
         with Runtime(library_path=library) as runtime:
             with runtime.create_client() as client:
-                # Report request errors before closing resources, so cleanup cannot hide them.
+                # 在资源清理前报告原始设备错误，避免清理错误遮蔽 error # 正文。
                 try:
                     client.connect(host, username, password, known_hosts=known_hosts)
+                    # 只提交一次命令；未知执行结果不可自动重发。返回 bytes，按长度处理。
                     data = client.get_response(
                         args.command, pattern=args.pattern, timeout_ms=args.timeout_ms
                     )

@@ -1,3 +1,4 @@
+/* geterrors 持续监控示例：凭据从环境读取，连接后开启独立 PTY 监听。回调在库线程执行，文本按 length 处理；回调内不能阻塞或调用 stop/release，只能请求停止。主线程停止屏障完成后才能释放上下文，再逆序释放 Client/Runtime。本例需真实设备，不由离线 CTest 执行。 */
 #include "pmac.h"
 #include <stdio.h>
 #include <stdlib.h>

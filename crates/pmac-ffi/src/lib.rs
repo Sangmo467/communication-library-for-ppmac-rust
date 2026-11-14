@@ -8,6 +8,8 @@ mod geterrors;
 mod helpers;
 mod pool;
 mod registry;
+#[cfg(test)]
+mod tests;
 mod types;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -878,3 +880,6 @@ pub extern "C" fn pmac_runtime_wake(id: u64) -> i32 {
         Ok(())
     })
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
