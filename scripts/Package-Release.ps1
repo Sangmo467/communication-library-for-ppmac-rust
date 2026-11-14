@@ -61,7 +61,7 @@ try {
         'examples/dotnet/getresponse/Program.cs','examples/dotnet/getresponse/Pmac.GetResponse.csproj',
         'examples/matlab/build_pmac_mex.m','examples/matlab/pmac_mex.cpp','examples/matlab/example_getresponse.m',
         'bindings/python/pyproject.toml','scripts/Test-SdkExamples.ps1',
-        'docs/prebuilt-sdk.md','docs/gather.md','docs/geterrors.md',
+        'docs/prebuilt-sdk.md','docs/prebuilt-sdk.en.md','docs/gather.md','docs/geterrors.md',
         'docs/abi-contract.md','docs/authentication.md','docs/getresponse-passthrough.md')
     foreach ($relative in $sdkFiles) {
         $copyPath = Join-Path $destination $relative
@@ -69,6 +69,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $copyPath
     }
     Copy-Item -LiteralPath 'docs/prebuilt-sdk.md' -Destination (Join-Path $destination 'README.md')
+    Copy-Item -LiteralPath 'docs/prebuilt-sdk.en.md' -Destination (Join-Path $destination 'README.en.md')
     New-Item -ItemType Directory -Path (Join-Path $destination 'third-party/russh') -Force | Out-Null
     Copy-Item -LiteralPath 'vendor/russh/LICENSE' -Destination (Join-Path $destination 'third-party/russh/LICENSE')
     Copy-Item -LiteralPath $SbomPath -Destination (Join-Path $destination 'sbom.spdx.json')
@@ -78,7 +79,7 @@ try {
         if (-not (Test-Path -LiteralPath $EvidenceDirectory -PathType Container)) { throw 'Evidence directory does not exist' }
         Copy-Item -LiteralPath $EvidenceDirectory -Destination (Join-Path $destination 'evidence') -Recurse
     }
-    $sourcePaths = @(& git ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml CMakeLists.txt cmake include crates bindings examples scripts vendor docs/dependency-patches.md docs/prebuilt-sdk.md .github)
+    $sourcePaths = @(& git ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml CMakeLists.txt cmake include crates bindings examples scripts vendor docs/dependency-patches.md docs/prebuilt-sdk.md docs/prebuilt-sdk.en.md README.en.md .github)
     if ($LASTEXITCODE -ne 0) { throw 'Unable to enumerate source snapshot' }
     $sourceHashes = @($sourcePaths | Sort-Object -Unique | ForEach-Object {
         if (Test-Path -LiteralPath $_ -PathType Leaf) { "$_`t$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant())" }

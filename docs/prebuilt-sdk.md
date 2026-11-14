@@ -1,5 +1,7 @@
 # Windows / Linux 预编译 SDK 与中文调用例程
 
+**简体中文** | [English](prebuilt-sdk.en.md)
+
 下载入口为 [GitHub Releases](https://github.com/Sangmo467/communication-library-for-ppmac-rust/releases)。正式版本需要在公开源码 tag 上完成构建与附件上传后才可下载；仓库中的脚本本身不代表已经发布二进制。
 
 ## 选择下载包

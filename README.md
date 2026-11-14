@@ -1,5 +1,7 @@
 # Communication Library for Power PPMAC
 
+**简体中文** | [English](README.en.md)
+
 GetResponse 支持按请求启用透传：跳过规则表和 online/program 分类，原文提交单条命令。详见 **[GetResponse 透传模式与各语言示例](docs/getresponse-passthrough.md)**。
 
 
