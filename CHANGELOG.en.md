@@ -4,6 +4,12 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.2
+
+- Add a LoongArch64 Linux SDK with LP64D new-world ABI and glibc 2.36 baseline checks.
+- Isolate the cross toolchain and execute QEMU Rust/C/C++ tests, 149-value ABI comparisons and target-host preflight checks.
+- Add English/Chinese Kylin and Debian integration guides with explicit ABI/runtime compatibility conditions; C ABI remains 2.1.
+
 ## 2.0.1
 
 - Add Linux ARM64/ARMv7, Windows ARM64 and macOS Intel/Apple Silicon build/release paths alongside the existing four targets.

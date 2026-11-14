@@ -4,7 +4,7 @@
 
 A Rust/russh communication library for Power PPMAC, with a stable C ABI, C++17 and C++98 wrappers, .NET 8 and Python bindings, and a MATLAB GetResponse MEX example.
 
-Version: **2.0.1** · C ABI: **2.1** · License: **MIT**
+Version: **2.0.2** · C ABI: **2.1** · License: **MIT**
 
 ## Features
 
@@ -22,7 +22,7 @@ GetResponse passthrough can be enabled per request to bypass the online-command 
 
 ## Prebuilt SDKs
 
-Download packages from [GitHub Releases](https://github.com/Sangmo467/communication-library-for-ppmac-rust/releases). The release matrix covers **Windows x86/x64/ARM64**, **Linux x86/x64/ARM64/ARMv7**, and **macOS Intel x64/Apple Silicon ARM64**. Each package is published only after its target build and offline tests pass.
+Download packages from [GitHub Releases](https://github.com/Sangmo467/communication-library-for-ppmac-rust/releases). The release matrix covers **Windows x86/x64/ARM64**, **Linux x86/x64/ARM64/ARMv7/LoongArch64**, and **macOS Intel x64/Apple Silicon ARM64**. Each package is published only after its target build and offline tests pass.
 
 Each SDK contains the native library, C headers, language bindings, independently buildable examples with detailed Chinese comments, CMake integration, licenses, an SPDX dependency inventory and a SHA-256 manifest. Consumers do not need Rust to use a prebuilt SDK.
 
@@ -113,6 +113,8 @@ The public user documentation below is available in English and Chinese. Each pa
 - [DART](docs/dart-api.en.md), [online commands](docs/online-commands.en.md), [response extraction](docs/pattern-migration.en.md)
 - [Continuous Gather](docs/gather.en.md), [geterrors monitoring](docs/geterrors.en.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.en.md), [changelog](CHANGELOG.en.md)
+
+- [LoongArch64 on Kylin and Debian](docs/loongarch-sdk.en.md): LP64D new-world ABI, glibc baseline and target-host checks.
 
 ## Operational boundaries
 

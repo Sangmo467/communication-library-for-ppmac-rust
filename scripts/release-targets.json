@@ -8,5 +8,5 @@
   {"target":"aarch64-pc-windows-msvc","os":"windows-11-arm","system":"windows","format":"PE","machine":43620,"bits":64,"library":"pmac.dll","python_arch":"arm64","managed":true,"sinceVersion":"2.0.1"},
   {"target":"x86_64-apple-darwin","os":"macos-15-intel","system":"macos","format":"Mach-O","machine":16777223,"bits":64,"library":"libpmac.dylib","python_arch":"x64","managed":true,"deployment":"11.0","sinceVersion":"2.0.1"},
   {"target":"aarch64-apple-darwin","os":"macos-15","system":"macos","format":"Mach-O","machine":16777228,"bits":64,"library":"libpmac.dylib","python_arch":"arm64","managed":true,"deployment":"11.0","sinceVersion":"2.0.1"},
-  {"target":"loongarch64-unknown-linux-gnu","os":"ubuntu-24.04","system":"linux","format":"ELF","machine":258,"bits":64,"library":"libpmac.so","managed":false,"emulated":true,"preview":true,"sinceVersion":"2.0.2"}
+  {"target":"loongarch64-unknown-linux-gnu","os":"ubuntu-24.04","system":"linux","format":"ELF","machine":258,"bits":64,"library":"libpmac.so","managed":false,"emulated":true,"preview":false,"sinceVersion":"2.0.2"}
 ]

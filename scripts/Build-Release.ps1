@@ -72,7 +72,7 @@ try {
     $arguments = @{ Target=$Target; OutputDirectory=$OutputDirectory; SbomPath=$sbom; EvidenceDirectory=$evidence; AllowUncommitted=$AllowUncommitted }
     $package = & (Join-Path $PSScriptRoot 'Package-Release.ps1') @arguments
     & (Join-Path $PSScriptRoot 'Test-Release.ps1') -PackageDirectory $package | Out-Host
-    $sdkBuild = Join-Path $root "build/sdk-$Target"
+    $sdkBuild = Join-Path $root ("build/sdk-$Target-" + [guid]::NewGuid().ToString('N'))
     & (Join-Path $PSScriptRoot 'Test-SdkExamples.ps1') -PackageDirectory $package -BuildDirectory $sdkBuild -PythonExecutable $PythonExecutable -DotnetExecutable $DotnetExecutable -CmakeArguments $sdkCmakeArguments
     # 在各目标实际执行 C 和 Rust 探针，逐字段核对大小/对齐/偏移。
     $cProbe = Join-Path $sdkBuild $(if ($IsWindows) { 'Release/sdk_abi.exe' } else { 'sdk_abi' })

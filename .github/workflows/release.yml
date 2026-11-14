@@ -83,7 +83,23 @@ jobs:
           New-Item -ItemType Directory -Path build -Force | Out-Null
           Invoke-WebRequest https://dot.net/v1/dotnet-install.ps1 -OutFile build/dotnet-install.ps1
           ./build/dotnet-install.ps1 -Runtime dotnet -Channel 8.0 -Architecture x86 -InstallDir build/dotnet-x86 -NoPath
+      - uses: actions/cache/restore@v4
+        if: matrix.target == 'loongarch64-unknown-linux-gnu'
+        id: sysroot-cache
+        with:
+          path: build/loongarch-sysroot
+          key: loongarch-glibc236-${{ hashFiles('scripts/Build-LoongArchNative.ps1', 'scripts/loongarch.Dockerfile') }}
+      - name: Build and validate LoongArch64 SDK in isolated toolchain
+        if: matrix.target == 'loongarch64-unknown-linux-gnu'
+        shell: pwsh
+        run: ./scripts/Build-LoongArchSdk.ps1
+      - uses: actions/cache/save@v4
+        if: always() && matrix.target == 'loongarch64-unknown-linux-gnu' && steps.sysroot-cache.outputs.cache-hit != 'true' && hashFiles('build/loongarch-sysroot/.complete') != ''
+        with:
+          path: build/loongarch-sysroot
+          key: loongarch-glibc236-${{ hashFiles('scripts/Build-LoongArchNative.ps1', 'scripts/loongarch.Dockerfile') }}
       - name: Build, validate ABI and package SDK
+        if: matrix.target != 'loongarch64-unknown-linux-gnu'
         shell: pwsh
         run: |
           $arguments = @{ Target='${{ matrix.target }}' }

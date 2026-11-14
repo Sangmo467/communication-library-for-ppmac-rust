@@ -1,4 +1,4 @@
-# Prebuilt SDKs: Windows/Linux/macOS on x86, x64 and ARM
+# Prebuilt SDKs: Windows/Linux/macOS on x86, x64, ARM and LoongArch64
 
 **English** | [简体中文](https://github.com/Sangmo467/communication-library-for-ppmac-rust/blob/main/docs/prebuilt-sdk.md)
 
@@ -17,10 +17,11 @@ Download stable SDKs from [GitHub Releases](https://github.com/Sangmo467/communi
 | Linux | ARMv7 hard-float, 32-bit | armv7-unknown-linux-gnueabihf | native/libpmac.so |
 | macOS | Intel x64 | x86_64-apple-darwin | native/libpmac.dylib |
 | macOS | Apple Silicon ARM64 | aarch64-apple-darwin | native/libpmac.dylib |
+| Linux | LoongArch64 LP64D | loongarch64-unknown-linux-gnu | native/libpmac.so |
 
-Archive names follow pmac-2.0.1-<target>-release.zip, with a matching .zip.sha256 file. Choose by **process architecture**, not only by the operating system: a 32-bit application on 64-bit Windows still needs the x86 SDK. Python and .NET processes must match the library architecture too.
+Archive names follow pmac-2.0.2-<target>-release.zip, with a matching .zip.sha256 file. Choose by **process architecture**, not only by the operating system: a 32-bit application on 64-bit Windows still needs the x86 SDK. Python and .NET processes must match the library architecture too.
 
-Windows packages use the MSVC ABI. Linux packages use glibc and are built on Ubuntu 22.04; they are not musl/Alpine packages and do not promise compatibility with older glibc installations. Build and validate in a suitable environment if your controller-facing application uses an older industrial Linux distribution. Version 2.0.1 adds ARM and macOS packages; version 2.0.0 remains available with its original four targets.
+Windows packages use the MSVC ABI. Linux x86/x64/ARM packages are built on Ubuntu 22.04; LoongArch uses the separately documented glibc 2.36 baseline. These are GNU/glibc packages, not musl/Alpine packages. Verify the process ABI and required system-library versions before deployment. Version 2.0.0 has its original four targets, version 2.0.1 has nine, and version 2.0.2 adds LoongArch64 as the tenth target.
 
 The SDK contains native/, include/, bindings/, cmake/PmacConfig.cmake, examples/, licenses, an SPDX SBOM and manifest.json with individual file hashes. Rust is not required on a consumer's machine.
 
@@ -119,19 +120,19 @@ On each target OS, a PowerShell 7 runner with Rust 1.100.0, CMake and the releva
 
 Windows builds need NASM in addition to MSVC. Linux x86 builds need multilib. The script runs target Rust tests, builds the release library, validates the native architecture, generates and checks the SBOM/manifest, builds SDK examples and produces a ZIP plus SHA-256 sidecar. Existing outputs are not overwritten. -AllowUncommitted is for development candidates only; publication rejects dirty source.
 
-The GitHub workflow .github/workflows/release.yml builds nine targets after main/master changes. Actions artifacts are temporary build outputs retained for 30 days. For a stable release, ensure that the Cargo version and tag agree, such as version 2.0.1 and tag v2.0.1, then push the public tag. Only after all required builds and their SDK tests succeed will the publishing job create the GitHub Release and attach nine ZIPs plus nine SHA-256 files.
+The GitHub workflow .github/workflows/release.yml builds ten targets after main/master changes. Actions artifacts are temporary build outputs retained for 30 days. For a stable release, ensure that the Cargo version and tag agree, such as version 2.0.2 and tag v2.0.2, then push the public tag. Only after all required builds and their SDK tests succeed will the publishing job create the GitHub Release and attach ten ZIPs plus ten SHA-256 files.
 
 The publishing job uses GitHub's automatic short-lived token with contents:write; no Gitee token or additional personal token is required. A manual workflow run builds only by default. Select a version tag and enable publish_release to publish manually.
 
 For manual validation/publication, collect all required archives and sidecars in one directory:
 
 ```powershell
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.1 -Commit <40-character-public-commit> -ValidateOnly
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.2 -Commit <40-character-public-commit> -ValidateOnly
 # Configure GH_TOKEN securely and install the official GitHub CLI before publishing.
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.1 -Commit <40-character-public-commit>
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.2 -Commit <40-character-public-commit>
 ```
 
-Validation checks all nine targets, versions, clean-source flags, identical commits/source snapshots and archive/member hashes. The remote tag must match the manifests. Existing releases are not overwritten; inspect any partial upload before retrying. Do not move a published version tag or silently replace assets already downloaded by users.
+Validation checks all ten targets, versions, clean-source flags, identical commits/source snapshots and archive/member hashes. The remote tag must match the manifests. Existing releases are not overwritten; inspect any partial upload before retrying. Do not move a published version tag or silently replace assets already downloaded by users.
 
 If compilation succeeded but publishing failed, manually run **Publish validated SDK artifacts** in Actions. Supply the original build run ID and existing version tag. This workflow downloads the original required packages, verifies their commit against the remote tag and retries publication without recompiling or moving the tag.
 
@@ -152,3 +153,7 @@ dotnet run --project examples/dotnet/getresponse/Pmac.GetResponse.csproj -- --ch
 ```
 
 All public guides in docs/ have English .en.md counterparts. The macOS library is native/libpmac.dylib; Python, C# and CMake examples select it automatically. Configure an appropriate runtime search path for @rpath when deploying your own application. The MATLAB MEX build entry accepts maci64/maca64 environments, but must be verified separately with a supported, installed MATLAB/compiler combination; MATLAB is not covered by the CI runtime checks.
+
+## LoongArch64 (version 2.0.2 and later)
+
+LoongArch packages target LP64D new-world ABI and a glibc 2.36 baseline. They are cross-built in an isolated Debian toolchain container, with Rust/C ABI tests executed through QEMU against the baseline libc. C++ examples use the toolchain matching runtime. Kylin/Debian compatibility depends on the actual installed ABI, CPU/kernel and libc, not the distribution name alone. See the [LoongArch64 guide](loongarch-sdk.en.md). No target hardware certification is claimed.

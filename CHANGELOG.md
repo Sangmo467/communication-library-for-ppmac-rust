@@ -4,6 +4,12 @@
 
 本项目采用语义化版本。公开 C ABI 的 major/minor 独立记录；ABI major 2 内保持既有输入结构布局兼容。
 
+## 2.0.2
+
+- 增加 LoongArch64 Linux SDK、LP64D 新世界 ABI 和 glibc 2.36 基线检查。
+- 隔离交叉工具链，增加 QEMU Rust/C/C++ 运行验证、149 项 ABI 对照和目标机检查入口。
+- 增加麒麟、Debian 中英文接入指南，按实际 ABI 与系统库限定兼容范围；C ABI 保持 2.1。
+
 ## 2.0.1
 
 - 增加 Linux ARM64/ARMv7、Windows ARM64、macOS Intel/Apple Silicon 的构建与发布流程，保留现有四平台。

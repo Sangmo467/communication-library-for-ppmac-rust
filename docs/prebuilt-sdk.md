@@ -17,8 +17,9 @@
 | Linux | ARMv7 hard-float（32 位） | armv7-unknown-linux-gnueabihf | native/libpmac.so |
 | macOS | Intel x64 | x86_64-apple-darwin | native/libpmac.dylib |
 | macOS | Apple Silicon ARM64 | aarch64-apple-darwin | native/libpmac.dylib |
+| Linux | LoongArch64 LP64D（新世界 ABI） | loongarch64-unknown-linux-gnu | native/libpmac.so |
 
-附件命名：`pmac-2.0.1-<target>-release.zip`，每个 ZIP 配套 `.zip.sha256`。32 位程序选择 x86 包，即使操作系统是 64 位。DLL 位数必须与 C/C++、Python、.NET 进程一致。Windows 使用 MSVC；Linux 包为 GNU/glibc，不适用于 musl/Alpine。构建于较新 Linux 发行版的包不能承诺在更旧 glibc 上运行；如需旧工业 Linux，必须在目标兼容环境构建和验收。
+附件命名：`pmac-2.0.2-<target>-release.zip`，每个 ZIP 配套 `.zip.sha256`。32 位程序选择 x86 包，即使操作系统是 64 位。DLL 位数必须与 C/C++、Python、.NET 进程一致。Windows 使用 MSVC；Linux 包为 GNU/glibc，不适用于 musl/Alpine。构建于较新 Linux 发行版的包不能承诺在更旧 glibc 上运行；如需旧工业 Linux，必须在目标兼容环境构建和验收。
 
 包内包括：`native/`、`include/pmac.h`、`bindings/`、`cmake/PmacConfig.cmake`、`examples/`、`scripts/Test-SdkExamples.ps1`、许可证、依赖 SBOM 和带逐文件 SHA-256 的 `manifest.json`。使用者无需安装 Rust。
 
@@ -97,7 +98,7 @@ dotnet run --project examples/dotnet/getresponse/Pmac.GetResponse.csproj -- Sys.
 
 Linux 使用 `export NAME=value`；库路径换为 native/libpmac.so，可执行文件没有 Release 子目录和 .exe 后缀。示例默认命令为 Sys.ServoTime；自定义命令可能改变控制器状态。超时不代表命令没有执行，禁止自动重放未知结果的写操作。C 例程展示 Request 提交、等待、长度查询、响应复制和逆序释放；C++/.NET/Python 展示包装层资源所有权及错误正文处理。
 
-## 维护者：九平台构建和 GitHub 附件发布
+## 维护者：十平台构建和 GitHub 附件发布
 
 仅在公开源码分支的干净提交/tag 上制作正式包。内部开发分支与公开 GitHub 历史独立；不要直接推送内部 master。将适合公开的源码、cmake、examples、scripts 和本文逐文件同步到公开工作区，再提交、打 tag。
 
@@ -118,24 +119,24 @@ Linux 使用 `export NAME=value`；库路径换为 native/libpmac.so，可执行
 
 ```powershell
 # 此命令不联网；检查全部目标包版本、公开 commit、源码摘要、逐文件完整性及 SHA-256。
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.1 -Commit <公开tag的40位提交号> -ValidateOnly
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.2 -Commit <公开tag的40位提交号> -ValidateOnly
 # 将 GH_TOKEN 配为 runner 的私密环境变量后执行；不要在聊天、源码或日志中粘贴 Token。
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.1 -Commit <公开tag的40位提交号>
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.2 -Commit <公开tag的40位提交号>
 ```
 
-发布脚本先确认 GitHub 上同名 tag 的提交与全部目标包清单一致，再创建/选择 Release 并上传附件。不覆盖同名附件；如果上传中断，先检查已上传附件和校验值后再人工处理，不可声称部分上传已发布完整九平台版本。使用 GitHub 官方 CLI，且默认拒绝覆盖已存在的 Release。
+发布脚本先确认 GitHub 上同名 tag 的提交与全部目标包清单一致，再创建/选择 Release 并上传附件。不覆盖同名附件；如果上传中断，先检查已上传附件和校验值后再人工处理，不可声称部分上传已发布完整十平台版本。使用 GitHub 官方 CLI，且默认拒绝覆盖已存在的 Release。
 
 ## GitHub 自动构建与发布
 
-仓库：[Sangmo467/communication-library-for-ppmac-rust](https://github.com/Sangmo467/communication-library-for-ppmac-rust)。`.github/workflows/release.yml` 在 main/master 更新时自动构建全部目标平台，产生九组独立 ZIP 与校验文件（Actions artifacts 保留 30 天）。
+仓库：[Sangmo467/communication-library-for-ppmac-rust](https://github.com/Sangmo467/communication-library-for-ppmac-rust)。`.github/workflows/release.yml` 在 main/master 更新时自动构建全部目标平台，产生十组独立 ZIP 与校验文件（Actions artifacts 保留 30 天）。
 
-正式发布：公开分支干净提交的 Cargo 版本与 tag 一致，例如 Cargo version=2.0.1 对应 v2.0.1。执行 `git tag v2.0.1`、`git push github v2.0.1` 后，九平台构建与示例测试全部成功才创建 GitHub Release 并上传九个 ZIP 及九个 SHA-256 校验附件。无需设置 Gitee Token 或额外私人 Token；只有发布 job 使用 GitHub 提供的短期 Token 并获得 contents:write。手动运行默认只构建；选择版本 tag 并勾选 publish_release 才会发布。
+正式发布：公开分支干净提交的 Cargo 版本与 tag 一致，例如 Cargo version=2.0.2 对应 v2.0.2。执行 `git tag v2.0.2`、`git push github v2.0.2` 后，十平台构建与示例测试全部成功才创建 GitHub Release 并上传十个 ZIP 及十个 SHA-256 校验附件。无需设置 Gitee Token 或额外私人 Token；只有发布 job 使用 GitHub 提供的短期 Token 并获得 contents:write。手动运行默认只构建；选择版本 tag 并勾选 publish_release 才会发布。
 
 Linux 使用 Ubuntu 22.04 runner（glibc 2.35 环境），不承诺向更旧 glibc 兼容；Windows 使用 Windows Server 2022/MSVC。Linux x86 测试 Rust/C/C++，不运行不支持该架构的 .NET 8。Windows x86 使用独立 x86 Python 和 .NET runtime。
 
 分支构建的 Actions artifacts 用于评估；正式稳定下载入口是 GitHub Releases。发布脚本拒绝缺包、校验失败、脏源码、不同提交/不同源码摘要的全部目标包组合，且不覆盖已发布的同名 Release。
 
-发布阶段失败、九平台构建已成功时，可在 Actions 手动运行 **Publish validated SDK artifacts**，填写原构建 run ID 和已有版本 tag。该入口只下载原有全部目标包、验证其提交与远端 tag 后重试发布，不重新编译，也不移动标签。
+发布阶段失败、十平台构建已成功时，可在 Actions 手动运行 **Publish validated SDK artifacts**，填写原构建 run ID 和已有版本 tag。该入口只下载原有全部目标包、验证其提交与远端 tag 后重试发布，不重新编译，也不移动标签。
 
 ## ARM 与 macOS（2.0.1 起）
 
@@ -156,3 +157,7 @@ dotnet run --project examples/dotnet/getresponse/Pmac.GetResponse.csproj -- --ch
 本机双语使用文档位于 docs/，目录下每份公开指南均有 .en.md 英文对应文件。动态库名在 macOS 为 native/libpmac.dylib；Python、C# 和 CMake 示例会自动选择。自行部署时需为 @rpath 设置适当的运行时搜索路径。MATLAB MEX 构建入口支持选择 maci64/maca64，但须在已安装、受支持的 MATLAB/编译器环境中单独验证，不属于 CI 验证结论。
 
 Windows 例程验证脚本会检测实际安装的 Visual Studio 生成器；若使用 VS 2026，CMake 须为 4.2 或更高版本。
+
+## LoongArch64（2.0.2 起）
+
+LoongArch 包使用 LP64D 新世界 ABI、glibc 2.36 基线。隔离的 Debian 交叉工具链构建后，Rust/C ABI 测试通过 QEMU 在基线 libc 上运行，C++ 例程使用工具链匹配的运行环境。麒麟/Debian 是否兼容须以实际 ABI、CPU/内核及 libc 为准，不按发行版名称承诺通用兼容。详见 [LoongArch64 指南](loongarch-sdk.md)；不宣称完成目标机实机认证。

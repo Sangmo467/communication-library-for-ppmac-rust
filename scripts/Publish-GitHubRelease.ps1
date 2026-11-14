@@ -64,9 +64,10 @@ for ($depth = 0; $object.type -eq 'tag' -and $depth -lt 8; $depth++) {
 if ($object.type -ne 'commit' -or $object.sha -ne $Commit) { throw 'GitHub tag commit does not match the four SDK manifests' }
 & gh release view $Tag --repo $repo *> $null
 if ($LASTEXITCODE -eq 0) { throw 'Release already exists; refusing to overwrite published artifacts' }
-$notes = "Prebuilt Windows/Linux/macOS x86/x64/ARM SDKs, buildable examples and SHA-256 checksums. English guides are attached to this release. Windows/Linux/macOS x86/x64/ARM SDK。包含预编译库、C/C++/Python/.NET 绑定、详细中文注释调用例程、独立 CMake 工程及 SHA-256 校验。全部目标已完成 Rust 和 C/C++ 离线测试；支持的架构另验证 Python/.NET。"
+$notes = "Prebuilt Windows/Linux/macOS x86/x64/ARM/LoongArch64 SDKs, buildable examples and SHA-256 checksums. English guides are attached to this release. Windows/Linux/macOS x86/x64/ARM/LoongArch64 SDK。包含预编译库、C/C++/Python/.NET 绑定、详细中文注释调用例程、独立 CMake 工程及 SHA-256 校验。全部目标已完成 Rust 和 C/C++ 离线测试；支持的架构另验证 Python/.NET。"
+$notes += " LoongArch64: LP64D new-world ABI, LSX, glibc 2.36+, Linux 5.19 UAPI or compatible vendor backport. [Compatibility guide](https://github.com/$repo/blob/$Tag/docs/loongarch-sdk.en.md)."
  # Existing tag was verified above; do not pass target_commitish for an older workflow revision.
-& gh release create $Tag @files --repo $repo --verify-tag --title "PMAC $Tag — Windows/Linux/macOS x86/x64/ARM SDK" --notes $notes
+& gh release create $Tag @files --repo $repo --verify-tag --title "PMAC $Tag — Windows/Linux/macOS x86/x64/ARM/LoongArch64 SDK" --notes $notes
 if ($LASTEXITCODE -ne 0) { throw 'GitHub release upload failed; inspect remote state before retrying' }
 # 英文文档可作为独立附件补充，不修改已经验证的二进制 ZIP 或版本标签。
 $sourceRoot = Split-Path $PSScriptRoot -Parent

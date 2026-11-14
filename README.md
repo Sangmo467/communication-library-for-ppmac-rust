@@ -7,7 +7,7 @@ GetResponse 支持按请求启用透传：跳过规则表和 online/program 分�
 
 基于 Rust 与 russh 的 Power PPMAC 通信库，提供统一的 C ABI，以及 C++17、C++98、.NET 8 和 Python 绑定，并提供 MATLAB GetResponse MEX 示例。
 
-当前版本：**2.0.1**；C ABI：**2.1**；开源协议：**MIT**。
+当前版本：**2.0.2**；C ABI：**2.1**；开源协议：**MIT**。
 
 ## 功能
 
@@ -34,7 +34,7 @@ GetResponse 支持按请求启用透传：跳过规则表和 online/program 分�
 
 ## 预编译 SDK
 
-Windows x86/x64/ARM64、Linux x86/x64/ARM64/ARMv7、macOS x64/ARM64 SDK 包结构、GitHub Release 发布与带中文注释的可编译调用例程见 **[预编译 SDK 使用及发布说明](docs/prebuilt-sdk.md)**。源码仓库不存放二进制；正式版本附件由目标平台构建验证后上传至 GitHub Release。
+Windows x86/x64/ARM64、Linux x86/x64/ARM64/ARMv7/LoongArch64、macOS x64/ARM64 SDK 包结构、GitHub Release 发布与带中文注释的可编译调用例程见 **[预编译 SDK 使用及发布说明](docs/prebuilt-sdk.md)**。源码仓库不存放二进制；正式版本附件由目标平台构建验证后上传至 GitHub Release。
 
 ## 构建
 
@@ -115,6 +115,8 @@ int main() {
 - [geterrors 实时监控](docs/geterrors.md)：周期和掩码、持续监听、回调、停止与排查。
 - [第三方组件与许可证](THIRD_PARTY_NOTICES.md)。
 - [版本变更](CHANGELOG.md)。
+
+- [LoongArch64 麒麟与 Debian](docs/loongarch-sdk.md)：LP64D 新世界 ABI、glibc 基线与目标机检查。
 
 ## 重要使用边界
 
