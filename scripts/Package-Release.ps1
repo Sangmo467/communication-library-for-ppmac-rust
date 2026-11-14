@@ -62,13 +62,13 @@ try {
         'examples/python/getresponse.py','examples/python/sdk_smoke.py',
         'examples/dotnet/getresponse/Program.cs','examples/dotnet/getresponse/Pmac.GetResponse.csproj',
         'examples/matlab/build_pmac_mex.m','examples/matlab/pmac_mex.cpp','examples/matlab/example_getresponse.m',
-        'bindings/python/pyproject.toml','scripts/Test-SdkExamples.ps1','scripts/Get-ReleaseTarget.ps1','scripts/release-targets.json',
+        'bindings/python/pyproject.toml','scripts/Test-SdkExamples.ps1','scripts/Get-ReleaseTarget.ps1','scripts/release-targets.json','scripts/test-loongarch-host.sh',
         'docs/prebuilt-sdk.md','docs/prebuilt-sdk.en.md','docs/gather.md','docs/geterrors.md',
         'docs/abi-contract.md','docs/authentication.md','docs/getresponse-passthrough.md')
     # 所有公开使用文档均按中英文对打包；只按明确白名单选择，排除内部审核资料。
     foreach ($manual in @('abi-contract','authentication','build-and-install','dart-api','dependency-patches','dotnet-getresponse',
         'gather','geterrors','getresponse-examples','getresponse-passthrough','matlab-getresponse',
-        'online-commands','pattern-migration','prebuilt-sdk','python-getresponse','user-manual')) {
+        'loongarch-sdk','online-commands','pattern-migration','prebuilt-sdk','python-getresponse','user-manual')) {
         $sdkFiles += @("docs/$manual.md", "docs/$manual.en.md")
     }
     $sdkFiles += @('THIRD_PARTY_NOTICES.en.md','CHANGELOG.md','CHANGELOG.en.md')

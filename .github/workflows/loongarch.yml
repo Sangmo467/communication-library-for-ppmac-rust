@@ -13,9 +13,19 @@ jobs:
         with:
           toolchain: '1.100.0'
           targets: loongarch64-unknown-linux-gnu
+      - uses: actions/cache/restore@v4
+        id: sysroot-cache
+        with:
+          path: build/loongarch-sysroot
+          key: loongarch-glibc236-${{ hashFiles('scripts/Build-LoongArchNative.ps1', 'scripts/loongarch.Dockerfile') }}
       - name: Build glibc baseline, SDK and execute QEMU tests
         shell: pwsh
         run: ./scripts/Build-LoongArchSdk.ps1
+      - uses: actions/cache/save@v4
+        if: always() && steps.sysroot-cache.outputs.cache-hit != 'true' && hashFiles('build/loongarch-sysroot/.complete') != ''
+        with:
+          path: build/loongarch-sysroot
+          key: loongarch-glibc236-${{ hashFiles('scripts/Build-LoongArchNative.ps1', 'scripts/loongarch.Dockerfile') }}
       - uses: actions/upload-artifact@v4
         with:
           name: loongarch64-preview

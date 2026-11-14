@@ -8,6 +8,8 @@ git config --global --add safe.directory $root
 $work = Join-Path $root 'build/loongarch-toolchain'
 $sysroot = Join-Path $root 'build/loongarch-sysroot'
 New-Item -ItemType Directory -Force -Path $work,$sysroot | Out-Null
+$complete = Join-Path $sysroot '.complete'
+if (-not (Test-Path -LiteralPath $complete)) {
 $archive = Join-Path $work 'glibc-2.36.tar.xz'
 Invoke-WebRequest 'https://ftp.gnu.org/gnu/glibc/glibc-2.36.tar.xz' -OutFile $archive
 # 固定 GNU 源码，SHA-256 可与 crosstool-ng 1.26.0 的 glibc/2.36/chksum 交叉核对。
@@ -21,7 +23,7 @@ try {
     $env:CC = 'loongarch64-linux-gnu-gcc-15'
     $env:CXX = 'loongarch64-linux-gnu-g++-15'
     $env:CFLAGS = '-O2 -std=gnu11'
-    & (Join-Path $work 'glibc-2.36/configure') --prefix=/usr --host=loongarch64-linux-gnu --build=x86_64-linux-gnu --enable-kernel=5.19 --disable-werror --with-headers=/usr/loongarch64-linux-gnu/include
+    & (Join-Path $work 'glibc-2.36/configure') --prefix=/usr --host=loongarch64-linux-gnu --build=x86_64-linux-gnu --enable-kernel=5.19 --disable-werror libc_cv_cxx_link_ok=no --with-headers=/usr/loongarch64-linux-gnu/include
     if ($LASTEXITCODE -ne 0) { throw 'glibc sysroot configuration failed' }
     make -j2
     if ($LASTEXITCODE -ne 0) { throw 'glibc sysroot build failed' }
@@ -35,6 +37,11 @@ foreach ($headers in @('linux','asm','asm-generic')) {
 $libgcc = ((& loongarch64-linux-gnu-gcc-15 -print-file-name=libgcc_s.so.1) -join '').Trim()
 New-Item -ItemType Directory -Force (Join-Path $sysroot 'lib64') | Out-Null
 Copy-Item -LiteralPath $libgcc -Destination (Join-Path $sysroot 'lib64/libgcc_s.so.1')
+# 仅关闭 glibc 的 C++ 辅助程序；SDK 的 C++17/C++98 测试仍完整执行。
+& qemu-loongarch64 -L $sysroot (Join-Path $sysroot 'lib64/libc.so.6') --version
+if ($LASTEXITCODE -ne 0) { throw 'Baseline libc cannot execute under QEMU' }
+[IO.File]::WriteAllText($complete, 'glibc-2.36', [Text.UTF8Encoding]::new($false))
+}
 $wrapper = Join-Path $work 'loongarch-gcc'
 $wrapperText = "#!/bin/sh`nexec loongarch64-linux-gnu-gcc-15 --sysroot=`"$sysroot`" `"`$@`"`n"
 [IO.File]::WriteAllText($wrapper,$wrapperText,[Text.UTF8Encoding]::new($false))
