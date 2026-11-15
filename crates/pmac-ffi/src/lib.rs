@@ -765,7 +765,7 @@ pub extern "C" fn pmac_request_copy_match(
                 "regular expression or capture group did not match",
             )
         })?;
-        copy_bytes(&selected, out, capacity, required)
+        copy_bytes(selected, out, capacity, required)
     })
 }
 

@@ -318,7 +318,7 @@ impl Lines {
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
-        let text = std::str::from_utf8(&bytes)
+        let text = std::str::from_utf8(bytes)
             .map_err(|_| Error::new(ErrorCode::ParseError, "geterrors output is not UTF-8"))?;
         if text.bytes().all(|b| b == 0x06 || b.is_ascii_whitespace()) {
             self.pending.clear();
