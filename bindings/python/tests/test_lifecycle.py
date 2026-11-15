@@ -603,6 +603,8 @@ class CompletionBatchTests(unittest.TestCase):
         pump.stopping.set()
         pump.wake = threading.Event()
         pump.native_notifications = False
+        pump.client_handles = core._ClientHandles()
+        pump.lib = FakeNative()
         complete, pending, failed, collected = Entry(), Entry(2), Entry(failure=True), Entry()
         for entry in (complete, pending, failed, collected):
             self.assertTrue(pump.slots.acquire(False))
@@ -652,3 +654,32 @@ class CreationIntegerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class FinalizerRetryTests(unittest.TestCase):
+    def test_collected_client_with_pending_native_close_is_retried_by_pump(self):
+        class PendingClose(FakeNative):
+            def __init__(self):
+                super().__init__()
+                self.allow_release = False
+            def pmac_client_release(self, client):
+                if not self.allow_release:
+                    return -14
+                return super().pmac_client_release(client)
+        lib = PendingClose()
+        with patch.object(N, "load", return_value=lib):
+            runtime = core.Runtime()
+        client = runtime.create_client()
+        reference = weakref.ref(client)
+        del client
+        gc.collect()
+        self.assertIsNone(reference())
+        self.assertEqual(runtime._client_handles.ids, {2})
+        lib.allow_release = True
+        runtime._pump._wake()
+        deadline = time.monotonic() + 2
+        while 2 not in lib.client_releases and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(lib.client_releases, [2])
+        self.assertEqual(runtime._client_handles.ids, set())
+        runtime.shutdown()
+        self.assertEqual(lib.client_releases, [2])

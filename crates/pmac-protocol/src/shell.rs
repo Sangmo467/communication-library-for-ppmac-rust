@@ -163,6 +163,9 @@ impl ShellDecoder {
         }
         let code = String::from_utf8(code_bytes)
             .map_err(|_| ProtocolError::ShellProtocol("non-UTF-8 exit code".into()))?;
+        if self.stdout.len() > self.maximum {
+            return Err(ProtocolError::ResponseTooLarge(self.maximum));
+        }
         let exit_code = code
             .trim()
             .parse::<i32>()
@@ -282,5 +285,26 @@ mod tests {
         }
         assert_eq!(completed.as_deref(), Some(b"first".as_slice()));
         assert!(decoder.buffer.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod limit_regression {
+    use super::*;
+    #[test]
+    fn completed_frame_checks_limit_at_every_split() {
+        let markers = ShellMarkers::new("limit", 1);
+        let wire = format!(
+            "{}\nxx\n{}:0\n",
+            String::from_utf8_lossy(&markers.begin),
+            String::from_utf8_lossy(&markers.end)
+        );
+        for split in 0..=wire.len() {
+            let mut decoder = ShellDecoder::new(markers.clone(), 1);
+            let result = decoder
+                .push(&wire.as_bytes()[..split])
+                .and_then(|_| decoder.push(&wire.as_bytes()[split..]));
+            assert!(result.is_err(), "split={split}");
+        }
     }
 }

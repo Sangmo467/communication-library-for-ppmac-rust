@@ -581,14 +581,16 @@ fn superseded_creation_cannot_restore_an_obsolete_pool_revision() {
     assert_eq!(snapshot.revision, revision);
     assert_eq!(snapshot.desired, 3);
     assert_eq!(snapshot.creating, 0);
-    assert_eq!(snapshot.release_uncertain, 1);
+    assert_eq!(snapshot.release_uncertain, 0);
+    assert_eq!(snapshot.ready, 3);
     let obsolete_member = fixture
         .client
         .pool_members()
         .into_iter()
         .find(|member| member.member_id == 2)
         .unwrap();
-    assert_eq!(obsolete_member.state, MemberState::Failed);
+    assert_eq!(obsolete_member.state, MemberState::Ready);
+    assert_eq!(obsolete_member.epoch, 2);
     assert!(!fixture.transport.member(1).healthy.load(Ordering::Acquire));
 }
 

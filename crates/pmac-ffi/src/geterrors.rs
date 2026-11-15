@@ -75,7 +75,7 @@ impl Config {
 }
 struct Event {
     kind: u32,
-    text: Vec<u8>,
+    text: Box<[u8]>,
 }
 struct Monitor {
     runtime: Arc<Runtime>,
@@ -314,13 +314,14 @@ impl Lines {
         }
     }
     fn emit(&mut self, tx: &mpsc::SyncSender<Event>) -> Result<(), Error> {
-        let mut bytes = std::mem::take(&mut self.pending);
+        let bytes = &mut self.pending;
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| Error::new(ErrorCode::ParseError, "geterrors output is not UTF-8"))?;
         if text.bytes().all(|b| b == 0x06 || b.is_ascii_whitespace()) {
+            self.pending.clear();
             return Ok(());
         }
         let settings = self.startup && is_setting(text.trim());
@@ -334,7 +335,9 @@ impl Lines {
         if !self.stderr && (!settings || text.trim().starts_with("-t")) {
             self.startup = false;
         }
-        enqueue(tx, Event { kind, text: bytes })
+        let text = bytes.clone().into_boxed_slice();
+        self.pending.clear();
+        enqueue(tx, Event { kind, text })
     }
     fn push(&mut self, bytes: &[u8], tx: &mpsc::SyncSender<Event>) -> Result<(), Error> {
         for &b in bytes {

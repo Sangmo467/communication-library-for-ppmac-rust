@@ -259,10 +259,31 @@ class Request:
         self.release()
 
 
+class _ClientHandles:
+    """Native ownership independent of Client weak references; swept by the pump."""
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.ids = set()
+        self.abandoned = set()
+
+    def forget(self, client_id):
+        with self.lock:
+            self.ids.discard(client_id)
+            self.abandoned.discard(client_id)
+
+    def sweep(self, lib):
+        with self.lock:
+            for client_id in list(self.abandoned):
+                status = lib.pmac_client_release(client_id)
+                if status in (0, -2):
+                    self.forget(client_id)
+            return bool(self.abandoned)
+
 class _CompletionPump:
-    def __init__(self, lib, runtime_id, capacity):
+    def __init__(self, lib, runtime_id, capacity, client_handles):
         if capacity < 1:
             raise ValueError("completion_capacity must be positive")
+        self.client_handles = client_handles
         self.lib, self.runtime_id = lib, runtime_id
         self.native_notifications = hasattr(lib, "pmac_runtime_wait_completion") and hasattr(lib, "pmac_runtime_wake")
         self.queue = queue.Queue(maxsize=capacity)
@@ -318,14 +339,15 @@ class _CompletionPump:
                     else:
                         pending.append(reference)
                     request = None
-                if self.stopping.is_set() and not pending and self.queue.empty():
+                orphaned = self.client_handles.sweep(self.lib)
+                if self.stopping.is_set() and not pending and self.queue.empty() and not orphaned:
                     return
                 if self.native_notifications:
                     status = self.lib.pmac_runtime_wait_completion(self.runtime_id, N.byref(cursor), 100)
                     if status not in (0, -6) and not self.stopping.is_set():
                         raise PmacError(status, "runtime completion notification failed", certainty=1)
                 else:
-                    self.wake.wait(0.001 if pending else None)
+                    self.wake.wait(0.001 if pending or orphaned else None)
                     self.wake.clear()
         except Exception as error:
             self.stopping.set()
@@ -353,8 +375,10 @@ def _finalize_runtime(lib, runtime_id, pump, created_pid):
     if os.getpid() != created_pid:
         return
     pump.stop()
-    status = lib.pmac_runtime_shutdown(runtime_id, 0)
-    if status == 0:
+    cleanup = getattr(lib, 'pmac_runtime_cleanup', None)
+    if cleanup is not None:
+        cleanup(runtime_id)
+    elif lib.pmac_runtime_shutdown(runtime_id, 0) == 0:
         lib.pmac_runtime_release(runtime_id)
 
 
@@ -368,11 +392,12 @@ class Runtime:
         self._lock = threading.RLock()
         self._closing = False
         self._clients = weakref.WeakSet()
+        self._client_handles = _ClientHandles()
         config = N.RuntimeConfig(N.sizeof(N.RuntimeConfig), 2000, workers, 0)
         self._id = C.c_uint64()
         check(self.lib.pmac_runtime_create(N.byref(config), N.byref(self._id)), "runtime create")
         try:
-            self._pump = _CompletionPump(self.lib, self._id.value, completion_capacity)
+            self._pump = _CompletionPump(self.lib, self._id.value, completion_capacity, self._client_handles)
         except BaseException:
             self.lib.pmac_runtime_shutdown(self._id.value, 0)
             self.lib.pmac_runtime_release(self._id.value)
@@ -405,6 +430,8 @@ class Runtime:
             config = N.ClientConfig(N.sizeof(N.ClientConfig), 2000, max_requests, max_file_tasks, max_retained_bytes)
             client_id = C.c_uint64()
             check(self.lib.pmac_client_create(self._id.value, N.byref(config), N.byref(client_id)), "client create")
+            with self._client_handles.lock:
+                self._client_handles.ids.add(client_id.value)
             client = Client(self, client_id.value)
             self._clients.add(client)
             return client
@@ -440,6 +467,12 @@ class Runtime:
                 raise PmacError(-14, "runtime completion pump is still stopping")
             for client in list(self._clients):
                 client.release()
+            with self._client_handles.lock:
+                for client_id in list(self._client_handles.ids):
+                    status = self.lib.pmac_client_release(client_id)
+                    if status != -2:
+                        check(status, "orphaned client release")
+                    self._client_handles.forget(client_id)
             check(self.lib.pmac_runtime_release(self._id.value), "runtime release")
             self._id.value = 0
             self._finalizer.detach()
@@ -450,18 +483,24 @@ class Runtime:
     def __exit__(self, *args):
         self.shutdown()
 
-def _finalize_client(lib, client_id, created_pid):
+def _finalize_client(lib, client_id, created_pid, handles, pump):
     if os.getpid() != created_pid:
         return
     lib.pmac_client_close(client_id, 0, 0)
-    lib.pmac_client_release(client_id)
+    status = lib.pmac_client_release(client_id)
+    if status in (0, -2):
+        handles.forget(client_id)
+    else:
+        with handles.lock:
+            handles.abandoned.add(client_id)
+        pump._wake()
 
 
 class Client:
     def __init__(self, runtime, client_id):
         self.runtime, self._id, self._pid = runtime, client_id, os.getpid()
         self._lock = threading.RLock()
-        self._finalizer = weakref.finalize(self, _finalize_client, runtime.lib, client_id, self._pid)
+        self._finalizer = weakref.finalize(self, _finalize_client, runtime.lib, client_id, self._pid, runtime._client_handles, runtime._pump)
     @property
     def lib(self): return self.runtime.lib
     def _check(self):
@@ -588,6 +627,7 @@ class Client:
         with self._lock:
             if self._id:
                 check(self.lib.pmac_client_release(self._id), "client release")
+                self.runtime._client_handles.forget(self._id)
                 self._id = 0
                 self._finalizer.detach()
     def __enter__(self): return self

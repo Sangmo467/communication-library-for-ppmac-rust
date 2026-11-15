@@ -50,6 +50,8 @@ def load(path=None):
         lib.pmac_runtime_wait_completion.argtypes = [C.c_uint64, C.POINTER(C.c_uint64), C.c_uint32]
         lib.pmac_runtime_wake.argtypes = [C.c_uint64]
     lib.pmac_runtime_release.argtypes = [C.c_uint64]
+    if hasattr(lib, "pmac_runtime_cleanup"):
+        lib.pmac_runtime_cleanup.argtypes = [C.c_uint64]
     lib.pmac_client_create.argtypes = [C.c_uint64, C.POINTER(ClientConfig), C.POINTER(C.c_uint64)]
     lib.pmac_client_close.argtypes = [C.c_uint64, C.c_uint32, C.c_uint32]
     lib.pmac_client_release.argtypes = [C.c_uint64]

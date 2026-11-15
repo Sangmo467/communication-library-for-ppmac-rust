@@ -534,3 +534,34 @@ fn native_version_matches_workspace_package_version() {
     assert_eq!(version, env!("CARGO_PKG_VERSION"));
     assert_eq!(version, VERSION);
 }
+
+#[test]
+fn invalid_business_target_replaces_previous_last_error() {
+    let mut id = 0;
+    let bad = PmacRuntimeConfig {
+        struct_size: 0,
+        abi_version: 0,
+        worker_threads: 0,
+        reserved: 0,
+    };
+    assert_ne!(pmac_runtime_create(&bad, &mut id), 0);
+    let mut value = 0.0;
+    assert_eq!(
+        pmac_motor_position(0, -1, std::ptr::null(), &mut value),
+        ErrorCode::InvalidArgument as i32
+    );
+    let mut info = std::mem::MaybeUninit::<PmacErrorInfo>::uninit();
+    let mut required = 0;
+    let mut bytes = [0u8; 512];
+    assert_eq!(
+        pmac_copy_last_error(
+            info.as_mut_ptr(),
+            bytes.as_mut_ptr(),
+            bytes.len(),
+            &mut required
+        ),
+        0
+    );
+    let message = std::str::from_utf8(&bytes[..required]).unwrap();
+    assert!(message.contains("motor"), "{message}");
+}

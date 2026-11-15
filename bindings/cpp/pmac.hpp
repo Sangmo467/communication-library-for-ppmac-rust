@@ -345,8 +345,8 @@ public:
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
     Client(Client&& other) noexcept { *this = std::move(other); }
-    Client& operator=(Client&& other) noexcept {
-        if (this != &other) { reset(); id_ = other.id_; runtime_ = std::move(other.runtime_); other.id_ = 0; }
+    Client& operator=(Client&& other) {
+        if (this != &other) { check(reset()); id_ = other.id_; runtime_ = std::move(other.runtime_); other.id_ = 0; }
         return *this;
     }
 

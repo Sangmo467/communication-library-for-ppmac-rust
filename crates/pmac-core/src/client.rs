@@ -422,6 +422,7 @@ impl Client {
             let _active = ActiveTask {
                 client: &client,
                 sequence,
+                request_id: task_request.id(),
             };
             let outcome = std::panic::AssertUnwindSafe(client.execute(
                 task_request.clone(),
@@ -1056,7 +1057,10 @@ impl Client {
             options.gpascii_owner = crate::transport::GpasciiBudget::allocate_owner()?;
             s.options = Some(options);
         }
-        self.pool.set_profile(profile)?;
+        if let Err(error) = self.pool.set_profile(profile) {
+            self.pool.lock().options = None;
+            return Err(error);
+        }
         self.lock_state().state = ClientState::Connecting;
         let result = self.resize(request, revision).await;
         self.refresh_state();
@@ -1224,11 +1228,21 @@ impl Client {
         match result {
             Ok(session) => {
                 if let Err(error) = self.check_revision(revision) {
-                    let _ = session.close().await;
+                    let closed = std::panic::AssertUnwindSafe(async { session.close().await })
+                        .catch_unwind()
+                        .await
+                        .is_ok_and(|result| result.is_ok());
                     let mut s = self.pool.lock();
-                    s.uncertain.push((id, epoch));
+                    if !closed && !s.uncertain.contains(&(id, epoch)) {
+                        s.uncertain.push((id, epoch));
+                    }
                     if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
-                        m.state = MemberState::Failed;
+                        m.state = if closed {
+                            MemberState::Drained
+                        } else {
+                            MemberState::Failed
+                        };
+                        m.session = if closed { None } else { Some(session) };
                         m.epoch = epoch;
                         m.last_error = error.code;
                     }
@@ -1532,14 +1546,12 @@ impl Client {
 struct ActiveTask<'a> {
     client: &'a Client,
     sequence: u64,
+    request_id: u64,
 }
 impl Drop for ActiveTask<'_> {
     fn drop(&mut self) {
         self.client.pool.unregister(self.sequence);
-        self.client.lock_requests().retain(|_, r| {
-            r.upgrade()
-                .is_some_and(|r| r.info().state != RequestState::Completed)
-        });
+        self.client.lock_requests().remove(&self.request_id);
         let mut active = self.client.lock_active_tasks();
         *active = active.saturating_sub(1);
         drop(active);
@@ -1728,5 +1740,63 @@ impl Drop for ClientErrorMonitor {
                 drop(activity);
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_regressions {
+    use super::*;
+
+    struct NoConnection;
+    #[async_trait::async_trait]
+    impl Transport for NoConnection {
+        async fn connect(
+            &self,
+            _: &ConnectOptions,
+            _: &ExecutionContext,
+        ) -> Result<Arc<dyn crate::Session>, Error> {
+            Err(Error::new(
+                ErrorCode::ConnectError,
+                "test transport reached",
+            ))
+        }
+    }
+
+    #[test]
+    fn prepare_quota_failure_allows_connection_retry() {
+        let runtime = crate::Runtime::new(1).unwrap();
+        let client = runtime
+            .create_client(Arc::new(NoConnection), ClientConfig::default())
+            .unwrap();
+        // Reproduce a set_profile rejection without exhausting a shared process quota
+        // and interfering with parallel tests.
+        client.pool.lock().uncertain.extend([(1, 1), (2, 1)]);
+        let prepare = || Operation::PoolPrepare {
+            options: ConnectOptions::new("test", "test"),
+            profile: PoolProfile {
+                target_size: 1,
+                max_members: 1,
+                ..PoolProfile::default()
+            },
+        };
+        let first = client
+            .submit(runtime.next_id(), prepare(), RequestOptions::default())
+            .unwrap();
+        assert!(first.wait(5_000).completed);
+        assert_eq!(
+            first.result().unwrap().as_ref().as_ref().unwrap_err().code,
+            ErrorCode::ResourceLimit
+        );
+        assert!(client.pool.lock().options.is_none());
+        client.pool.lock().uncertain.clear();
+        let retry = client
+            .submit(runtime.next_id(), prepare(), RequestOptions::default())
+            .unwrap();
+        assert!(retry.wait(5_000).completed);
+        let outcome = retry.result().unwrap();
+        let error = outcome.as_ref().as_ref().unwrap_err();
+        assert_eq!(error.code, ErrorCode::ConnectError);
+        assert_eq!(error.message, "test transport reached");
+        runtime.shutdown_clients(5_000).unwrap();
     }
 }

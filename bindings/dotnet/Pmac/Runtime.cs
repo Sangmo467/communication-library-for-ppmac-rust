@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 
 namespace Pmac;
@@ -8,6 +9,7 @@ public sealed class Runtime : IDisposable, IAsyncDisposable
     private readonly object gate = new();
     private readonly CompletionPump completions;
     private readonly List<WeakReference<Client>> clients = new();
+    private readonly ConcurrentDictionary<ulong, byte> clientIds = new();
     private ulong id;
     private bool closing;
 
@@ -27,8 +29,8 @@ public sealed class Runtime : IDisposable, IAsyncDisposable
         // Finalizers never wait for network or background work.
         try
         {
-            completions.Stop();
-            if (NativeMethods.pmac_runtime_shutdown(value, 0) == 0) NativeMethods.pmac_runtime_release(value);
+            completions?.Stop();
+            NativeMethods.pmac_runtime_cleanup(value);
         }
         catch { }
     }
@@ -52,6 +54,7 @@ public sealed class Runtime : IDisposable, IAsyncDisposable
             ThrowIfClosing();
             var config = new NativeMethods.ClientConfig { StructSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.ClientConfig>(), AbiVersion = NativeMethods.AbiVersion, MaxRequests = maxRequests, MaxRetainedBytes = maxRetainedBytes, MaxFileTasks = maxFileTasks };
             Check(NativeMethods.pmac_client_create(id, ref config, out var clientId));
+            clientIds.TryAdd(clientId, 0);
             var client = new Client(clientId, this);
             clients.RemoveAll(reference => !reference.TryGetTarget(out _));
             clients.Add(new WeakReference<Client>(client));
@@ -59,6 +62,32 @@ public sealed class Runtime : IDisposable, IAsyncDisposable
         }
     }
 
+    internal void ForgetClient(ulong clientId) => clientIds.TryRemove(clientId, out _);
+
+    internal void FinalizeClient(ulong clientId)
+    {
+        // The task owns only IDs and the registry, never Runtime or Client.
+        // Pending remote-release recovery keeps the ID available to Shutdown.
+        NativeMethods.pmac_client_close(clientId, 0, 0);
+        _ = RetryClientRelease(clientIds, clientId);
+    }
+
+    private static async Task RetryClientRelease(ConcurrentDictionary<ulong, byte> ids, ulong clientId)
+    {
+        try
+        {
+            var delayMs = 20;
+            while (ids.ContainsKey(clientId))
+            {
+                var status = NativeMethods.pmac_client_release(clientId);
+                if (status == 0 || status == -2) { ids.TryRemove(clientId, out _); return; }
+                if (status != -14) return;
+                await Task.Delay(delayMs).ConfigureAwait(false);
+                delayMs = Math.Min(1000, delayMs * 2);
+            }
+        }
+        catch { /* Native IDs remain registered for explicit recovery. */ }
+    }
     internal Request Submit(Func<ulong> submit)
     {
         lock (gate)
@@ -101,6 +130,12 @@ public sealed class Runtime : IDisposable, IAsyncDisposable
                 throw new PmacException(-14, "runtime completion pump is still stopping");
             foreach (var reference in clients)
                 if (reference.TryGetTarget(out var client)) client.ReleaseAfterRuntimeShutdown();
+            foreach (var clientId in clientIds.Keys)
+            {
+                var status = NativeMethods.pmac_client_release(clientId);
+                if (status != -2) Check(status); // A finalizer retry may have released it.
+                clientIds.TryRemove(clientId, out _);
+            }
             Check(NativeMethods.pmac_runtime_release(id));
             Volatile.Write(ref id, 0UL);
             GC.SuppressFinalize(this);

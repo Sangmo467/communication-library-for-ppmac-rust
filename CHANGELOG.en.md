@@ -4,6 +4,13 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.5
+
+- Fix C#/Python native cleanup after GC, failed C++ Client move assignment, pool initialization rollback and release confirmation.
+- Enforce stream queue payload limits, verify remote process cleanup, and fix long-path upload diagnostics, stale business errors and Shell output limits.
+- Optimize fragmented GPASCII parsing, selected regex captures, request completion cleanup and stream allocations; prune stale DART budget entries.
+- C++ Client move assignment may now throw cleanup errors. C ABI remains 2.1.
+
 ## 2.0.4
 
 - Fix continuous Gather delivery with lowercase gather -w and a session-private FIFO that keeps stdin open without a PTY. Configure acquisition, start the reader, then set Gather.Enable=3.

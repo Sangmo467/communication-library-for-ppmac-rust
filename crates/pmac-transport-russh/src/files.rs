@@ -18,6 +18,18 @@ impl RusshSession {
         self.check_staging_capacity()?;
         let sftp = self.sftp(context).await?;
         let staging = format!("{remote}.pmac-{}-{}.tmp", self.nonce(), self.sequence()?);
+        let publish = format!(
+            "/bin/mv -T -- {} {}",
+            shell_quote(&staging)?,
+            shell_quote(remote)?
+        );
+        // Validate the generated command before uploading or marking publication.
+        // Quoting can expand even a short path beyond the Shell API limit.
+        if publish.len() > 1023 {
+            return Err(Error::invalid(
+                "upload publish command exceeds 1023 bytes after path quoting",
+            ));
+        }
         let previous = match sftp.symlink_metadata(remote).await {
             Ok(metadata) if metadata.file_type().is_symlink() || metadata.file_type().is_dir() => {
                 return Err(Error::new(
@@ -100,11 +112,6 @@ impl RusshSession {
             )
             .sent());
         }
-        let publish = format!(
-            "/bin/mv -T -- {} {}",
-            shell_quote(&staging)?,
-            shell_quote(remote)?
-        );
         context.mark_publish_started();
         match self.shell(&publish, false, context).await {
             Ok(result) if result.exit_code == Some(0) => {

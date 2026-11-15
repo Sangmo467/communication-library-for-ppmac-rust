@@ -27,6 +27,7 @@ internal static class NativeMethods
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_runtime_wake(ulong runtime);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_runtime_shutdown(ulong id, uint waitMs);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_runtime_release(ulong id);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_runtime_cleanup(ulong id);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_client_create(ulong runtime, ref ClientConfig config, out ulong id);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_client_close(ulong id, uint mode, uint waitMs);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)] internal static extern int pmac_client_release(ulong id);

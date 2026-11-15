@@ -143,13 +143,14 @@ public sealed class Client : IDisposable, IAsyncDisposable
 
     private static NativeMethods.RequestOptions Native(RequestOptions? options) => (options ?? new RequestOptions()).Native();
     private ulong Id { get { var value = Volatile.Read(ref id); return value == 0 ? throw new ObjectDisposedException(nameof(Client)) : value; } }
-    ~Client() { try { var value = Volatile.Read(ref id); if (value != 0) { NativeMethods.pmac_client_close(value, 0, 0); NativeMethods.pmac_client_release(value); } } catch { } }
+    ~Client() { try { var value = Volatile.Read(ref id); if (value != 0) { runtime.FinalizeClient(value); } } catch { } }
     internal void ReleaseAfterRuntimeShutdown()
     {
         lock (lifecycle)
         {
             if (id == 0) return;
             Runtime.Check(NativeMethods.pmac_client_release(id));
+            runtime.ForgetClient(id);
             Volatile.Write(ref id, 0UL);
             GC.SuppressFinalize(this);
         }

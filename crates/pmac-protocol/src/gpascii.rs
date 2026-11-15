@@ -44,12 +44,15 @@ impl GpasciiDecoder {
         {
             return Err(ProtocolError::ResponseTooLarge(self.maximum));
         }
+        let previous_len = self.buffer.len();
         self.buffer.extend_from_slice(bytes);
+        let before_echo = self.buffer.len();
         if !self.echo_checked && !self.echo.is_empty() {
             self.strip_echo()?;
         }
-        let Some(index) = self
-            .buffer
+        let removed = before_echo - self.buffer.len();
+        let scan_from = previous_len.saturating_sub(removed);
+        let Some(index) = self.buffer[scan_from..]
             .iter()
             .position(|&byte| byte == 0x06 || byte == 0x15)
         else {
@@ -80,6 +83,7 @@ impl GpasciiDecoder {
             }
             return Ok(Vec::new());
         };
+        let index = scan_from + index;
         let remote_error = self.buffer[index] == 0x15;
         let mut body = self.buffer.drain(..index).collect::<Vec<_>>();
         self.buffer.drain(

@@ -123,6 +123,27 @@ fn legacy_variable(response: &[u8]) -> Option<&[u8]> {
     }
     (end > start).then(|| &response[start..end])
 }
+/// Extract only the requested capture, avoiding copies of every overlapping group.
+pub fn regex_capture<'a>(
+    response: &'a [u8],
+    pattern: &str,
+    group: usize,
+) -> Result<Option<&'a [u8]>, ProtocolError> {
+    let legacy = match pattern {
+        "" => Some(Some(response)),
+        "number" => Some(legacy_number(response)),
+        "variable" => Some(legacy_variable(response)),
+        _ => None,
+    };
+    if let Some(value) = legacy {
+        return Ok(if group == 0 { value } else { None });
+    }
+    let regex = Regex::new(pattern).map_err(|error| ProtocolError::Regex(error.to_string()))?;
+    Ok(regex
+        .captures(response)
+        .and_then(|captures| captures.get(group))
+        .map(|value| value.as_bytes()))
+}
 pub fn regex_match(response: &[u8], pattern: &str) -> Result<Option<RegexMatch>, ProtocolError> {
     let extracted = match pattern {
         "" => Some(Some(response)),
@@ -230,5 +251,27 @@ mod tests {
         let found = regex_match(b"P1=12\r\n", r"P1=(\d+)").unwrap().unwrap();
         assert_eq!(found.matched, b"P1=12");
         assert_eq!(found.groups, vec![Some(b"12".to_vec())]);
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    #[test]
+    fn selected_capture_matches_legacy_and_nested_groups() {
+        let input = b"value=123";
+        for pattern in ["", "number", "variable", "((123))", "(missing)?(123)"] {
+            let all = regex_match(input, pattern).unwrap();
+            for group in 0..5 {
+                let expected = all.as_ref().and_then(|m| {
+                    if group == 0 {
+                        Some(m.matched.as_slice())
+                    } else {
+                        m.groups.get(group - 1).and_then(|v| v.as_deref())
+                    }
+                });
+                assert_eq!(regex_capture(input, pattern, group).unwrap(), expected);
+            }
+        }
     }
 }

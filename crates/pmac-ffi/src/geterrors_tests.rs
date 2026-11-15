@@ -53,7 +53,7 @@ fn lines_preserve_fragmented_utf8_settings_transitions_and_stderr() {
         assert_eq!(events.len(), 8);
         assert!(events[..6].iter().all(|e| e.kind == SETTINGS));
         assert_eq!(events[6].kind, MESSAGE);
-        assert_eq!(events[6].text, "状态 changed".as_bytes());
+        assert_eq!(events[6].text.as_ref(), "状态 changed".as_bytes());
         assert_eq!(events[7].kind, MESSAGE);
     }
     let (tx, rx) = mpsc::sync_channel(1);
@@ -373,5 +373,22 @@ fn failed_start_zeroes_handle_and_finishes_callbacks_before_returning() {
         (terminal.0, terminal.1),
         (ErrorCode::Closing as i32, TERMINAL)
     );
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn queued_lines_have_exact_storage_and_reuse_the_input_buffer() {
+    let (tx, rx) = mpsc::sync_channel(2);
+    let mut lines = Lines::new(false, 65537);
+    lines.push(&vec![b'x'; 65537], &tx).unwrap();
+    let input_pointer = lines.pending.as_ptr();
+    lines.push(b"\n", &tx).unwrap();
+    let delivered = rx.recv().unwrap().text.into_vec();
+    assert_eq!(delivered.len(), 65537);
+    assert_eq!(delivered.capacity(), delivered.len());
+    assert_eq!(lines.pending.as_ptr(), input_pointer);
+    lines.push(b"\x06\r\n", &tx).unwrap();
+    assert_eq!(lines.pending.as_ptr(), input_pointer);
+    assert!(lines.pending.is_empty());
     assert!(rx.try_recv().is_err());
 }

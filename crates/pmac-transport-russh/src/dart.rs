@@ -33,6 +33,7 @@ impl DartBudget {
         if let Some(existing) = registry.get(&key).and_then(Weak::upgrade) {
             return existing;
         }
+        registry.retain(|_, budget| budget.strong_count() != 0);
         let budget = Arc::new(Self {
             connections: Arc::new(Semaphore::new(MAX_DART_CONNECTIONS)),
         });

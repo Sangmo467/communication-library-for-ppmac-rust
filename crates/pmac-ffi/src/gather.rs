@@ -131,7 +131,7 @@ fn parse_ip(value: &str) -> Result<IpAddr, Error> {
 }
 
 struct Batch {
-    values: Vec<f64>,
+    values: Box<[f64]>,
     first: u64,
 }
 struct Gather {
@@ -473,6 +473,13 @@ fn accept_authenticated(
         }
     }
 }
+// killall can return failure when only one of its two names exists. Verify the
+// postcondition instead, but never interpret a missing/broken process probe as
+// an empty process set. The existing single-session contract reserves both names.
+fn stop_remote_processes() -> &'static str {
+    "command -v killall >/dev/null 2>&1 || exit 74; command -v pgrep >/dev/null 2>&1 || exit 74; killall gather nc >/dev/null 2>&1 || :; attempts=0; while :; do alive=0; for name in gather nc; do pgrep -x \"$name\" >/dev/null 2>&1; probe=$?; case $probe in 0) alive=1 ;; 1) ;; *) exit 74 ;; esac; done; [ \"$alive\" -eq 0 ] && break; attempts=$((attempts + 1)); [ \"$attempts\" -ge 20 ] && exit 74; sleep 0.05 || exit 74; done"
+}
+
 fn run(
     client_id: u64,
     id: u64,
@@ -512,11 +519,7 @@ fn run(
         // Match scanner2's preparation: disable the global sampler before opening its data pipe.
         configured = true;
         command(client_id, "Gather.Enable=0".into(), c.timeout_ms)?;
-        shell(
-            client_id,
-            "killall gather nc >/dev/null 2>&1 || true".into(),
-            c.timeout_ms,
-        )?;
+        shell(client_id, stop_remote_processes().into(), c.timeout_ms)?;
         // All GPASCII submissions originate on this one worker to retain channel affinity.
         for (i, address) in c.addresses.iter().enumerate() {
             check_stop(s)?;
@@ -581,7 +584,7 @@ fn run(
     }
     // The single-session contract reserves gather and nc for this API.
     // Verify ownership before killing processes or removing the lock.
-    let cleanup_command = format!("if [ \"$(cat /tmp/pmac-library-gather.lock/owner 2>/dev/null)\" = '{token}' ]; then killall gather nc >/dev/null 2>&1 || true; rm -f /tmp/pmac-library-gather.lock/stdin /tmp/pmac-library-gather.lock/owner; rmdir /tmp/pmac-library-gather.lock; fi");
+    let cleanup_command = format!("if [ \"$(cat /tmp/pmac-library-gather.lock/owner 2>/dev/null)\" = '{token}' ]; then {}; rm -f /tmp/pmac-library-gather.lock/stdin /tmp/pmac-library-gather.lock/owner && rmdir /tmp/pmac-library-gather.lock; else exit 73; fi", stop_remote_processes());
     if let Err(e) = shell(client_id, cleanup_command, c.timeout_ms) {
         cleanup = Some(e);
     }
@@ -605,18 +608,20 @@ fn io_error(e: std::io::Error) -> Error {
 struct Decoder {
     pending: Vec<u8>,
     items: usize,
+    values: Vec<f64>,
 }
 impl Decoder {
     fn new(items: usize) -> Self {
         Self {
             pending: Vec::new(),
             items,
+            values: Vec::with_capacity(items),
         }
     }
     fn push(
         &mut self,
         input: &[u8],
-        mut row: impl FnMut(Vec<f64>) -> Result<(), Error>,
+        mut row: impl FnMut(&[f64]) -> Result<(), Error>,
     ) -> Result<(), Error> {
         for &byte in input {
             if byte != b'\n' {
@@ -633,15 +638,19 @@ impl Decoder {
                 .map_err(|_| Error::new(ErrorCode::ParseError, "Gather text is not UTF-8"))?
                 .trim();
             if !line.is_empty() {
-                let lower = line.to_ascii_lowercase();
-                if lower.contains("overrun") {
+                let contains = |needle: &[u8]| {
+                    line.as_bytes()
+                        .windows(needle.len())
+                        .any(|part| part.eq_ignore_ascii_case(needle))
+                };
+                if contains(b"overrun") {
                     return Err(Error::new(
                         ErrorCode::ResourceLimit,
                         "controller Gather buffer overrun; samples were lost",
                     ));
                 }
                 // gather emits alphabetic headings. Numeric special values are errors.
-                if lower.contains("error") || lower.contains("failed") {
+                if contains(b"error") || contains(b"failed") {
                     return Err(Error::new(
                         ErrorCode::RemoteError,
                         format!("Gather: {line}"),
@@ -650,20 +659,26 @@ impl Decoder {
                 let heading = line.as_bytes()[0].is_ascii_alphabetic()
                     && !line.split_whitespace().any(|v| v.parse::<f64>().is_ok());
                 if !heading {
-                    let values = line
-                        .split_whitespace()
-                        .map(|s| s.parse::<f64>())
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| {
+                    self.values.clear();
+                    for field in line.split_whitespace() {
+                        let value = field.parse::<f64>().map_err(|_| {
                             Error::new(ErrorCode::ParseError, "invalid Gather numeric row")
                         })?;
-                    if values.len() != self.items || values.iter().any(|v| !v.is_finite()) {
+                        if self.values.len() == self.items || !value.is_finite() {
+                            return Err(Error::new(
+                                ErrorCode::ParseError,
+                                "Gather row has wrong column count or non-finite data",
+                            ));
+                        }
+                        self.values.push(value);
+                    }
+                    if self.values.len() != self.items {
                         return Err(Error::new(
                             ErrorCode::ParseError,
                             "Gather row has wrong column count or non-finite data",
                         ));
                     }
-                    row(values)?;
+                    row(&self.values)?;
                 }
             }
             self.pending.clear();
@@ -682,7 +697,7 @@ fn enqueue(
     }
     let count = values.len() / items;
     let batch = Batch {
-        values: std::mem::take(values),
+        values: std::mem::take(values).into_boxed_slice(),
         first: *next,
     };
     tx.try_send(batch).map_err(|e| match e {
@@ -719,7 +734,7 @@ fn receive(
                 ))
             }
             Ok(n) => decoder.push(&data[..n], |row| {
-                values.extend(row);
+                values.extend_from_slice(row);
                 if values.len() / c.addresses.len() >= c.batch_rows {
                     enqueue(tx, &mut values, &mut next, c.addresses.len())?;
                     flushed = Instant::now();
@@ -755,18 +770,62 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn queued_batches_do_not_retain_geometrically_grown_capacity() {
+        let mut values = Vec::new();
+        for _ in 0..2049 {
+            values.extend_from_slice(&[0.0; 128]);
+        }
+        assert!(values.capacity() > values.len());
+        let (tx, rx) = mpsc::sync_channel(1);
+        enqueue(&tx, &mut values, &mut 0, 128).unwrap();
+        let delivered = rx.recv().unwrap().values.into_vec();
+        assert_eq!(delivered.len(), 2049 * 128);
+        assert_eq!(delivered.capacity(), delivered.len());
+    }
+    #[test]
+    fn decoder_reuses_its_numeric_row_buffer() {
+        let mut decoder = Decoder::new(3);
+        let mut first = None;
+        decoder
+            .push(b"1 2 3\n4 5 6\n", |row| {
+                match first {
+                    None => first = Some(row.as_ptr()),
+                    Some(pointer) => assert_eq!(row.as_ptr(), pointer),
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn remote_cleanup_requires_confirmed_process_exit() {
+        // Shell functions isolate the process-control logic from the host.
+        for (probe, expected) in [(1, 0), (0, 74), (2, 74)] {
+            let script = format!(
+                "killall() {{ return 1; }}; pgrep() {{ case \"$2\" in gather|nc) return {probe} ;; *) return 2 ;; esac; }}; sleep() {{ :; }}; {}",
+                stop_remote_processes()
+            );
+            let exit = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .status()
+                .unwrap();
+            assert_eq!(exit.code(), Some(expected));
+        }
+    }
+    #[test]
     fn decoder_handles_every_fragment_boundary_and_dynamic_columns() {
         let input = b"Gather Data\r\n1 -2.5 3e2\r\n4 5 6\n";
         for split in 0..=input.len() {
             let mut d = Decoder::new(3);
             let mut rows = Vec::new();
             d.push(&input[..split], |r| {
-                rows.push(r);
+                rows.push(r.to_vec());
                 Ok(())
             })
             .unwrap();
             d.push(&input[split..], |r| {
-                rows.push(r);
+                rows.push(r.to_vec());
                 Ok(())
             })
             .unwrap();
@@ -810,7 +869,7 @@ mod tests {
             let mut error = None;
             for byte in line.as_bytes() {
                 if let Err(value) = decoder.push(&[*byte], |row| {
-                    rows.push(row);
+                    rows.push(row.to_vec());
                     Ok(())
                 }) {
                     error = Some(value);
@@ -836,7 +895,7 @@ mod tests {
         assert_eq!(next, 2);
         let batch = rx.recv().unwrap();
         assert_eq!(batch.first, 0);
-        assert_eq!(batch.values, vec![1., 2., 3., 4.]);
+        assert_eq!(&*batch.values, &[1., 2., 3., 4.]);
     }
     fn bytes(value: &str) -> PmacBytes {
         PmacBytes {
