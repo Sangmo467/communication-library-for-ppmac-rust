@@ -79,7 +79,22 @@ impl GpasciiDecoder {
                     .saturating_add(pending_echo)
                     .saturating_add(framing)
             {
-                return Err(ProtocolError::ResponseTooLarge(self.maximum));
+                // Prompts are removed only on completion. Discount complete prompts
+                // and a possible fragmented prompt suffix for this provisional check.
+                // The raw buffer bound above still limits retained framing bytes.
+                const PROMPT: &[u8] = b"STDIN Open for ASCII Input";
+                let mut pending = self.buffer.clone();
+                filter_input_ready(&mut pending);
+                let suffix = (1..PROMPT.len())
+                    .rev()
+                    .find(|&len| pending.ends_with(&PROMPT[..len]))
+                    .unwrap_or(0);
+                pending.truncate(pending.len() - suffix);
+                trim_trailing_newline(&mut pending);
+                trim_leading_newlines(&mut pending);
+                if pending.len() > self.maximum.saturating_add(pending_echo) {
+                    return Err(ProtocolError::ResponseTooLarge(self.maximum));
+                }
             }
             return Ok(Vec::new());
         };
@@ -413,6 +428,38 @@ mod tests {
 #[cfg(test)]
 mod input_ready_tests {
     use super::*;
+    #[test]
+    fn filtered_prompt_does_not_consume_response_budget_at_any_split() {
+        for payload in [
+            b"STDIN Open for ASCII Input\r\n42".as_slice(),
+            b"42\r\nSTDIN Open for ASCII Input",
+            b"STDIN Open for ASCII Input",
+        ] {
+            let expected = if payload == b"STDIN Open for ASCII Input" {
+                b"".as_slice()
+            } else {
+                b"42".as_slice()
+            };
+            let mut wire = payload.to_vec();
+            wire.push(6);
+            for split in 0..=wire.len() {
+                let mut decoder = GpasciiDecoder::new(b"query", expected.len());
+                let mut frames = decoder.push(&wire[..split]).unwrap();
+                frames.extend(decoder.push(&wire[split..]).unwrap());
+                assert_eq!(frames[0].body, expected, "split {split}");
+            }
+            let mut decoder = GpasciiDecoder::new(b"query", expected.len());
+            let mut frames = Vec::new();
+            for byte in wire {
+                frames.extend(decoder.push(&[byte]).unwrap());
+            }
+            assert_eq!(frames[0].body, expected);
+        }
+        let mut decoder = GpasciiDecoder::new(b"query", 2);
+        assert!(decoder
+            .push(b"STDIN Open for ASCII Input\r\n123\x06")
+            .is_err());
+    }
     #[test]
     fn prompt_is_filtered_at_every_split_without_ending_the_frame() {
         for payload in [

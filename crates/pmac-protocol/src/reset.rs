@@ -111,8 +111,12 @@ impl ResetDecoder {
                                     .into(),
                             ));
                         }
+                        let response = self.response_body();
+                        if response.len() > self.maximum {
+                            return Err(ProtocolError::ResponseTooLarge(self.maximum));
+                        }
                         self.phase = Phase::Complete;
-                        events.push(ResetEvent::Complete(self.response_body()));
+                        events.push(ResetEvent::Complete(response));
                     } else if self.ready_line(byte) {
                         // Repeated startup banners do not authorize another probe/reset.
                         self.probe_output.clear();
@@ -284,6 +288,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn probe_completion_enforces_filtered_response_limit() {
+        for (body, accepted) in [("12345678", true), ("123456789", false)] {
+            let mut decoder = ResetDecoder::new(b"$$$", 8);
+            let banner = format!("$$$\r\n{body}\r\nSTDIN Open for ASCII Input\r\n");
+            assert_eq!(
+                decoder.push(banner.as_bytes()).unwrap(),
+                vec![ResetEvent::ProbeRequired]
+            );
+            decoder.probe_sent().unwrap();
+            let result = decoder.push(b"42\r\n\x06");
+            if accepted {
+                assert_eq!(
+                    result.unwrap(),
+                    vec![ResetEvent::Complete(body.as_bytes().to_vec())]
+                );
+            } else {
+                assert!(matches!(result, Err(ProtocolError::ResponseTooLarge(8))));
+            }
+        }
+    }
     #[test]
     fn startup_noise_is_bounded_and_trailing_completed_frames_are_rejected() {
         let mut decoder = ResetDecoder::new(b"$$$", 8);
