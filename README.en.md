@@ -4,7 +4,7 @@
 
 A Rust/russh communication library for Power PPMAC, with a stable C ABI, C++17 and C++98 wrappers, .NET 8 and Python bindings, and a MATLAB GetResponse MEX example.
 
-Version: **2.0.5** · C ABI: **2.1** · License: **MIT**
+Version: **2.0.6** · C ABI: **2.1** · License: **MIT**
 
 ## Features
 

@@ -556,7 +556,6 @@ impl Client {
                     .iter()
                     .filter_map(|m| m.session.clone().map(|session| (m.id, m.epoch, session)))
                     .collect::<Vec<_>>();
-                let mut close_uncertain = Vec::new();
                 loop {
                     let results =
                         futures::future::join_all(sessions.iter().map(|(_, _, session)| async {
@@ -576,9 +575,8 @@ impl Client {
                     {
                         let mut pool = client.pool.lock();
                         for ((id, epoch, _), result) in sessions.iter().zip(&results) {
-                            if result.is_ok() && close_uncertain.contains(&(*id, *epoch)) {
+                            if result.is_ok() {
                                 pool.uncertain.retain(|entry| entry != &(*id, *epoch));
-                                close_uncertain.retain(|entry| entry != &(*id, *epoch));
                             }
                             if result
                                 .as_ref()
@@ -586,7 +584,6 @@ impl Client {
                                 && !pool.uncertain.contains(&(*id, *epoch))
                             {
                                 pool.uncertain.push((*id, *epoch));
-                                close_uncertain.push((*id, *epoch));
                             }
                         }
                     }
@@ -1444,7 +1441,7 @@ impl Client {
                 .collect::<Vec<_>>()
         };
         for (id, epoch, session) in sessions {
-            let _ = session.retire_control().await;
+            let confirmed = session.retire_control().await.is_ok();
             let mut s = self.pool.lock();
             if let Some(m) = s
                 .members
@@ -1453,7 +1450,9 @@ impl Client {
             {
                 m.state = MemberState::Failed;
             }
-            if !s.uncertain.contains(&(id, epoch)) {
+            if confirmed {
+                s.uncertain.retain(|entry| entry != &(id, epoch));
+            } else if !s.uncertain.contains(&(id, epoch)) {
                 s.uncertain.push((id, epoch));
             }
         }

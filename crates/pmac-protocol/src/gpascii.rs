@@ -93,6 +93,7 @@ impl GpasciiDecoder {
                 .position(|&byte| byte == 0x06 || byte == 0x15)
                 .map_or(0, |index| index + 1),
         );
+        filter_input_ready(&mut body);
         trim_trailing_newline(&mut body);
         trim_leading_newlines(&mut body);
         if body.len() > self.maximum {
@@ -148,6 +149,23 @@ impl GpasciiDecoder {
     }
 }
 
+/// Remove the controller input-ready prompt only after protocol completion.
+/// Keep reset readiness detection on the unfiltered incoming stream.
+pub(crate) fn filter_input_ready(bytes: &mut Vec<u8>) {
+    const PROMPT: &[u8] = b"STDIN Open for ASCII Input";
+    let mut read = 0;
+    let mut written = 0;
+    while read < bytes.len() {
+        if bytes[read..].starts_with(PROMPT) {
+            read += PROMPT.len();
+        } else {
+            bytes[written] = bytes[read];
+            written += 1;
+            read += 1;
+        }
+    }
+    bytes.truncate(written);
+}
 /// Detect a controller diagnostic even when the transport terminator is ACK.
 /// A quoted value or an identifier containing the words is not a diagnostic.
 pub fn contains_controller_error(bytes: &[u8]) -> bool {
@@ -388,6 +406,36 @@ mod tests {
             b"warning\nerror #7: failed\n",
         ] {
             assert!(contains_controller_error(body), "{body:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod input_ready_tests {
+    use super::*;
+    #[test]
+    fn prompt_is_filtered_at_every_split_without_ending_the_frame() {
+        for payload in [
+            b"STDIN Open for ASCII Input\r\n42".as_slice(),
+            b"42\r\nSTDIN Open for ASCII Input",
+            b"STDIN Open for ASCII Input",
+        ] {
+            let mut wire = payload.to_vec();
+            wire.push(6);
+            for split in 0..wire.len() {
+                let mut decoder = GpasciiDecoder::new(b"query", 1024);
+                assert!(decoder.push(&wire[..split]).unwrap().is_empty());
+                let frames = decoder.push(&wire[split..]).unwrap();
+                assert_eq!(frames.len(), 1);
+                assert_eq!(
+                    frames[0].body,
+                    if payload == b"STDIN Open for ASCII Input" {
+                        b"".as_slice()
+                    } else {
+                        b"42".as_slice()
+                    }
+                );
+            }
         }
     }
 }

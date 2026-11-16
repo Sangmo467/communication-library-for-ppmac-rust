@@ -1845,7 +1845,7 @@ fn reset_reopened_input_without_ack_is_confirmed_by_one_read_only_probe() {
     let result = fixture
         .run(Operation::Command(Command::raw("$$$***").unwrap()))
         .unwrap();
-    assert_eq!(result.response, b"STDIN Open for ASCII Input");
+    assert!(result.response.is_empty());
     let commands = fixture.observed.commands.lock().unwrap();
     assert_eq!(
         commands
@@ -2564,4 +2564,20 @@ fn passthrough_still_reports_remote_diagnostics_without_replay() {
         .unwrap()
         .iter()
         .any(|c| c == "close"));
+}
+
+#[test]
+fn passthrough_exact_reset_uses_readiness_probe_instead_of_waiting_for_ack() {
+    for text in ["$$$", "$$$***"] {
+        let fixture = Fixture::new(None);
+        fixture.observed.reset_mode.store(1, Ordering::Release);
+        fixture.run(Operation::Connect(fixture.options())).unwrap();
+        let result = fixture
+            .run(Operation::Command(Command::passthrough(text).unwrap()))
+            .unwrap();
+        assert!(result.response.is_empty());
+        let commands = fixture.observed.commands.lock().unwrap();
+        assert_eq!(commands.iter().filter(|c| c.as_str() == text).count(), 1);
+        assert!(commands.iter().any(|c| c == "Sys.ServoCount"));
+    }
 }

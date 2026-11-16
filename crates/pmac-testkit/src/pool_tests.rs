@@ -68,6 +68,7 @@ struct PoolSession {
     fail_next: AtomicBool,
     maintenance_fail: AtomicBool,
     retire_gate: Gate,
+    retire_fail_once: AtomicBool,
     close_gate: Gate,
     close_panic_once: AtomicBool,
     maintenance_retired: AtomicBool,
@@ -83,6 +84,7 @@ impl PoolSession {
             fail_next: AtomicBool::new(false),
             maintenance_fail: AtomicBool::new(false),
             retire_gate: Gate::default(),
+            retire_fail_once: AtomicBool::new(false),
             close_gate: Gate::default(),
             close_panic_once: AtomicBool::new(false),
             maintenance_retired: AtomicBool::new(false),
@@ -168,6 +170,12 @@ impl Session for PoolSession {
     }
     async fn retire_control(&self) -> Result<(), Error> {
         self.retire_gate.enter().await;
+        if self.retire_fail_once.swap(false, Ordering::AcqRel) {
+            return Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "injected unconfirmed channel release",
+            ));
+        }
         self.healthy.store(false, Ordering::Release);
         Ok(())
     }
@@ -1046,7 +1054,7 @@ fn compound_resets_retire_every_device_lane_regardless_of_maintenance_order() {
         );
         let snapshot = fixture.client.pool_snapshot();
         assert_eq!(snapshot.ready, 0, "{wire:?}");
-        assert_eq!(snapshot.release_uncertain, 2, "{wire:?}");
+        assert_eq!(snapshot.release_uncertain, 0, "{wire:?}");
         assert_eq!(
             fixture.transport.attempts.load(Ordering::Acquire),
             2,
@@ -1537,7 +1545,7 @@ fn failed_compound_close_all_buffers_retires_all_control_members() {
             .client
             .parse_command_for_current_thread("dwell 10")
             .is_err());
-        assert_eq!(fixture.client.pool_snapshot().release_uncertain, 2);
+        assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
     }
 }
 
@@ -1804,4 +1812,63 @@ fn requested_buffer_jog_syntax_is_forwarded_without_online_reclassification() {
         .lock()
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn confirmed_reset_retires_pool_without_false_release_uncertainty() {
+    for wire in ["$$$", "$$$***"] {
+        let fixture = Fixture::new();
+        fixture.prepare(2, 4);
+        fixture.finish(fixture.command(wire, false)).unwrap();
+        assert_eq!(
+            fixture.client.snapshot().state,
+            pmac_core::ClientState::Disconnected
+        );
+        assert_eq!(fixture.client.pool_snapshot().ready, 0);
+        assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
+        assert!(!fixture.client.has_unreleased_gpascii());
+        assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 2);
+        assert!(fixture
+            .client
+            .pool_members()
+            .iter()
+            .all(|member| member.state == MemberState::Failed));
+        fixture.runtime.shutdown_clients(5_000).unwrap();
+        assert_eq!(
+            fixture.client.snapshot().state,
+            pmac_core::ClientState::Closed
+        );
+        assert!(!fixture.client.has_unreleased_gpascii());
+    }
+}
+
+#[test]
+fn reset_release_uncertainty_is_cleared_only_by_that_sessions_confirmed_close() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 2);
+    let session = fixture.transport.member(0);
+    session.retire_fail_once.store(true, Ordering::Release);
+    fixture.finish(fixture.command("$$$", false)).unwrap();
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 1);
+    assert!(fixture.client.has_unreleased_gpascii());
+    session.close_gate.block();
+    assert_eq!(
+        fixture.runtime.shutdown_clients(10).unwrap_err().code,
+        ErrorCode::ShutdownPending
+    );
+    session.close_gate.wait(1);
+    assert!(
+        fixture.client.has_unreleased_gpascii(),
+        "unconfirmed close must preserve ownership"
+    );
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 1);
+    session.close_gate.release();
+    fixture.runtime.shutdown_clients(5_000).unwrap();
+    assert!(!session.healthy.load(Ordering::Acquire));
+    assert!(!fixture.client.has_unreleased_gpascii());
+    assert_eq!(
+        fixture.transport.attempts.load(Ordering::Acquire),
+        1,
+        "cleanup must not open a replacement client/session"
+    );
 }

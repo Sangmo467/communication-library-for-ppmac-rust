@@ -106,11 +106,21 @@ impl Command {
     pub fn passthrough(text: impl Into<String>) -> Result<Self, ProtocolError> {
         let text = text.into();
         validate_text(&text)?;
+        // Exact reset frames need reset framing even when command text is opaque.
+        let maintenance = match text.trim() {
+            "$$$" => MaintenanceKind::Reset,
+            "$$$***" => MaintenanceKind::GlobalReset,
+            _ => MaintenanceKind::None,
+        };
         Ok(Self {
             text,
-            effect: CommandEffect::Control,
+            effect: if maintenance == MaintenanceKind::None {
+                CommandEffect::Control
+            } else {
+                CommandEffect::Maintenance
+            },
             scope: CommandScope::Global,
-            maintenance: MaintenanceKind::None,
+            maintenance,
             program_line: false,
             passthrough: true,
         })
@@ -1220,4 +1230,23 @@ fn passthrough_is_opaque_and_keeps_frame_validation() {
     }
     assert!(Command::passthrough("x".repeat(MAX_COMMAND_LEN + 1)).is_err());
     assert!(!Command::raw("P1").unwrap().is_passthrough());
+}
+
+#[cfg(test)]
+#[test]
+fn opaque_exact_resets_keep_reset_framing_and_barriers() {
+    for (text, expected) in [
+        ("$$$", MaintenanceKind::Reset),
+        ("  $$$***  ", MaintenanceKind::GlobalReset),
+    ] {
+        let command = Command::passthrough(text).unwrap();
+        assert!(command.is_passthrough());
+        assert_eq!(command.text(), text);
+        assert_eq!(command.maintenance(), expected);
+        assert_eq!(command.effect(), CommandEffect::Maintenance);
+    }
+    assert_eq!(
+        Command::passthrough("P1=1;$$$***").unwrap().maintenance(),
+        MaintenanceKind::None
+    );
 }

@@ -1326,7 +1326,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "pmac-core"
-version = "2.0.5"
+version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "pmac-ffi"
-version = "2.0.5"
+version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "pmac-protocol"
-version = "2.0.5"
+version = "2.0.6"
 dependencies = [
  "proptest",
  "regex",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "pmac-testkit"
-version = "2.0.5"
+version = "2.0.6"
 dependencies = [
  "async-trait",
  "pmac-core",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "pmac-transport-russh"
-version = "2.0.5"
+version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures",

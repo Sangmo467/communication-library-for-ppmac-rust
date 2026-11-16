@@ -4,6 +4,13 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.6
+
+- Preserve reset framing and maintenance barriers for standalone $$$/$$$*** in passthrough mode, avoiding ordinary ACK waits for reset responses.
+- Filter STDIN Open for ASCII Input from command responses while retaining internal readiness verification.
+- Clear stale release uncertainty only when the original session confirms retirement or closure; explicit pool repair restores querying after reset.
+- Add reset framing, passthrough and release-confirmation regressions and document timeout/recovery requirements. C ABI remains 2.1.
+
 ## 2.0.5
 
 - Fix C#/Python native cleanup after GC, failed C++ Client move assignment, pool initialization rollback and release confirmation.

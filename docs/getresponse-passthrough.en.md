@@ -83,3 +83,9 @@ To disable passthrough, explicitly set it to false, or use PMAC_REQUEST_CLASSIFY
 - read_pool requires read-only classification. Explicit C PASSTHROUGH conflicts with READ_POOL; language bindings automatically select classification.
 - Multiline string rejected: submit one command without CR/LF at a time and wait for each result.
 - Extraction fails after `CONFIRMED`: the command may already have executed; extraction failure is not grounds for resending a write command.
+
+## Standalone reset commands
+
+An exact standalone `$$$` or `$$$***` retains reset framing and the device maintenance barrier even in passthrough mode. The original text is sent once, with no automatic replay. Other opaque compound commands are unchanged. Input-ready prompt text is filtered from returned command responses while internal readiness verification remains active.
+
+Set an explicit reset timeout, for example 30000 ms: the device can take longer than the default 5000 ms. A confirmed reset invalidates old GPASCII channels; explicitly repair the pool or create a new Client before further queries. A new Client being ready does not prove release of an old session.

@@ -163,7 +163,9 @@ impl ResetDecoder {
         {
             body = trim_ascii(&body[self.command.len()..]);
         }
-        body.to_vec()
+        let mut body = body.to_vec();
+        crate::gpascii::filter_input_ready(&mut body);
+        trim_ascii(&body).to_vec()
     }
 }
 
@@ -209,7 +211,7 @@ mod tests {
                 decoder.probe_sent().unwrap();
                 let mut events = decoder.push(&probe[..probe_split]).unwrap();
                 events.extend(decoder.push(&probe[probe_split..]).unwrap());
-                assert_eq!(events, vec![ResetEvent::Complete(INPUT_READY.to_vec())]);
+                assert_eq!(events, vec![ResetEvent::Complete(Vec::new())]);
             }
         }
     }
