@@ -1860,20 +1860,45 @@ fn reset_reopened_input_without_ack_is_confirmed_by_one_read_only_probe() {
             .filter(|command| command.as_str() == "Sys.ServoCount")
             .count(),
         3,
-        "two initial lane checks plus exactly one post-reset probe"
+        "two initial lane checks plus exactly one post-reset probe; no reconnect"
     );
     drop(commands);
-    assert_eq!(fixture.client.pool_snapshot().ready, 0);
-    assert_eq!(fixture.client.pool_snapshot().failed, 2);
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(fixture.client.pool_snapshot().failed, 0);
     assert_eq!(
         fixture.observed.password_attempts.load(Ordering::Acquire),
         2,
-        "no implicit reconnect"
+        "a confirmed reset recycles the surviving SSH transports"
     );
-    let error = fixture
+    let response = fixture
         .run(Operation::Command(Command::raw("#1p").unwrap()))
-        .unwrap_err();
-    assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+        .unwrap();
+    assert_eq!(response.response, b"12.5");
+    assert_eq!(
+        fixture.observed.password_attempts.load(Ordering::Acquire),
+        2,
+        "the first query after reset must reuse SSH, too"
+    );
+    assert_eq!(
+        fixture
+            .observed
+            .closed_gpascii_channels
+            .load(Ordering::Acquire),
+        2,
+        "both pre-reset GPASCII channels must be closed"
+    );
+    assert_eq!(
+        fixture
+            .observed
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| command.as_str() == "Sys.ServoCount")
+            .count(),
+        4,
+        "the post-reset query opens and verifies a fresh GPASCII channel"
+    );
 }
 
 #[test]

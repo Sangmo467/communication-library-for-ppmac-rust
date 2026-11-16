@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
-pmac-protocol = { version = "=2.0.6", path = "../pmac-protocol" }
+pmac-protocol = { version = "=2.0.7", path = "../pmac-protocol" }
 thiserror.workspace = true
 tokio.workspace = true
 zeroize.workspace = true

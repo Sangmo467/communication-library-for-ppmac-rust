@@ -68,6 +68,13 @@ def options(value=None):
                             max_response_bytes)
 
 
+def _command_options(command, value):
+    # Only a standalone reset gets the longer default; explicit budgets always win.
+    normalized = command.strip() if isinstance(command, str) else bytes(command or b"").strip()
+    if "timeout_ms" not in value and not value.get("infinite") and normalized in ("$$$", "$$$***", b"$$$", b"$$$***"):
+        value = dict(value, timeout_ms=30000)
+    return options(value)
+
 def _release_request(lib, request_id, created_pid):
     if os.getpid() != created_pid:
         return
@@ -453,6 +460,7 @@ class Runtime:
             raise PmacError(-13, "runtime is closing")
 
     def shutdown(self, wait_ms=1000):
+        _checked_integer(wait_ms, 0, 0xffffffff, "wait_ms")
         self._check_pid()
         deadline = time.monotonic() + max(0, wait_ms) / 1000
         with self._lock:
@@ -533,7 +541,7 @@ class Client:
         with request: request.wait()
 
     def command_async(self, command, **kwargs):
-        view, buffer = N.view(command); native = options(kwargs); request = C.c_uint64()
+        view, buffer = N.view(command); native = _command_options(command, kwargs); request = C.c_uint64()
         check(self.lib.pmac_command_submit(self._check(), view.data, view.len, N.byref(native), N.byref(request)), "command submit")
         return Request(self.runtime, request.value)
 
@@ -542,7 +550,7 @@ class Client:
             request.wait(); return request.response()
 
     def get_response_async(self, command, **kwargs):
-        view, buffer = N.view(command); native = options(kwargs); request = C.c_uint64()
+        view, buffer = N.view(command); native = _command_options(command, kwargs); request = C.c_uint64()
         check(self.lib.pmac_get_response_async(self._check(), view.data, view.len, N.byref(native), N.byref(request)), "get response submit")
         return Request(self.runtime, request.value)
 
@@ -619,6 +627,7 @@ class Client:
     @property
     def connected(self): return self.state().state == 4
     def close(self, wait_ms=1000):
+        _checked_integer(wait_ms, 0, 0xffffffff, "wait_ms")
         with self._lock:
             if self._id:
                 check(self.lib.pmac_client_close(self._check(), 0, wait_ms), "client close")

@@ -391,21 +391,36 @@ public:
     }
     void confirmRecovery(uint64_t revision, uint32_t flags) { check(pmac_pool_confirm_recovery(id_, revision, flags)); }
     void connectSync(const ConnectOptions& options) { Request request = connect(options); request.wait(); }
-    Request commandAsync(const std::string& command, const RequestOptions& options = {}) {
+    Request commandAsync(const std::string& command) {
+        return commandAsync(command, defaultCommandOptions(command));
+    }
+    Request commandAsync(const std::string& command, const RequestOptions& options) {
         auto native = options.native();
         return createRequest(pmac_command_submit(id_, byteData(command), command.size(), &native, &requestSlot()));
     }
-    std::vector<uint8_t> command(const std::string& command, const RequestOptions& options = {}) {
+    std::vector<uint8_t> command(const std::string& command) {
+        return this->command(command, defaultCommandOptions(command));
+    }
+    std::vector<uint8_t> command(const std::string& command, const RequestOptions& options) {
         Request request = commandAsync(command, options); request.wait(); return request.response();
     }
-    std::string commandText(const std::string& command, const RequestOptions& options = {}) {
+    std::string commandText(const std::string& command) {
+        return commandText(command, defaultCommandOptions(command));
+    }
+    std::string commandText(const std::string& command, const RequestOptions& options) {
         auto bytes = this->command(command, options); return std::string(bytes.begin(), bytes.end());
     }
-    Request getResponseAsync(const std::string& command, const RequestOptions& options = {}) {
+    Request getResponseAsync(const std::string& command) {
+        return getResponseAsync(command, defaultCommandOptions(command));
+    }
+    Request getResponseAsync(const std::string& command, const RequestOptions& options) {
         auto native = options.native();
         return createRequest(pmac_get_response_async(id_, byteData(command), command.size(), &native, &requestSlot()));
     }
-    std::vector<uint8_t> getResponse(const std::string& command, const std::string& pattern = "", const RequestOptions& options = {}) {
+    std::vector<uint8_t> getResponse(const std::string& command, const std::string& pattern = "") {
+        return getResponse(command, pattern, defaultCommandOptions(command));
+    }
+    std::vector<uint8_t> getResponse(const std::string& command, const std::string& pattern, const RequestOptions& options) {
         Request request = getResponseAsync(command, options);
         request.wait();
         return pattern.empty() ? request.response() : request.match(pattern);
@@ -572,6 +587,18 @@ private:
         thread_local pmac_request_options result{};
         result = value.native();
         return &result;
+    }
+    // Only omitted options select the extended reset budget. Explicit options,
+    // including a five-second timeout or infinite=true, are never rewritten.
+    static RequestOptions defaultCommandOptions(const std::string& command) {
+        RequestOptions options;
+        const auto first = command.find_first_not_of(" \t\r\n\v\f");
+        if (first == std::string::npos) return options;
+        const auto last = command.find_last_not_of(" \t\r\n\v\f");
+        const auto length = last - first + 1;
+        if ((length == 3 && command.compare(first, length, "$$$") == 0) ||
+            (length == 6 && command.compare(first, length, "$$$***") == 0)) options.timeoutMs = 30000;
+        return options;
     }
     static uint64_t& requestSlot() { thread_local uint64_t id = 0; return id; }
     static void check(int32_t status) {

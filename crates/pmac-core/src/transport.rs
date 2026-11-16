@@ -444,6 +444,12 @@ pub trait Session: Send + Sync + 'static {
     async fn retire_control(&self) -> Result<(), Error> {
         self.close().await
     }
+    /// Invalidates controller-side GPASCII state after a confirmed device reset
+    /// while preserving the SSH transport when the implementation can. The
+    /// default is conservative and retires the whole session.
+    async fn recycle_control(&self) -> Result<(), Error> {
+        self.retire_control().await
+    }
     async fn retire_maintenance(&self) -> Result<(), Error> {
         Ok(())
     }

@@ -565,3 +565,56 @@ fn invalid_business_target_replaces_previous_last_error() {
     let message = std::str::from_utf8(&bytes[..required]).unwrap();
     assert!(message.contains("motor"), "{message}");
 }
+
+#[test]
+fn reset_defaults_use_thirty_seconds_but_explicit_options_are_preserved() {
+    for (command, explicit, expected) in [
+        ("$$$***", false, 30_000u32),
+        ("$$$", true, 5_000),
+        ("Sys.ServoCount", false, 5_000),
+    ] {
+        let (runtime_id, runtime) = runtime();
+        let mock = Arc::new(MockTransport::default());
+        let client = mock_client(&runtime, mock.clone());
+        let mut id = 0;
+        assert_eq!(pmac_connect_submit(client, &connect_options(), &mut id), 0);
+        let mut info = std::mem::MaybeUninit::<PmacRequestInfo>::uninit();
+        assert_eq!(pmac_request_wait(id, 1000, info.as_mut_ptr()), 0);
+        assert_eq!(pmac_request_release(id), 0);
+        mock.session.block(true);
+        let options = PmacRequestOptions {
+            struct_size: size_of::<PmacRequestOptions>() as u32,
+            abi_version: ABI_VERSION,
+            timeout_ms: 5000,
+            flags: 0,
+            max_response_bytes: 1024,
+        };
+        assert_eq!(
+            pmac_command_submit(
+                client,
+                command.as_ptr(),
+                command.len(),
+                if explicit { &options } else { std::ptr::null() },
+                &mut id
+            ),
+            0
+        );
+        let (request, _) = request(id).unwrap();
+        let remaining = request
+            .deadline()
+            .unwrap()
+            .saturating_duration_since(tokio::time::Instant::now())
+            .as_millis();
+        assert!(
+            remaining <= u128::from(expected) && remaining > u128::from(expected - 1000),
+            "remaining={remaining}, expected={expected}"
+        );
+        request.cancel();
+        mock.session.block(false);
+        let _ = pmac_request_wait(id, 5000, info.as_mut_ptr());
+        assert_eq!(pmac_request_release(id), 0);
+        runtime.shutdown_clients(5000).unwrap();
+        assert_eq!(pmac_client_release(client), 0);
+        assert_eq!(pmac_runtime_release(runtime_id), 0);
+    }
+}

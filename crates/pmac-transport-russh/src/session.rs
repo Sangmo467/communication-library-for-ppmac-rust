@@ -283,6 +283,27 @@ impl Session for RusshSession {
         }
     }
 
+    async fn recycle_control(&self) -> Result<(), Error> {
+        let dart = self.close_dart().await;
+        let channels = self.close_gpascii_channels().await;
+        // Shells, SFTP and gather state are controller-side and stale after a
+        // reset, but the SSH control transport itself survives and is reused.
+        let _ = self.retire_maintenance().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::new(ErrorCode::Closing, "session is closed"));
+        }
+        if !self.control.is_healthy() {
+            return Err(disconnected("SSH control transport was retired"));
+        }
+        if !channels {
+            return Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "GPASCII channel release has not been confirmed",
+            ));
+        }
+        dart
+    }
+
     async fn retire_maintenance(&self) -> Result<(), Error> {
         self.maintenance_retired.store(true, Ordering::Release);
         let sftp = self.sftp.lock().await.clone();
@@ -914,7 +935,10 @@ async fn execute_reset(
                             decoder.probe_sent().map_err(protocol_error)?;
                         }
                         ResetEvent::Complete(response) => {
-                            connection.retire();
+                            // The readiness probe was acknowledged on this very
+                            // channel, so the SSH transport is still usable. The
+                            // client recycles channels after a confirmed reset
+                            // instead of forcing a new SSH handshake.
                             if response.len().saturating_add(stderr.len())
                                 > context.max_response_bytes()
                             {

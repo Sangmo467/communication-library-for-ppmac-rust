@@ -344,7 +344,11 @@ impl Lines {
             if b == b'\n' {
                 self.emit(tx)?;
             } else {
-                if self.pending.len() >= self.maximum {
+                // CR is framing only when immediately followed by LF (or EOF).
+                // Reserve one byte for it so LF and CRLF have the same body limit.
+                if self.pending.len() >= self.maximum
+                    && !(self.pending.len() == self.maximum && b == b'\r')
+                {
                     return Err(Error::new(
                         ErrorCode::ResourceLimit,
                         "geterrors line exceeds configured maximum",

@@ -63,6 +63,31 @@ fn lines_preserve_fragmented_utf8_settings_transitions_and_stderr() {
     assert_eq!(rx.recv().unwrap().kind, STDERR);
 }
 #[test]
+fn maximum_length_lines_accept_lf_and_crlf_at_every_split() {
+    for wire in [b"abc\n".as_slice(), b"abc\r\n"] {
+        for split in 0..=wire.len() {
+            let (tx, rx) = mpsc::sync_channel(1);
+            let mut lines = Lines::new(false, 3);
+            lines.push(&wire[..split], &tx).unwrap();
+            lines.push(&wire[split..], &tx).unwrap();
+            assert_eq!(rx.recv().unwrap().text.as_ref(), b"abc");
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut lines = Lines::new(false, 3);
+        for &byte in wire {
+            lines.push(&[byte], &tx).unwrap();
+        }
+        assert_eq!(rx.recv().unwrap().text.as_ref(), b"abc");
+    }
+    for wire in [b"abcd\n".as_slice(), b"abcd\r\n", b"abc\rx\n"] {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        assert_eq!(
+            Lines::new(false, 3).push(wire, &tx).unwrap_err().code,
+            ErrorCode::ResourceLimit
+        );
+    }
+}
+#[test]
 fn lines_stop_on_queue_overflow_long_lines_and_invalid_utf8() {
     let (tx, _rx) = mpsc::sync_channel(1);
     assert_eq!(

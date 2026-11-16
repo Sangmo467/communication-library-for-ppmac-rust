@@ -153,7 +153,10 @@ public:
         check(pmac_request_release(request), "request_release");
     }
 
-    std::vector<uint8_t> command(const std::string& command, const Options& options = Options()) {
+    std::vector<uint8_t> command(const std::string& command) {
+        return this->command(command, defaultCommandOptions(command));
+    }
+    std::vector<uint8_t> command(const std::string& command, const Options& options) {
         pmac_request_options native = options.native(); pmac_request_id request = 0;
         check(pmac_command_submit(id_, data(command), command.size(), &native, &request), "command_submit");
         ScopedRequest owner(request);
@@ -197,7 +200,10 @@ public:
         }
     }
     void confirmRecovery(uint64_t revision, uint32_t flags) { check(pmac_pool_confirm_recovery(id_, revision, flags), "confirm_recovery"); }
-    std::vector<uint8_t> getResponse(const std::string& text, const std::string& pattern = "", const Options& options = Options()) {
+    std::vector<uint8_t> getResponse(const std::string& text, const std::string& pattern = "") {
+        return getResponse(text, pattern, defaultCommandOptions(text));
+    }
+    std::vector<uint8_t> getResponse(const std::string& text, const std::string& pattern, const Options& options) {
         pmac_request_options native = options.native(); uint64_t request = 0;
         check(pmac_get_response_async(id_, data(text), text.size(), &native, &request), "get_response_submit");
         ScopedRequest owner(request); pmac_request_info info = {};
@@ -256,6 +262,16 @@ public:
     bool coordMotorEnabled(int n, const Options& o = Options()) { pmac_request_options native_options = o.native(); uint32_t v = 0; check(pmac_coord_motor_enabled(id_, n, &native_options, &v), "coord_motor_enabled"); return v != 0; }
 
 private:
+    static Options defaultCommandOptions(const std::string& text) {
+        Options options;
+        const std::string::size_type first = text.find_first_not_of(" \t\r\n\v\f");
+        if (first == std::string::npos) return options;
+        const std::string::size_type last = text.find_last_not_of(" \t\r\n\v\f");
+        const std::string::size_type length = last - first + 1;
+        if ((length == 3 && text.compare(first, length, "$$$") == 0) ||
+            (length == 6 && text.compare(first, length, "$$$***") == 0)) options.timeout_ms = 30000;
+        return options;
+    }
     class ScopedRequest {
     public:
         explicit ScopedRequest(uint64_t id) : id_(id) {}

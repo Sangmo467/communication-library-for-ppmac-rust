@@ -268,7 +268,7 @@ pub extern "C" fn pmac_get_runtime_info(out: *mut PmacRuntimeInfo) -> i32 {
                 struct_size: size_of::<PmacRuntimeInfo>() as u32,
                 abi_major: ABI_MAJOR,
                 abi_minor: ABI_MINOR,
-                version_number: 20_006,
+                version_number: 20_007,
                 feature_flags: 0x0000_01ff,
                 pointer_width: usize::BITS,
             })
@@ -283,7 +283,7 @@ pub extern "C" fn pmac_version_string() -> *const std::ffi::c_char {
 }
 #[no_mangle]
 pub extern "C" fn pmac_version_number() -> u32 {
-    20_006
+    20_007
 }
 #[no_mangle]
 pub extern "C" fn pmac_abi_version() -> u32 {
@@ -434,7 +434,7 @@ pub extern "C" fn pmac_command_submit(
 ) -> i32 {
     ffi_status(|| {
         unsafe { write_id(out_id, 0)? };
-        let parsed_options = unsafe { request_options(options)? };
+        let mut parsed_options = unsafe { request_options(options)? };
         let command_text = unsafe { text(command, command_len)? };
         // Null/zero options use passthrough. Read-pool requests necessarily
         // classify; CLASSIFY explicitly restores online/program validation.
@@ -451,6 +451,15 @@ pub extern "C" fn pmac_command_submit(
                 .0
                 .parse_command_for_current_thread(command_text)?
         };
+        // A null options pointer selects command-aware defaults; explicit budgets stay exact.
+        if options.is_null()
+            && matches!(
+                command.maintenance(),
+                pmac_protocol::MaintenanceKind::Reset | pmac_protocol::MaintenanceKind::GlobalReset
+            )
+        {
+            parsed_options.timeout_ms = 30_000;
+        }
         let request = submit_owned(id, Operation::Command(command), parsed_options)?;
         unsafe { write_id(out_id, request) }
     })

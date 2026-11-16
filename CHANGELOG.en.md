@@ -4,6 +4,13 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.7
+
+- Include previously omitted reset recovery: keep healthy SSH transports after confirmed $$$/$$$***, close stale GPASCII channels and reopen them on demand on the same connections. The same Client can query again; unknown resets are never replayed.
+- Use a separate bounded recovery budget. Omitted command options select 30 seconds for standalone resets across bindings; explicit budgets are preserved.
+- Preserve session ownership and recoverable pool state if a custom session close panics during repair or drain.
+- Validate Python shutdown/close wait budgets before narrowing to native u32.
+- Accept CRLF at the exact geterrors payload line limit. Add panic, fragmentation and SSH reuse regressions. C ABI remains 2.1.
 ## 2.0.6
 
 - Preserve reset framing and maintenance barriers for standalone $$$/$$$*** in passthrough mode, avoiding ordinary ACK waits for reset responses.

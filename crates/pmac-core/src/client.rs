@@ -13,6 +13,11 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{Notify, Semaphore};
 
+/// A confirmed reset grants a fresh reconnection budget instead of sharing the
+/// reset command's remaining deadline. Each attempt is capped so a stalled SSH
+/// handshake is abandoned and retried rather than consuming the whole window.
+const RESET_RECOVERY_ATTEMPT_LIMIT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone, Copy)]
 pub struct ClientConfig {
     pub max_requests: usize,
@@ -870,7 +875,15 @@ impl Client {
                                 | ErrorCode::Disconnected
                         )))
         });
-        if reset || (program_action.is_some_and(|action| action.3) && result.is_err()) {
+        if reset {
+            // A confirmed reset leaves the SSH transport usable: only controller
+            // side state is stale. An unconfirmed reset must retire everything.
+            if result.is_ok() {
+                self.recycle_device().await;
+            } else {
+                self.retire_device().await;
+            }
+        } else if program_action.is_some_and(|action| action.3) && result.is_err() {
             self.retire_device().await;
         } else if broken {
             if control {
@@ -908,7 +921,150 @@ impl Client {
         drop(file_guard);
         drop(shell_guard);
         drop(lease);
+        if reset && result.is_ok() {
+            let revision = self.pool.lock().revision;
+            // The reset itself is already confirmed, so recovery must not keep
+            // spending the command's remaining execution time. Give the rebuild a
+            // fresh connection budget and cap individual attempts so a handshake
+            // that stalls while the controller restarts is retried.
+            let recovery_budget = Duration::from_millis(u64::from(
+                self.pool.lock().profile.connect_timeout_ms.max(1),
+            ));
+            request.extend_deadline(tokio::time::Instant::now() + recovery_budget);
+            let attempt_limit = recovery_budget.min(RESET_RECOVERY_ATTEMPT_LIMIT);
+            if let Err(mut error) = self
+                .restore_confirmed_reset(request, revision, attempt_limit)
+                .await
+            {
+                // The reset itself is confirmed. Reconnection failure must never
+                // suggest that the application should replay the reset command.
+                error.certainty = ExecutionCertainty::Confirmed;
+                error.message = format!(
+                    "reset confirmed; automatic pool recovery failed: {}",
+                    error.message
+                );
+                result = Err(error);
+            }
+        }
         result
+    }
+    async fn restore_confirmed_reset(
+        &self,
+        request: &Arc<Request>,
+        revision: u64,
+        attempt_limit: Duration,
+    ) -> Result<(), Error> {
+        // The reset lease must already be dropped: management waits for its barrier.
+        let _management = self.drive(request, self.management_lock.lock()).await?;
+        self.wait_management_allowed(request).await?;
+        self.check_revision(revision)?;
+        // Sessions that failed recycling (or whose transport died) are closed and
+        // rebuilt. Successfully recycled sessions keep their SSH transport and are
+        // promoted below without a reconnect.
+        let stale = self
+            .pool
+            .lock()
+            .members
+            .iter()
+            .filter(|member| member.state == MemberState::Failed)
+            .filter_map(|member| {
+                member
+                    .session
+                    .clone()
+                    .map(|session| (member.id, member.epoch, session))
+            })
+            .collect::<Vec<_>>();
+        for (id, epoch, session) in stale {
+            let closed = self
+                .drive(request, async {
+                    std::panic::AssertUnwindSafe(async { session.close().await })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Error::new(
+                                ErrorCode::ShutdownPending,
+                                "old reset session close panicked",
+                            ))
+                        })
+                })
+                .await?;
+            let mut pool = self.pool.lock();
+            if let Err(error) = closed {
+                if !pool.uncertain.contains(&(id, epoch)) {
+                    pool.uncertain.push((id, epoch));
+                }
+                return Err(error);
+            }
+            pool.uncertain.retain(|entry| entry != &(id, epoch));
+            if let Some(member) = pool
+                .members
+                .iter_mut()
+                .find(|member| member.id == id && member.epoch == epoch)
+            {
+                member.session = None;
+                member.state = MemberState::Drained;
+            }
+        }
+        {
+            let mut pool = self.pool.lock();
+            for member in &mut pool.members {
+                if member.state == MemberState::Drained
+                    && member
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.is_healthy())
+                {
+                    member.state = MemberState::Ready;
+                    member.last_error = ErrorCode::Ok;
+                }
+            }
+        }
+        self.check_revision(revision)?;
+        loop {
+            if self.pool.snapshot().release_uncertain != 0 {
+                return Err(Error::new(
+                    ErrorCode::RecoveryRequired,
+                    "old GPASCII release remains unconfirmed",
+                ));
+            }
+            let target = self.pool.lock().profile.target_size;
+            let mut failure = None;
+            for id in 1..=u64::from(target) {
+                self.check_revision(revision)?;
+                let ready = self.pool.lock().members.iter().any(|member| {
+                    member.id == id
+                        && matches!(member.state, MemberState::Ready | MemberState::Busy)
+                        && member
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.is_healthy())
+                });
+                if !ready {
+                    if let Err(error) = self
+                        .create_member(request, id, revision, Some(attempt_limit))
+                        .await
+                    {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            self.refresh_state();
+            let Some(error) = failure else {
+                return Ok(());
+            };
+            if !matches!(
+                error.code,
+                ErrorCode::ConnectError | ErrorCode::Disconnected | ErrorCode::NoReadyLane
+            ) || self.pool.snapshot().release_uncertain != 0
+            {
+                return Err(error);
+            }
+            // Retry only connection establishment after a confirmed reset, never
+            // the reset itself. The original request deadline bounds all attempts.
+            self.drive(request, tokio::time::sleep(Duration::from_millis(100)))
+                .await?;
+        }
     }
     async fn manage(
         &self,
@@ -981,7 +1137,7 @@ impl Client {
                     return Err(Error::invalid("no selected failed member requires repair"));
                 }
                 for id in ids {
-                    self.create_member(request, id, revision).await?;
+                    self.create_member(request, id, revision, None).await?;
                 }
                 Ok(OperationResult::default())
             }
@@ -1093,7 +1249,7 @@ impl Client {
                     .is_none_or(|m| m.state == MemberState::Drained)
             };
             if create {
-                self.create_member(request, id, revision).await?;
+                self.create_member(request, id, revision, None).await?;
             }
         }
         let snapshot = self.pool.snapshot();
@@ -1116,6 +1272,7 @@ impl Client {
         request: &Arc<Request>,
         id: u64,
         revision: u64,
+        attempt_limit: Option<Duration>,
     ) -> Result<(), Error> {
         self.check_revision(revision)?;
         request.reset_gpascii_resource_attempted();
@@ -1181,7 +1338,19 @@ impl Client {
             (options, epoch, old, s.profile.connect_timeout_ms)
         };
         if let Some(old) = old {
-            let closed = self.drive(request, old.close()).await;
+            let closed = self
+                .drive(request, async {
+                    std::panic::AssertUnwindSafe(async { old.close().await })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Error::new(
+                                ErrorCode::ShutdownPending,
+                                "old pool session close panicked; release is unconfirmed",
+                            ))
+                        })
+                })
+                .await;
             if !matches!(closed, Ok(Ok(()))) {
                 let error = match closed {
                     Err(e) | Ok(Err(e)) => e,
@@ -1198,12 +1367,11 @@ impl Client {
             }
         }
         let context = ExecutionContext::new(request.clone());
+        let attempt_budget =
+            attempt_limit.unwrap_or_else(|| Duration::from_millis(u64::from(connect_budget)));
         let attempted = std::panic::AssertUnwindSafe(self.drive(
             request,
-            tokio::time::timeout(
-                Duration::from_millis(u64::from(connect_budget)),
-                self.transport.connect(&options, &context),
-            ),
+            tokio::time::timeout(attempt_budget, self.transport.connect(&options, &context)),
         ))
         .catch_unwind()
         .await;
@@ -1371,7 +1539,17 @@ impl Client {
         };
         let closed = match session {
             Some(session) => self
-                .drive(request, session.close())
+                .drive(request, async {
+                    std::panic::AssertUnwindSafe(async { session.close().await })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Error::new(
+                                ErrorCode::ShutdownPending,
+                                "draining pool session close panicked; release is unconfirmed",
+                            ))
+                        })
+                })
                 .await
                 .and_then(|result| result),
             None => Ok(()),
@@ -1422,6 +1600,53 @@ impl Client {
             }
             if !confirmed && !s.uncertain.contains(&(id, epoch)) {
                 s.uncertain.push((id, epoch));
+            }
+        }
+        self.pool.changed.notify_waiters();
+        self.refresh_state();
+    }
+    async fn recycle_device(&self) {
+        let sessions = {
+            let mut s = self.pool.lock();
+            s.generation = s.generation.saturating_add(1);
+            s.revision = s.revision.saturating_add(1);
+            s.members
+                .iter_mut()
+                .filter_map(|m| {
+                    m.state = MemberState::Retiring;
+                    m.session.clone().map(|v| (m.id, m.epoch, v))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, epoch, session) in sessions {
+            let recycled = session.recycle_control().await;
+            let mut s = self.pool.lock();
+            let Some(member) = s
+                .members
+                .iter_mut()
+                .find(|m| m.id == id && m.epoch == epoch)
+            else {
+                continue;
+            };
+            if recycled.is_ok() && session.is_healthy() {
+                // Old GPASCII lanes and program context are invalidated by the
+                // epoch bump, but the SSH transport is reused.
+                member.epoch = member.epoch.saturating_add(1);
+                member.state = MemberState::Drained;
+                member.last_error = ErrorCode::Ok;
+                s.uncertain.retain(|entry| entry != &(id, epoch));
+            } else {
+                let unconfirmed = recycled
+                    .as_ref()
+                    .is_err_and(|error| error.code == ErrorCode::ShutdownPending);
+                member.state = MemberState::Failed;
+                member.last_error = recycled
+                    .as_ref()
+                    .err()
+                    .map_or(ErrorCode::Disconnected, |error| error.code);
+                if unconfirmed && !s.uncertain.contains(&(id, epoch)) {
+                    s.uncertain.push((id, epoch));
+                }
             }
         }
         self.pool.changed.notify_waiters();

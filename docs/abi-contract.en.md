@@ -6,7 +6,7 @@ Updated 2026-11-12. [include/pmac.h](../include/pmac.h) is authoritative for pub
 
 ## Versions and structures
 
-- The library version is 2.0.6, with ABI major/minor **2.1**; `pmac_abi_version()` returns **2001**.
+- The library version is 2.0.7, with ABI major/minor **2.1**; `pmac_abi_version()` returns **2001**.
 - Existing input structure layouts remain unchanged. ABI major 2 inputs, including version value 2000, are accepted; new pool/notification interfaces require the corresponding library exports.
 - Public aggregates use `repr(C)` with default C layout; pack(1) is prohibited. `size_t` varies with target bitness; x64 layout checks do not replace 32-bit verification.
 - Input structures carry `struct_size` and `abi_version`. The common 8-byte header is read first to check minimum size and ABI major, then the complete input structure is copied. Callers must allocate full output structures using the current public types.

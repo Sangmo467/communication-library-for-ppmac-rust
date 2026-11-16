@@ -72,6 +72,7 @@ struct PoolSession {
     close_gate: Gate,
     close_panic_once: AtomicBool,
     maintenance_retired: AtomicBool,
+    recycle_keeps_transport: AtomicBool,
 }
 impl PoolSession {
     fn new(id: usize) -> Self {
@@ -88,6 +89,7 @@ impl PoolSession {
             close_gate: Gate::default(),
             close_panic_once: AtomicBool::new(false),
             maintenance_retired: AtomicBool::new(false),
+            recycle_keeps_transport: AtomicBool::new(false),
         }
     }
 }
@@ -178,6 +180,19 @@ impl Session for PoolSession {
         }
         self.healthy.store(false, Ordering::Release);
         Ok(())
+    }
+    async fn recycle_control(&self) -> Result<(), Error> {
+        if !self.recycle_keeps_transport.load(Ordering::Acquire) {
+            return self.retire_control().await;
+        }
+        self.retire_gate.enter().await;
+        if self.retire_fail_once.swap(false, Ordering::AcqRel) {
+            return Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "injected unconfirmed channel release",
+            ));
+        }
+        self.retire_maintenance().await
     }
     async fn retire_maintenance(&self) -> Result<(), Error> {
         self.maintenance_retired.store(true, Ordering::Release);
@@ -1049,16 +1064,16 @@ fn compound_resets_retire_every_device_lane_regardless_of_maintenance_order() {
                 .client
                 .pool_members()
                 .iter()
-                .all(|member| member.state == MemberState::Failed),
-            "all old lanes must retire after {wire:?}"
+                .all(|member| member.state == MemberState::Ready),
+            "replacement lanes must be ready after {wire:?}"
         );
         let snapshot = fixture.client.pool_snapshot();
-        assert_eq!(snapshot.ready, 0, "{wire:?}");
+        assert_eq!(snapshot.ready, 2, "{wire:?}");
         assert_eq!(snapshot.release_uncertain, 0, "{wire:?}");
         assert_eq!(
             fixture.transport.attempts.load(Ordering::Acquire),
-            2,
-            "a reset must not reconnect or replay automatically"
+            4,
+            "only confirmed resets reconnect without replay"
         );
     }
 }
@@ -1822,17 +1837,32 @@ fn confirmed_reset_retires_pool_without_false_release_uncertainty() {
         fixture.finish(fixture.command(wire, false)).unwrap();
         assert_eq!(
             fixture.client.snapshot().state,
-            pmac_core::ClientState::Disconnected
+            pmac_core::ClientState::Ready
         );
-        assert_eq!(fixture.client.pool_snapshot().ready, 0);
+        assert_eq!(fixture.client.pool_snapshot().ready, 2);
         assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
         assert!(!fixture.client.has_unreleased_gpascii());
-        assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 2);
+        assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 4);
         assert!(fixture
             .client
             .pool_members()
             .iter()
-            .all(|member| member.state == MemberState::Failed));
+            .all(|member| member.state == MemberState::Ready));
+        assert_eq!(
+            fixture
+                .transport
+                .member(0)
+                .commands
+                .lock()
+                .unwrap()
+                .as_slice(),
+            [wire]
+        );
+        assert!(!fixture.transport.member(0).healthy.load(Ordering::Acquire));
+        assert!(!fixture.transport.member(1).healthy.load(Ordering::Acquire));
+        fixture
+            .finish(fixture.command("Sys.ServoTime", false))
+            .unwrap();
         fixture.runtime.shutdown_clients(5_000).unwrap();
         assert_eq!(
             fixture.client.snapshot().state,
@@ -1845,10 +1875,33 @@ fn confirmed_reset_retires_pool_without_false_release_uncertainty() {
 #[test]
 fn reset_release_uncertainty_is_cleared_only_by_that_sessions_confirmed_close() {
     let fixture = Fixture::new();
-    fixture.prepare(1, 2);
+    // Keep the recovery budget short so an unconfirmed close still surfaces as a
+    // bounded recovery failure rather than waiting for the default connect budget.
+    fixture
+        .finish(fixture.submit(
+            Operation::PoolPrepare {
+                options: ConnectOptions::new("mock", "test"),
+                profile: PoolProfile {
+                    connect_timeout_ms: 100,
+                    ..profile(1, 2)
+                },
+            },
+            options(),
+        ))
+        .unwrap();
     let session = fixture.transport.member(0);
     session.retire_fail_once.store(true, Ordering::Release);
-    fixture.finish(fixture.command("$$$", false)).unwrap();
+    session.close_gate.block();
+    let reset = fixture.submit(
+        Operation::Command(Command::raw("$$$").unwrap()),
+        RequestOptions {
+            timeout_ms: 100,
+            ..options()
+        },
+    );
+    let error = fixture.finish(reset).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ExecTimeout);
+    assert_eq!(error.certainty, ExecutionCertainty::Confirmed);
     assert_eq!(fixture.client.pool_snapshot().release_uncertain, 1);
     assert!(fixture.client.has_unreleased_gpascii());
     session.close_gate.block();
@@ -1871,4 +1924,233 @@ fn reset_release_uncertainty_is_cleared_only_by_that_sessions_confirmed_close() 
         1,
         "cleanup must not open a replacement client/session"
     );
+}
+
+#[test]
+fn confirmed_passthrough_reset_restores_same_client_and_retries_only_connections() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture.transport.fail_attempt.store(3, Ordering::Release);
+    let reset = fixture.submit(
+        Operation::Command(Command::passthrough("$$$***").unwrap()),
+        options(),
+    );
+    let original = fixture.finish(reset).unwrap();
+    assert_eq!(original.response, b"1:$$$***");
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Ready
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 5);
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        ["$$$***"]
+    );
+    fixture
+        .finish(fixture.command("Sys.ServoTime", false))
+        .unwrap();
+}
+
+#[test]
+fn confirmed_reset_reuses_surviving_transport_without_reconnecting() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    for index in 0..2 {
+        fixture
+            .transport
+            .member(index)
+            .recycle_keeps_transport
+            .store(true, Ordering::Release);
+    }
+    let reset = fixture.submit(
+        Operation::Command(Command::passthrough("$$$***").unwrap()),
+        options(),
+    );
+    let original = fixture.finish(reset).unwrap();
+    assert_eq!(original.response, b"1:$$$***");
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Ready
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(
+        fixture.transport.attempts.load(Ordering::Acquire),
+        2,
+        "a confirmed reset must not open replacement SSH connections"
+    );
+    assert!(fixture.transport.member(0).healthy.load(Ordering::Acquire));
+    assert!(fixture.transport.member(1).healthy.load(Ordering::Acquire));
+    fixture
+        .finish(fixture.command("Sys.ServoTime", false))
+        .unwrap();
+}
+
+#[test]
+fn confirmed_reset_recovery_outlives_the_reset_request_deadline() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture.transport.gated_attempt.store(3, Ordering::Release);
+    fixture.transport.connect_gate.block();
+    let reset = fixture.submit(
+        Operation::Command(Command::raw("$$$").unwrap()),
+        RequestOptions {
+            timeout_ms: 100,
+            ..options()
+        },
+    );
+    // Let the original 100 ms execution deadline pass while the first recovery
+    // connection is still blocked. Recovery owns a fresh budget.
+    fixture.transport.connect_gate.wait(1);
+    std::thread::sleep(Duration::from_millis(250));
+    fixture.transport.connect_gate.release();
+    let original = fixture.finish(reset).unwrap();
+    assert_eq!(original.response, b"1:$$$");
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Ready
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 4);
+}
+
+#[test]
+fn confirmed_reset_recovery_budget_is_bounded_and_preserves_certainty() {
+    let fixture = Fixture::new();
+    fixture
+        .finish(fixture.submit(
+            Operation::PoolPrepare {
+                options: ConnectOptions::new("mock", "test"),
+                profile: PoolProfile {
+                    connect_timeout_ms: 300,
+                    ..profile(2, 4)
+                },
+            },
+            options(),
+        ))
+        .unwrap();
+    fixture.transport.gated_attempt.store(3, Ordering::Release);
+    fixture.transport.connect_gate.block();
+    let reset = fixture.submit(
+        Operation::Command(Command::raw("$$$").unwrap()),
+        RequestOptions {
+            timeout_ms: 100,
+            ..options()
+        },
+    );
+    let error = fixture.finish(reset).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ExecTimeout);
+    assert_eq!(error.certainty, ExecutionCertainty::Confirmed);
+    assert!(error
+        .message
+        .starts_with("reset confirmed; automatic pool recovery failed:"));
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Disconnected
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 0);
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        ["$$$"]
+    );
+    fixture.transport.connect_gate.release();
+    assert_eq!(fixture.transport.sessions.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn unknown_reset_result_never_triggers_automatic_reconnection_or_replay() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture
+        .transport
+        .member(0)
+        .fail_next
+        .store(true, Ordering::Release);
+    let error = fixture.finish(fixture.command("$$$", false)).unwrap_err();
+    assert_eq!(error.certainty, ExecutionCertainty::MayHaveExecuted);
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Disconnected
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 0);
+    assert!(fixture.client.pool_snapshot().unknown_write);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 2);
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        ["$$$"]
+    );
+    assert_eq!(
+        fixture
+            .client
+            .submit(
+                fixture.runtime.next_id(),
+                Operation::Command(Command::raw("P1=1").unwrap()),
+                options()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::RecoveryRequired
+    );
+}
+
+#[test]
+fn panicked_old_session_close_during_repair_preserves_capacity_and_owner() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 4);
+    let session = fixture.transport.member(0);
+    session.healthy.store(false, Ordering::Release);
+    session.close_panic_once.store(true, Ordering::Release);
+    let error = fixture
+        .finish(fixture.submit(Operation::PoolRepair { member_id: 1 }, options()))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ShutdownPending);
+    let snapshot = fixture.client.pool_snapshot();
+    assert_eq!(snapshot.creating, 0);
+    assert_eq!(snapshot.failed, 1);
+    assert_eq!(snapshot.release_uncertain, 1);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 1);
+    fixture
+        .finish(fixture.submit(Operation::PoolRepair { member_id: 1 }, options()))
+        .unwrap();
+    assert_eq!(*session.close_gate.entered.lock().unwrap(), 1);
+    assert_eq!(fixture.client.pool_snapshot().ready, 1);
+    fixture.finish(fixture.command("#1p", false)).unwrap();
+}
+#[test]
+fn panicked_session_close_during_drain_remains_explicitly_repairable() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    let session = fixture.transport.member(1);
+    session.close_panic_once.store(true, Ordering::Release);
+    let error = fixture
+        .finish(fixture.submit(Operation::PoolDrain { member_id: 2 }, options()))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ShutdownPending);
+    let snapshot = fixture.client.pool_snapshot();
+    assert_eq!(snapshot.retiring, 0);
+    assert_eq!(snapshot.failed, 1);
+    assert_eq!(snapshot.release_uncertain, 1);
+    fixture
+        .finish(fixture.submit(Operation::PoolRepair { member_id: 2 }, options()))
+        .unwrap();
+    assert_eq!(*session.close_gate.entered.lock().unwrap(), 1);
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
 }

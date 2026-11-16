@@ -153,7 +153,7 @@ pub struct Request {
     options: RequestOptions,
     origin_thread: std::thread::ThreadId,
     created: Instant,
-    deadline: Option<tokio::time::Instant>,
+    deadline: Mutex<Option<tokio::time::Instant>>,
     inner: Mutex<RequestInner>,
     completed: Condvar,
     cancellation: Cancellation,
@@ -194,7 +194,7 @@ impl Request {
         Self {
             id,
             client_id,
-            deadline: options.deadline(),
+            deadline: Mutex::new(options.deadline()),
             options,
             origin_thread: std::thread::current().id(),
             created: Instant::now(),
@@ -257,7 +257,23 @@ impl Request {
         self.options.max_response_bytes
     }
     pub fn deadline(&self) -> Option<tokio::time::Instant> {
-        self.deadline
+        *self
+            .deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// Extends a finite deadline without ever shortening it. Infinite requests
+    /// stay infinite. Used to give post-reset recovery its own budget instead of
+    /// exhausting the reset command's remaining execution time.
+    pub(crate) fn extend_deadline(&self, candidate: tokio::time::Instant) {
+        let mut deadline = self
+            .deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *deadline = match *deadline {
+            Some(current) if candidate > current => Some(candidate),
+            other => other,
+        };
     }
     pub(crate) fn set_completion_signal(&self, signal: Arc<crate::completion::CompletionSignal>) {
         let _ = self.completion_signal.set(signal);
@@ -358,7 +374,7 @@ impl Request {
             return Err(error);
         }
         if self
-            .deadline
+            .deadline()
             .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
         {
             let error = Error::new(
