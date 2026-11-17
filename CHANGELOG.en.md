@@ -4,6 +4,12 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.8
+
+- Complete GPASCII requests immediately on ACK without an artificial quiet-period delay. NAK or an `error #N` in stdout still fails synchronously; stderr is now asynchronous diagnostic output and no longer rejects a later valid response.
+- Retain asynchronous stderr under an independent limit, dropping excess bytes with a warning instead of consuming the stdout response budget or failing later requests and retiring their connections.
+- Remote errors now distinguish the original command from the response body. Add delayed-diagnostic, passthrough and real-controller polling regressions. C ABI remains 2.1.
+
 ## 2.0.7
 
 - Include previously omitted reset recovery: keep healthy SSH transports after confirmed $$$/$$$***, close stale GPASCII channels and reopen them on demand on the same connections. The same Client can query again; unknown resets are never replayed.
