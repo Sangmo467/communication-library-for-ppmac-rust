@@ -120,7 +120,7 @@ Console.Write(System.Text.Encoding.UTF8.GetString(value));
 
 ## 错误、线程和关闭
 
-示例捕获 `PmacException`，输出原始 `Message`、`Status`、`Certainty` 与 RequestId，失败退出码为非零；加载和配置异常也以非零退出。不要只打印“调用失败”而丢弃设备的 `error#...` 文本。NAK 或 stdout 中的 `error#` 产生同步远端错误；ACK 立即完成请求，stderr 中的 `error#` 仅作为异步诊断，可能随当前或后续请求交付，不把 ACK 改判为失败。收到原生协议/远端错误后，本例不打印其为正常 GetResponse 结果，不自动补发 `close` 或重放命令。
+示例捕获 `PmacException`，输出原始 `Message`、`Status`、`Certainty` 与 RequestId，失败退出码为非零；加载和配置异常也以非零退出。不要只打印“调用失败”而丢弃设备的 `error#...` 文本。NAK 或 stdout 中的 `error#` 产生同步远端错误；ACK 立即完成请求，stderr 中的 `error#` 仅作为异步诊断，不把 ACK 改判为失败；只有 `stdin` 行号匹配当前命令的诊断才进入该请求的 `Stderr()`，较早命令的延迟诊断仅记录日志，不会附加到后续请求。收到原生协议/远端错误后，本例不打印其为正常 GetResponse 结果，不自动补发 `close` 或重放命令。
 
 `Certainty=MayHaveExecuted` 表示命令可能已执行，不能据此自动重试带副作用的命令。某些错误会清除本地程序上下文并使成员退役，需要应用核实设备状态后显式恢复；单纯重试相同 GetResponse 不能恢复控制器资源或程序状态。
 

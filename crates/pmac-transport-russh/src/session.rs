@@ -61,6 +61,7 @@ struct ControlChannel {
     channel: Channel,
     owner: Weak<()>,
     permit: GpasciiChannelPermit,
+    next_stdin_line: u64,
 }
 
 pub(crate) struct RusshSession {
@@ -103,13 +104,14 @@ impl Session for RusshSession {
         reclaim_exited_channels(&self.control, &mut channels);
         let result = match channels.entry(origin) {
             std::collections::hash_map::Entry::Occupied(entry) => {
-                let channel = &mut entry.into_mut().channel;
+                let control = entry.into_mut();
                 execute_gpascii(
                     &self.control,
-                    channel,
+                    &mut control.channel,
                     command,
                     context,
                     context.max_response_bytes(),
+                    Some(&mut control.next_stdin_line),
                     true,
                 )
                 .await
@@ -125,19 +127,19 @@ impl Session for RusshSession {
                         open_gpascii(&self.control, context, permit).await?
                     }
                 };
-                let channel = &mut entry
-                    .insert(ControlChannel {
-                        channel,
-                        owner,
-                        permit,
-                    })
-                    .channel;
+                let control = entry.insert(ControlChannel {
+                    channel,
+                    owner,
+                    permit,
+                    next_stdin_line: 1,
+                });
                 execute_gpascii(
                     &self.control,
-                    channel,
+                    &mut control.channel,
                     command,
                     context,
                     context.max_response_bytes(),
+                    Some(&mut control.next_stdin_line),
                     true,
                 )
                 .await
@@ -805,6 +807,7 @@ async fn open_gpascii(
             &ready,
             context,
             READINESS_RESPONSE_LIMIT,
+            None,
             false,
         )
         .await?;
@@ -830,6 +833,7 @@ async fn execute_gpascii(
     command: &Command,
     context: &ExecutionContext,
     response_limit: usize,
+    stdin_line: Option<&mut u64>,
     channel_failure_retires_connection: bool,
 ) -> Result<OperationResult, Error> {
     if channel_failure_retires_connection {
@@ -841,9 +845,13 @@ async fn execute_gpascii(
     ) {
         return execute_reset(connection, channel, command, context).await;
     }
+    let current_stdin_line = stdin_line.as_deref().copied();
     let mut wire = command.text().as_bytes().to_vec();
     wire.push(b'\n');
     channel.data_bytes(wire).await.map_err(transport_error)?;
+    if let Some(line) = stdin_line {
+        *line = line.saturating_add(1);
+    }
     let mut decoder = GpasciiDecoder::new(command.text().as_bytes(), response_limit);
     let mut stderr = Vec::new();
     loop {
@@ -859,6 +867,7 @@ async fn execute_gpascii(
             ChannelMsg::Data { data } => {
                 let frames = decoder.push(&data).map_err(protocol_error)?;
                 if let Some(frame) = frames.into_iter().next() {
+                    let stderr = route_gpascii_diagnostics(stderr, current_stdin_line);
                     if frame.remote_error {
                         let mut error = Error::new(
                             ErrorCode::RemoteError,
@@ -985,6 +994,51 @@ fn output_limit() -> Error {
     .sent()
     .fatal()
 }
+fn route_gpascii_diagnostics(output: Vec<u8>, current_stdin_line: Option<u64>) -> Vec<u8> {
+    let Some(current_stdin_line) = current_stdin_line else {
+        return output;
+    };
+    let mut retained = Vec::with_capacity(output.len());
+    let mut retain_continuation = false;
+    for line in output.split_inclusive(|byte| *byte == b'\n') {
+        let line_number = gpascii_stdin_line(line);
+        let retain = match line_number {
+            Some(number) => number == current_stdin_line,
+            None => retain_continuation,
+        };
+        if line_number.is_some() {
+            retain_continuation = retain;
+        }
+        if retain {
+            retained.extend_from_slice(line);
+        } else {
+            tracing::warn!(
+                current_stdin_line,
+                diagnostic_stdin_line = line_number,
+                diagnostic = %String::from_utf8_lossy(line),
+                "omitting an unrelated GPASCII diagnostic from the current request"
+            );
+        }
+    }
+    retained
+}
+
+fn gpascii_stdin_line(diagnostic: &[u8]) -> Option<u64> {
+    if !diagnostic
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"stdin:"))
+    {
+        return None;
+    }
+    let rest = &diagnostic[6..];
+    let end = rest.iter().position(|byte| *byte == b':')?;
+    let digits = &rest[..end];
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(digits).ok()?.parse().ok()
+}
+
 fn append_gpascii_diagnostic(output: &mut Vec<u8>, bytes: &[u8], maximum: usize) {
     let retained = maximum.saturating_sub(output.len()).min(bytes.len());
     output.extend_from_slice(&bytes[..retained]);
@@ -1059,6 +1113,19 @@ pub(crate) fn is_not_found(error: &russh_sftp::client::error::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpascii_diagnostics_are_retained_only_for_their_own_stdin_line() {
+        let diagnostics = b"unattributed\nstdin:113:3: error #20: previous\r\nprevious continuation\nstdin:114:3: error #20: current\r\ncurrent continuation\n";
+        assert_eq!(
+            route_gpascii_diagnostics(diagnostics.to_vec(), Some(114)),
+            b"stdin:114:3: error #20: current\r\ncurrent continuation\n"
+        );
+        assert_eq!(
+            route_gpascii_diagnostics(diagnostics.to_vec(), None),
+            diagnostics
+        );
+    }
 
     #[test]
     fn dropping_an_unpolled_close_task_retains_uncertain_usage() {

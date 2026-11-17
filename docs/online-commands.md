@@ -71,7 +71,7 @@ Rust 直接调用方使用 `Client::parse_command_for_current_thread(text)` 后�
 stdin:1:1: error #31: Buffer closed due to another thread:
 ```
 
-GPASCII 的同步结果由 stdout 响应帧决定：NAK 或 stdout 中的标准 `error #<编号>` 诊断返回 `REMOTE_ERROR`；ACK 到达即完成请求，不等待也不根据 SSH ExtendedData（stderr）改判结果。stderr 是异步诊断，可能随后续请求的 `stderr` 字段交付，不能据此认定该后续请求失败；诊断独立限长，超出部分丢弃并记录警告。stdout 错误详情保留原始命令、响应正文及已接收诊断。同步 C 调用须立即使用 `pmac_copy_last_error` 读取，异步请求使用 `pmac_request_copy_error` 并保留 Request ID 至复制完成；C++/Python/.NET 绑定通过其错误/异常携带诊断。`CONFIRMED` 只说明完整协议响应已收到，不表示语句执行成功。
+GPASCII 的同步结果由 stdout 响应帧决定：NAK 或 stdout 中的标准 `error #<编号>` 诊断返回 `REMOTE_ERROR`；ACK 到达即完成请求，不等待也不根据 SSH ExtendedData（stderr）改判结果。stderr 是异步诊断；请求完成前收到且 `stdin` 行号匹配当前命令的诊断才保留在该请求的 `stderr` 字段。属于较早命令的延迟诊断仅记录警告日志，不会缓存或附加到后续请求；无行号、无法归属的诊断同样仅记录日志。诊断独立限长，超出部分丢弃并记录警告。stdout 错误详情保留原始命令、响应正文及已接收诊断。同步 C 调用须立即使用 `pmac_copy_last_error` 读取，异步请求使用 `pmac_request_copy_error` 并保留 Request ID 至复制完成；C++/Python/.NET 绑定通过其错误/异常携带诊断。`CONFIRMED` 只说明完整协议响应已收到，不表示语句执行成功。
 
 stdout 返回 error #31 后，库使受影响的旧程序上下文失效并退役对应成员。不会自动补发 `close`，不会自动重发原语句，更不会把恢复或清理结果改写成原请求成功。应用必须读取原始错误，再按池恢复接口修复或重连，并在确认设备状态后显式重新打开需要的程序缓冲区。成员可能被多个调用线程共享；这些线程会观察到旧 epoch 不可用，需要协同恢复。其他独立 Client 不会被库主动关闭，但全局命令对控制器的影响仍然存在。
 

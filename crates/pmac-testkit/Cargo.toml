@@ -8,6 +8,6 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-pmac-core = { version = "=2.0.8", path = "../pmac-core" }
-pmac-protocol = { version = "=2.0.8", path = "../pmac-protocol" }
+pmac-core = { version = "=2.0.9", path = "../pmac-core" }
+pmac-protocol = { version = "=2.0.9", path = "../pmac-protocol" }
 tokio.workspace = true

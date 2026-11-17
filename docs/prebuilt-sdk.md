@@ -19,7 +19,7 @@
 | macOS | Apple Silicon ARM64 | aarch64-apple-darwin | native/libpmac.dylib |
 | Linux | LoongArch64 LP64D（新世界 ABI） | loongarch64-unknown-linux-gnu | native/libpmac.so |
 
-附件命名：`pmac-2.0.8-<target>-release.zip`，每个 ZIP 配套 `.zip.sha256`。32 位程序选择 x86 包，即使操作系统是 64 位。DLL 位数必须与 C/C++、Python、.NET 进程一致。Windows 使用 MSVC；Linux 包为 GNU/glibc，不适用于 musl/Alpine。构建于较新 Linux 发行版的包不能承诺在更旧 glibc 上运行；如需旧工业 Linux，必须在目标兼容环境构建和验收。
+附件命名：`pmac-2.0.9-<target>-release.zip`，每个 ZIP 配套 `.zip.sha256`。32 位程序选择 x86 包，即使操作系统是 64 位。DLL 位数必须与 C/C++、Python、.NET 进程一致。Windows 使用 MSVC；Linux 包为 GNU/glibc，不适用于 musl/Alpine。构建于较新 Linux 发行版的包不能承诺在更旧 glibc 上运行；如需旧工业 Linux，必须在目标兼容环境构建和验收。
 
 包内包括：`native/`、`include/pmac.h`、`bindings/`、`cmake/PmacConfig.cmake`、`examples/`、`scripts/Test-SdkExamples.ps1`、许可证、依赖 SBOM 和带逐文件 SHA-256 的 `manifest.json`。使用者无需安装 Rust。
 
@@ -119,9 +119,9 @@ Linux 使用 `export NAME=value`；库路径换为 native/libpmac.so，可执行
 
 ```powershell
 # 此命令不联网；检查全部目标包版本、公开 commit、源码摘要、逐文件完整性及 SHA-256。
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.8 -Commit <公开tag的40位提交号> -ValidateOnly
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.9 -Commit <公开tag的40位提交号> -ValidateOnly
 # 将 GH_TOKEN 配为 runner 的私密环境变量后执行；不要在聊天、源码或日志中粘贴 Token。
-./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.8 -Commit <公开tag的40位提交号>
+./scripts/Publish-GitHubRelease.ps1 -AssetDirectory ./release-assets -Tag v2.0.9 -Commit <公开tag的40位提交号>
 ```
 
 发布脚本先确认 GitHub 上同名 tag 的提交与全部目标包清单一致，再创建/选择 Release 并上传附件。不覆盖同名附件；如果上传中断，先检查已上传附件和校验值后再人工处理，不可声称部分上传已发布完整十平台版本。使用 GitHub 官方 CLI，且默认拒绝覆盖已存在的 Release。
@@ -130,7 +130,7 @@ Linux 使用 `export NAME=value`；库路径换为 native/libpmac.so，可执行
 
 仓库：[Sangmo467/communication-library-for-ppmac-rust](https://github.com/Sangmo467/communication-library-for-ppmac-rust)。`.github/workflows/release.yml` 在 main/master 更新时自动构建全部目标平台，产生十组独立 ZIP 与校验文件（Actions artifacts 保留 30 天）。
 
-正式发布：公开分支干净提交的 Cargo 版本与 tag 一致，例如 Cargo version=2.0.8 对应 v2.0.8。执行 `git tag v2.0.8`、`git push github v2.0.8` 后，十平台构建与示例测试全部成功才创建 GitHub Release 并上传十个 ZIP 及十个 SHA-256 校验附件。无需设置 Gitee Token 或额外私人 Token；只有发布 job 使用 GitHub 提供的短期 Token 并获得 contents:write。手动运行默认只构建；选择版本 tag 并勾选 publish_release 才会发布。
+正式发布：公开分支干净提交的 Cargo 版本与 tag 一致，例如 Cargo version=2.0.9 对应 v2.0.9。执行 `git tag v2.0.9`、`git push github v2.0.9` 后，十平台构建与示例测试全部成功才创建 GitHub Release 并上传十个 ZIP 及十个 SHA-256 校验附件。无需设置 Gitee Token 或额外私人 Token；只有发布 job 使用 GitHub 提供的短期 Token 并获得 contents:write。手动运行默认只构建；选择版本 tag 并勾选 publish_release 才会发布。
 
 Linux 使用 Ubuntu 22.04 runner（glibc 2.35 环境），不承诺向更旧 glibc 兼容；Windows 使用 Windows Server 2022/MSVC。Linux x86 测试 Rust/C/C++，不运行不支持该架构的 .NET 8。Windows x86 使用独立 x86 Python 和 .NET runtime。
 

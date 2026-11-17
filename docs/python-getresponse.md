@@ -130,7 +130,7 @@ except PmacError as error:
     raise
 ```
 
-NAK 或 stdout 中的远端 `error #` 诊断按同步失败处理，包括 `stdin:1:1: error #31: Buffer closed due to another thread:`；库会保留原始诊断。ACK 到达即完成请求，stderr 中的 `error #` 仅作为异步诊断，不把 ACK 改判为失败，并可能随当前或后续请求的 `stderr()` 交付。不要自动补发 `close` 或重发命令；程序上传等需要业务成功保证的操作，应核对设备状态，不能只依赖 ACK。对于独立 stdout/stderr 的读取需求，应保留显式 Request，再用 `response()`/`stderr()` 获取字节，而不是另发一次命令。
+NAK 或 stdout 中的远端 `error #` 诊断按同步失败处理，包括 `stdin:1:1: error #31: Buffer closed due to another thread:`；库会保留原始诊断。ACK 到达即完成请求，stderr 中的 `error #` 仅作为异步诊断，不把 ACK 改判为失败；只有 `stdin` 行号匹配当前命令的诊断才进入该请求的 `stderr()`，较早命令的延迟诊断仅记录日志，不会附加到后续请求。不要自动补发 `close` 或重发命令；程序上传等需要业务成功保证的操作，应核对设备状态，不能只依赖 ACK。对于独立 stdout/stderr 的读取需求，应保留显式 Request，再用 `response()`/`stderr()` 获取字节，而不是另发一次命令。
 
 执行确定性字段用于说明发送与确认状态：0 为 `NOT_SENT`，1 为 `MAY_HAVE_EXECUTED`，2 为 `CONFIRMED`。`CONFIRMED` 表示收到完整协议确认，不代表业务结果成功或机械动作已经结束。`MAY_HAVE_EXECUTED` 需要应用核对设备状态；涉及写入的恢复必须由应用明确确认，参见 [ABI 契约](abi-contract.md)。
 

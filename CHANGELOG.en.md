@@ -4,6 +4,11 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.9
+
+- Attribute asynchronous GPASCII stderr by each command's `stdin` line number. Late diagnostics for completed commands are logged rather than written into a later valid request's `stderr` field.
+- Preserve immediate ACK completion without added waits. Add mixed-line and delayed-pollution regressions plus 250 rounds of real-controller verification. C ABI remains 2.1.
+
 ## 2.0.8
 
 - Complete GPASCII requests immediately on ACK without an artificial quiet-period delay. NAK or an `error #N` in stdout still fails synchronously; stderr is now asynchronous diagnostic output and no longer rejects a later valid response.

@@ -120,7 +120,7 @@ export LD_LIBRARY_PATH="$PWD/target/debug${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 保留字区分大小写；模式不会改变发送到设备的命令。需要具体捕获组时使用显式 Request 的 match 接口指定组号。完整规则见 [GetResponse 模式](pattern-migration.md)。解析数字前应检查错误、匹配结果与格式；不要把空响应或错误文本当成 0。
 
-NAK 或 stdout 中的标准 `error #N` 按远端错误处理，原始诊断必须传给应用。例如 `stdin:1:1: error #31: Buffer closed due to another thread:` 表示原程序缓冲区上下文已经失效。ACK 到达即完成请求；stderr 中的 `error #N` 仅作为异步诊断，可能随当前或后续请求交付，不把 ACK 改判为失败。库不自动补发 `close`、不自动重放原命令。
+NAK 或 stdout 中的标准 `error #N` 按远端错误处理，原始诊断必须传给应用。例如 `stdin:1:1: error #31: Buffer closed due to another thread:` 表示原程序缓冲区上下文已经失效。ACK 到达即完成请求；stderr 中的 `error #N` 仅作为异步诊断，不把 ACK 改判为失败；只有 `stdin` 行号匹配当前命令的诊断才进入该请求的 `stderr` 字段，较早命令的延迟诊断仅记录日志，不会附加到后续请求。库不自动补发 `close`、不自动重放原命令。
 
 `CONFIRMED` 表示取得完整协议确认，不能代替成功状态或运动完成判断；`MAY_HAVE_EXECUTED` 表示可能已经执行。失败的写入应由应用核对状态后决定恢复方法，不能直接重试。详见 [ABI 契约](abi-contract.md)。
 

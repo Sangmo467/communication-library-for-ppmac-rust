@@ -490,7 +490,7 @@ impl server::Handler for TestServer {
                         session.extended_data(
                             channel,
                             1,
-                            b"stdin:2:3: error #20: delayed diagnostic".to_vec(),
+                            b"stdin:1:3: error #20: delayed diagnostic".to_vec(),
                         )?;
                     }
                     session.data(channel, b"7\r\n\x06".to_vec())?;
@@ -626,7 +626,7 @@ impl server::Handler for TestServer {
                 }
                 "#2p" => session.data(channel, b"ERR003\r\n\x15".to_vec())?,
                 "#5p" => {
-                    session.extended_data(channel, 1, b"diagnostic".to_vec())?;
+                    session.extended_data(channel, 1, b"stdin:1:3: diagnostic".to_vec())?;
                     session.data(channel, b"5.0\r\n\x06".to_vec())?;
                 }
                 "#3p" => {
@@ -1763,7 +1763,7 @@ fn gpascii_stderr_is_preserved_outside_the_response_frame() {
         .run(Operation::Command(Command::raw("#5p").unwrap()))
         .unwrap();
     assert_eq!(response.response, b"5.0");
-    assert_eq!(response.stderr, b"diagnostic");
+    assert_eq!(response.stderr, b"stdin:1:3: diagnostic");
 }
 
 #[test]
@@ -2490,7 +2490,7 @@ fn controller_errors_with_ack_or_stderr_are_reported_without_replay() {
 }
 
 #[test]
-fn gpascii_delayed_stderr_does_not_reject_next_request() {
+fn gpascii_delayed_stderr_does_not_reject_or_pollute_next_request() {
     let fixture = Fixture::new(None);
     fixture.connect();
     let first = fixture
@@ -2503,7 +2503,7 @@ fn gpascii_delayed_stderr_does_not_reject_next_request() {
         .run(Operation::Command(Command::raw("P910004").unwrap()))
         .unwrap();
     assert_eq!(next.response, b"7");
-    assert_eq!(next.stderr, b"stdin:2:3: error #20: delayed diagnostic");
+    assert!(next.stderr.is_empty());
 }
 
 #[test]
@@ -2520,7 +2520,7 @@ fn gpascii_async_stderr_cannot_fail_the_stdout_response_budget() {
         )
         .unwrap();
     assert!(result.response.is_empty());
-    assert_eq!(result.stderr, b"stdi");
+    assert!(result.stderr.is_empty());
 }
 
 #[test]
