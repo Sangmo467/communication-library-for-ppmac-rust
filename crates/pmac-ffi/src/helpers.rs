@@ -69,7 +69,13 @@ pub(crate) fn finish_request(request: Arc<Request>) -> Result<Vec<u8>, Error> {
         .ok_or_else(|| Error::internal("completed request has no result"))?;
     let copied = match result.as_ref() {
         Ok(result) => Ok(result.response.clone()),
-        Err(error) => Err(error.clone()),
+        Err(error) => {
+            let info = request.info();
+            let mut detailed = error.clone();
+            detailed.certainty = info.certainty;
+            crate::save_last_error(&detailed, id, info.connection_epoch);
+            Err(error.clone())
+        }
     };
     registry().remove(id, crate::registry::request_kind());
     copied
@@ -87,8 +93,13 @@ pub(crate) unsafe fn request_options(
         options.abi_version,
         size_of::<PmacRequestOptions>(),
     )?;
-    if options.flags & !3 != 0 {
+    if options.flags & !15 != 0 {
         return Err(Error::invalid("unknown request flags"));
+    }
+    if options.flags & 4 != 0 && options.flags & (2 | 8) != 0 {
+        return Err(Error::invalid(
+            "passthrough conflicts with read-pool or classify",
+        ));
     }
     Ok(RequestOptions {
         timeout_ms: options.timeout_ms,

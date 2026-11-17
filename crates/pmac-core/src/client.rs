@@ -6,12 +6,17 @@ use crate::{
     RequestState, Transport,
 };
 use futures::FutureExt;
-use pmac_protocol::{CommandEffect, MaintenanceKind};
+use pmac_protocol::{Command, CommandEffect, MaintenanceKind};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{Notify, Semaphore};
+
+/// A confirmed reset grants a fresh reconnection budget instead of sharing the
+/// reset command's remaining deadline. Each attempt is capped so a stalled SSH
+/// handshake is abandoned and retried rather than consuming the whole window.
+const RESET_RECOVERY_ATTEMPT_LIMIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClientConfig {
@@ -57,6 +62,14 @@ struct MutableState {
     closing: bool,
     next_sequence: u64,
 }
+#[derive(Clone)]
+struct ProgramBuffer {
+    member_id: u64,
+    epoch: u64,
+    closing: Option<Weak<Request>>,
+    owner: Weak<()>,
+}
+
 pub struct Client {
     id: u64,
     runtime: tokio::runtime::Handle,
@@ -67,6 +80,7 @@ pub struct Client {
     state: Mutex<MutableState>,
     pool: Arc<Pool>,
     requests: Mutex<HashMap<u64, Weak<Request>>>,
+    program_buffers: Mutex<HashMap<std::thread::ThreadId, ProgramBuffer>>,
     management_lock: tokio::sync::Mutex<()>,
     shell_lock: tokio::sync::Mutex<()>,
     close_started: std::sync::atomic::AtomicBool,
@@ -104,6 +118,7 @@ impl Client {
             }),
             pool: Pool::new(),
             requests: Mutex::new(HashMap::new()),
+            program_buffers: Mutex::new(HashMap::new()),
             management_lock: tokio::sync::Mutex::new(()),
             shell_lock: tokio::sync::Mutex::new(()),
             file_semaphore: Semaphore::new(config.max_file_tasks.max(1)),
@@ -114,6 +129,200 @@ impl Client {
     }
     pub fn id(&self) -> u64 {
         self.id
+    }
+    /// Parse on the calling thread, using its confirmed GPASCII program-buffer context.
+    pub fn parse_command_for_current_thread(
+        &self,
+        text: impl Into<String>,
+    ) -> Result<Command, Error> {
+        let text = text.into();
+        if self
+            .program_buffer_for(std::thread::current().id(), true)?
+            .is_some()
+        {
+            Self::validate_program_line(&text)?;
+            Command::program_line(text).map_err(Error::from)
+        } else {
+            let command = Command::raw(text).map_err(Error::from)?;
+            if Self::opens_program_buffer(command.text()) && command.text().contains(';') {
+                return Err(Error::invalid(
+                    "open must be submitted and confirmed separately before program lines",
+                ));
+            }
+            Ok(command)
+        }
+    }
+
+    fn program_buffer_for(
+        &self,
+        thread: std::thread::ThreadId,
+        admission: bool,
+    ) -> Result<Option<ProgramBuffer>, Error> {
+        let binding = self
+            .program_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread)
+            .cloned();
+        let Some(binding) = binding else {
+            return Ok(None);
+        };
+        let valid = {
+            let pool = self.pool.lock();
+            pool.affinity
+                .get(&thread)
+                .is_some_and(|affinity| affinity.member_id == binding.member_id)
+                && pool.members.iter().any(|member| {
+                    member.id == binding.member_id
+                        && member.epoch == binding.epoch
+                        && matches!(member.state, MemberState::Ready | MemberState::Busy)
+                        && member
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.is_healthy())
+                })
+        };
+        if !valid {
+            self.program_buffers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&thread);
+            return Ok(None);
+        }
+        if admission
+            && binding
+                .closing
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .is_some_and(|request| {
+                    let info = request.info();
+                    info.state != RequestState::Completed
+                        || info.certainty != ExecutionCertainty::NotSent
+                })
+        {
+            return Err(Error::new(
+                ErrorCode::MaintenanceActive,
+                "wait for the program close request before submitting more commands",
+            ));
+        }
+        Ok(Some(binding))
+    }
+
+    fn validate_program_line(text: &str) -> Result<(), Error> {
+        if text.trim().eq_ignore_ascii_case("close") {
+            return Ok(());
+        }
+        let check = |fragment: &str| {
+            let lower = fragment.trim_start().to_ascii_lowercase();
+            let close_token = lower.strip_prefix("close").is_some_and(|tail| {
+                tail.is_empty()
+                    || tail.starts_with(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            });
+            if close_token {
+                return Err(Error::invalid(
+                    "close must be submitted separately without trailing program text or comments",
+                ));
+            }
+            if matches!(
+                lower.trim(),
+                "$$$" | "$$$***" | "reboot" | "save" | "ecat reset" | "ecatreset"
+            ) {
+                return Err(Error::invalid(
+                    "online maintenance commands cannot be sent as program-buffer text",
+                ));
+            }
+            Ok(())
+        };
+        let bytes = text.as_bytes();
+        let mut quote = None;
+        let mut escaped = false;
+        let mut start = 0;
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if let Some(delimiter) = quote {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == delimiter {
+                    quote = None;
+                }
+            } else if matches!(byte, b'\'' | b'"') {
+                quote = Some(byte);
+            } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                check(&text[start..index])?;
+                return Ok(());
+            } else if byte == b';' {
+                check(&text[start..index])?;
+                start = index + 1;
+            }
+            index += 1;
+        }
+        check(&text[start..])
+    }
+    fn opens_program_buffer(text: &str) -> bool {
+        for segment in text.split(';') {
+            let segment = segment.trim();
+            let operation = segment.strip_prefix('&').map_or(segment, |tail| {
+                tail.trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || matches!(c, ',' | '.' | '*')
+                })
+                .trim_start()
+            });
+            let mut words = operation.split_whitespace();
+            let Some(first) = words.next() else {
+                continue;
+            };
+            // Inline program text is opaque, including its semicolons.
+            if first.eq_ignore_ascii_case("cpx") || first.eq_ignore_ascii_case("cx") {
+                break;
+            }
+            if !first.eq_ignore_ascii_case("open") {
+                continue;
+            }
+            let Some(kind) = words.next() else {
+                continue;
+            };
+            let kind = kind.to_ascii_lowercase();
+            if ["prog", "plc", "subprog", "forward", "inverse", "rotary"]
+                .iter()
+                .any(|prefix| {
+                    kind.strip_prefix(prefix).is_some_and(|tail| {
+                        tail.is_empty()
+                            || tail.starts_with(|c: char| c.is_ascii_digit() || c == ',')
+                    })
+                })
+            {
+                return true;
+            }
+        }
+        false
+    }
+    fn closes_all_program_buffers(text: &str) -> bool {
+        for segment in text.split(';') {
+            let segment = segment.trim();
+            let operation = segment.strip_prefix('&').map_or(segment, |tail| {
+                tail.trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || matches!(c, ',' | '.' | '*')
+                })
+                .trim_start()
+            });
+            let mut words = operation.split_whitespace();
+            let Some(first) = words.next() else {
+                continue;
+            };
+            // Inline program bodies do not contain further online commands.
+            if first.eq_ignore_ascii_case("cpx") || first.eq_ignore_ascii_case("cx") {
+                break;
+            }
+            if first.eq_ignore_ascii_case("close")
+                && words.map(str::to_ascii_lowercase).eq(["all", "buffers"])
+            {
+                return true;
+            }
+        }
+        false
     }
     pub fn submit(
         self: &Arc<Self>,
@@ -136,6 +345,27 @@ impl Client {
                 "request ID and response limit must be nonzero",
             ));
         }
+        let operation = match operation {
+            Operation::Command(command) if !command.is_passthrough() => {
+                if self
+                    .program_buffer_for(std::thread::current().id(), true)?
+                    .is_some()
+                {
+                    Self::validate_program_line(command.text())?;
+                    Operation::Command(Command::program_line(command.text()).map_err(Error::from)?)
+                } else if command.is_program_line() {
+                    return Err(Error::invalid("program passthrough requires a confirmed open buffer on this calling thread"));
+                } else {
+                    if Self::opens_program_buffer(command.text()) && command.text().contains(';') {
+                        return Err(Error::invalid(
+                            "open must be confirmed separately before program text",
+                        ));
+                    }
+                    Operation::Command(command)
+                }
+            }
+            other => other,
+        };
         let management = is_management(&operation);
         let (class, writes) = classify(&operation, options.read_pool)?;
         let reserved = operation
@@ -175,6 +405,17 @@ impl Client {
             )?;
             self.pool.lock().revision
         };
+        if matches!(&operation, Operation::Command(command) if command.is_program_line() && command.text().trim().eq_ignore_ascii_case("close"))
+        {
+            if let Some(buffer) = self
+                .program_buffers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(&request.origin_thread())
+            {
+                buffer.closing = Some(Arc::downgrade(&request));
+            }
+        }
         request.set_completion_signal(self.completion.clone());
         self.lock_requests()
             .insert(request_id, Arc::downgrade(&request));
@@ -186,6 +427,7 @@ impl Client {
             let _active = ActiveTask {
                 client: &client,
                 sequence,
+                request_id: task_request.id(),
             };
             let outcome = std::panic::AssertUnwindSafe(client.execute(
                 task_request.clone(),
@@ -312,7 +554,7 @@ impl Client {
                     }
                     notified.await;
                 }
-                let sessions = client
+                let mut sessions = client
                     .pool
                     .lock()
                     .members
@@ -320,13 +562,27 @@ impl Client {
                     .filter_map(|m| m.session.clone().map(|session| (m.id, m.epoch, session)))
                     .collect::<Vec<_>>();
                 loop {
-                    let results = futures::future::join_all(
-                        sessions.iter().map(|(_, _, session)| session.close()),
-                    )
-                    .await;
+                    let results =
+                        futures::future::join_all(sessions.iter().map(|(_, _, session)| async {
+                            // Protect both construction and polling of a custom close future.
+                            // A panic does not prove remote release; keep ownership and retry.
+                            std::panic::AssertUnwindSafe(async { session.close().await })
+                                .catch_unwind()
+                                .await
+                                .unwrap_or_else(|_| {
+                                    Err(Error::new(
+                                        ErrorCode::ShutdownPending,
+                                        "transport close panicked; release is unconfirmed",
+                                    ))
+                                })
+                        }))
+                        .await;
                     {
                         let mut pool = client.pool.lock();
                         for ((id, epoch, _), result) in sessions.iter().zip(&results) {
+                            if result.is_ok() {
+                                pool.uncertain.retain(|entry| entry != &(*id, *epoch));
+                            }
                             if result
                                 .as_ref()
                                 .is_err_and(|error| error.code == ErrorCode::ShutdownPending)
@@ -336,7 +592,10 @@ impl Client {
                             }
                         }
                     }
-                    if results.iter().all(Result::is_ok) {
+                    // A confirmed close needs no further retries.
+                    let mut results = results.into_iter();
+                    sessions.retain(|_| results.next().is_some_and(|result| result.is_err()));
+                    if sessions.is_empty() {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -432,6 +691,25 @@ impl Client {
         } else {
             None
         };
+        let program_action = match &operation {
+            Operation::Command(command) if !command.is_passthrough() => Some((
+                command.is_program_line(),
+                Self::opens_program_buffer(command.text()),
+                command.text().trim().eq_ignore_ascii_case("close"),
+                !command.is_program_line() && Self::closes_all_program_buffers(command.text()),
+            )),
+            _ => None,
+        };
+        if program_action.is_some_and(|action| action.0) {
+            let buffer = self.program_buffer_for(request.origin_thread(), false)?;
+            if !buffer.is_some_and(|buffer| {
+                buffer.member_id == lease.member_id && buffer.epoch == lease.epoch
+            }) {
+                return Err(Error::invalid(
+                    "program buffer context changed before dispatch",
+                ));
+            }
+        }
         request.begin_send()?;
         request.mark_awaiting();
         let context = ExecutionContext::new(request.clone());
@@ -448,6 +726,7 @@ impl Client {
             Operation::DartConnect | Operation::DartDisconnect | Operation::Dart(_)
         );
         let dart_transfer = matches!(&operation, Operation::Dart(_));
+        let dart_connect = matches!(&operation, Operation::DartConnect);
         let operation_future = async {
             match operation {
                 Operation::Command(command) => lease.session.command(&command, &context).await,
@@ -507,6 +786,52 @@ impl Client {
                 .sent()
                 .fatal()),
         };
+        if let Some((program, opens, closes, closes_all)) = program_action {
+            if result.is_ok() {
+                let mut buffers = self
+                    .program_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if closes_all {
+                    buffers.clear();
+                } else if program && closes {
+                    buffers.remove(&request.origin_thread());
+                } else if !program && opens {
+                    buffers.retain(|_, buffer| buffer.owner.strong_count() != 0);
+                    buffers.insert(
+                        request.origin_thread(),
+                        ProgramBuffer {
+                            member_id: lease.member_id,
+                            epoch: lease.epoch,
+                            closing: None,
+                            owner: request.origin_liveness(),
+                        },
+                    );
+                }
+            } else if closes_all {
+                self.program_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clear();
+            } else if program {
+                self.program_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&request.origin_thread());
+                // A compiler/protocol error may have ended the remote buffer. Retire the channel
+                // rather than risk sending a subsequent program line as an online command.
+                if let Err(error) = &mut result {
+                    error.fatal_transport = true;
+                }
+            }
+        }
+        if dart_connect && context.independent_tcp_started() {
+            if let Err(error) = &mut result {
+                if matches!(error.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout) {
+                    error.fatal_transport = false;
+                }
+            }
+        }
         if request.has_unconfirmed_publish() {
             if let Err(error) = &result {
                 result = Err(Error::new(
@@ -537,7 +862,8 @@ impl Client {
             self.pool.lock().unknown_write = true;
         }
         let broken = result.as_ref().err().is_some_and(|e| {
-            !(dart_transfer && matches!(e.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout))
+            !((dart_transfer || (dart_connect && context.independent_tcp_started()))
+                && matches!(e.code, ErrorCode::Cancelled | ErrorCode::ExecTimeout))
                 && (!dart || e.fatal_transport)
                 && (e.fatal_transport
                     || (uncertain
@@ -550,6 +876,14 @@ impl Client {
                         )))
         });
         if reset {
+            // A confirmed reset leaves the SSH transport usable: only controller
+            // side state is stale. An unconfirmed reset must retire everything.
+            if result.is_ok() {
+                self.recycle_device().await;
+            } else {
+                self.retire_device().await;
+            }
+        } else if program_action.is_some_and(|action| action.3) && result.is_err() {
             self.retire_device().await;
         } else if broken {
             if control {
@@ -587,7 +921,150 @@ impl Client {
         drop(file_guard);
         drop(shell_guard);
         drop(lease);
+        if reset && result.is_ok() {
+            let revision = self.pool.lock().revision;
+            // The reset itself is already confirmed, so recovery must not keep
+            // spending the command's remaining execution time. Give the rebuild a
+            // fresh connection budget and cap individual attempts so a handshake
+            // that stalls while the controller restarts is retried.
+            let recovery_budget = Duration::from_millis(u64::from(
+                self.pool.lock().profile.connect_timeout_ms.max(1),
+            ));
+            request.extend_deadline(tokio::time::Instant::now() + recovery_budget);
+            let attempt_limit = recovery_budget.min(RESET_RECOVERY_ATTEMPT_LIMIT);
+            if let Err(mut error) = self
+                .restore_confirmed_reset(request, revision, attempt_limit)
+                .await
+            {
+                // The reset itself is confirmed. Reconnection failure must never
+                // suggest that the application should replay the reset command.
+                error.certainty = ExecutionCertainty::Confirmed;
+                error.message = format!(
+                    "reset confirmed; automatic pool recovery failed: {}",
+                    error.message
+                );
+                result = Err(error);
+            }
+        }
         result
+    }
+    async fn restore_confirmed_reset(
+        &self,
+        request: &Arc<Request>,
+        revision: u64,
+        attempt_limit: Duration,
+    ) -> Result<(), Error> {
+        // The reset lease must already be dropped: management waits for its barrier.
+        let _management = self.drive(request, self.management_lock.lock()).await?;
+        self.wait_management_allowed(request).await?;
+        self.check_revision(revision)?;
+        // Sessions that failed recycling (or whose transport died) are closed and
+        // rebuilt. Successfully recycled sessions keep their SSH transport and are
+        // promoted below without a reconnect.
+        let stale = self
+            .pool
+            .lock()
+            .members
+            .iter()
+            .filter(|member| member.state == MemberState::Failed)
+            .filter_map(|member| {
+                member
+                    .session
+                    .clone()
+                    .map(|session| (member.id, member.epoch, session))
+            })
+            .collect::<Vec<_>>();
+        for (id, epoch, session) in stale {
+            let closed = self
+                .drive(request, async {
+                    std::panic::AssertUnwindSafe(async { session.close().await })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Error::new(
+                                ErrorCode::ShutdownPending,
+                                "old reset session close panicked",
+                            ))
+                        })
+                })
+                .await?;
+            let mut pool = self.pool.lock();
+            if let Err(error) = closed {
+                if !pool.uncertain.contains(&(id, epoch)) {
+                    pool.uncertain.push((id, epoch));
+                }
+                return Err(error);
+            }
+            pool.uncertain.retain(|entry| entry != &(id, epoch));
+            if let Some(member) = pool
+                .members
+                .iter_mut()
+                .find(|member| member.id == id && member.epoch == epoch)
+            {
+                member.session = None;
+                member.state = MemberState::Drained;
+            }
+        }
+        {
+            let mut pool = self.pool.lock();
+            for member in &mut pool.members {
+                if member.state == MemberState::Drained
+                    && member
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.is_healthy())
+                {
+                    member.state = MemberState::Ready;
+                    member.last_error = ErrorCode::Ok;
+                }
+            }
+        }
+        self.check_revision(revision)?;
+        loop {
+            if self.pool.snapshot().release_uncertain != 0 {
+                return Err(Error::new(
+                    ErrorCode::RecoveryRequired,
+                    "old GPASCII release remains unconfirmed",
+                ));
+            }
+            let target = self.pool.lock().profile.target_size;
+            let mut failure = None;
+            for id in 1..=u64::from(target) {
+                self.check_revision(revision)?;
+                let ready = self.pool.lock().members.iter().any(|member| {
+                    member.id == id
+                        && matches!(member.state, MemberState::Ready | MemberState::Busy)
+                        && member
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.is_healthy())
+                });
+                if !ready {
+                    if let Err(error) = self
+                        .create_member(request, id, revision, Some(attempt_limit))
+                        .await
+                    {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            self.refresh_state();
+            let Some(error) = failure else {
+                return Ok(());
+            };
+            if !matches!(
+                error.code,
+                ErrorCode::ConnectError | ErrorCode::Disconnected | ErrorCode::NoReadyLane
+            ) || self.pool.snapshot().release_uncertain != 0
+            {
+                return Err(error);
+            }
+            // Retry only connection establishment after a confirmed reset, never
+            // the reset itself. The original request deadline bounds all attempts.
+            self.drive(request, tokio::time::sleep(Duration::from_millis(100)))
+                .await?;
+        }
     }
     async fn manage(
         &self,
@@ -660,7 +1137,7 @@ impl Client {
                     return Err(Error::invalid("no selected failed member requires repair"));
                 }
                 for id in ids {
-                    self.create_member(request, id, revision).await?;
+                    self.create_member(request, id, revision, None).await?;
                 }
                 Ok(OperationResult::default())
             }
@@ -733,7 +1210,10 @@ impl Client {
             options.gpascii_owner = crate::transport::GpasciiBudget::allocate_owner()?;
             s.options = Some(options);
         }
-        self.pool.set_profile(profile)?;
+        if let Err(error) = self.pool.set_profile(profile) {
+            self.pool.lock().options = None;
+            return Err(error);
+        }
         self.lock_state().state = ClientState::Connecting;
         let result = self.resize(request, revision).await;
         self.refresh_state();
@@ -769,7 +1249,7 @@ impl Client {
                     .is_none_or(|m| m.state == MemberState::Drained)
             };
             if create {
-                self.create_member(request, id, revision).await?;
+                self.create_member(request, id, revision, None).await?;
             }
         }
         let snapshot = self.pool.snapshot();
@@ -792,6 +1272,7 @@ impl Client {
         request: &Arc<Request>,
         id: u64,
         revision: u64,
+        attempt_limit: Option<Duration>,
     ) -> Result<(), Error> {
         self.check_revision(revision)?;
         request.reset_gpascii_resource_attempted();
@@ -857,7 +1338,19 @@ impl Client {
             (options, epoch, old, s.profile.connect_timeout_ms)
         };
         if let Some(old) = old {
-            let closed = self.drive(request, old.close()).await;
+            let closed = self
+                .drive(request, async {
+                    std::panic::AssertUnwindSafe(async { old.close().await })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Error::new(
+                                ErrorCode::ShutdownPending,
+                                "old pool session close panicked; release is unconfirmed",
+                            ))
+                        })
+                })
+                .await;
             if !matches!(closed, Ok(Ok(()))) {
                 let error = match closed {
                     Err(e) | Ok(Err(e)) => e,
@@ -874,12 +1367,11 @@ impl Client {
             }
         }
         let context = ExecutionContext::new(request.clone());
+        let attempt_budget =
+            attempt_limit.unwrap_or_else(|| Duration::from_millis(u64::from(connect_budget)));
         let attempted = std::panic::AssertUnwindSafe(self.drive(
             request,
-            tokio::time::timeout(
-                Duration::from_millis(u64::from(connect_budget)),
-                self.transport.connect(&options, &context),
-            ),
+            tokio::time::timeout(attempt_budget, self.transport.connect(&options, &context)),
         ))
         .catch_unwind()
         .await;
@@ -901,11 +1393,21 @@ impl Client {
         match result {
             Ok(session) => {
                 if let Err(error) = self.check_revision(revision) {
-                    let _ = session.close().await;
+                    let closed = std::panic::AssertUnwindSafe(async { session.close().await })
+                        .catch_unwind()
+                        .await
+                        .is_ok_and(|result| result.is_ok());
                     let mut s = self.pool.lock();
-                    s.uncertain.push((id, epoch));
+                    if !closed && !s.uncertain.contains(&(id, epoch)) {
+                        s.uncertain.push((id, epoch));
+                    }
                     if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
-                        m.state = MemberState::Failed;
+                        m.state = if closed {
+                            MemberState::Drained
+                        } else {
+                            MemberState::Failed
+                        };
+                        m.session = if closed { None } else { Some(session) };
                         m.epoch = epoch;
                         m.last_error = error.code;
                     }
@@ -987,23 +1489,44 @@ impl Client {
             m.drain = true;
         }
         self.pool.changed.notify_waiters();
-        self.drive(request, async {
-            loop {
-                let changed = self.pool.changed.notified();
-                self.check_revision(revision)?;
-                if !self
-                    .pool
-                    .lock()
-                    .members
-                    .iter()
-                    .any(|m| m.id == id && m.state == MemberState::Busy)
-                {
-                    break Ok::<(), Error>(());
+        let waiting = self
+            .drive(request, async {
+                loop {
+                    let changed = self.pool.changed.notified();
+                    self.check_revision(revision)?;
+                    if !self
+                        .pool
+                        .lock()
+                        .members
+                        .iter()
+                        .any(|m| m.id == id && m.state == MemberState::Busy)
+                    {
+                        break Ok::<(), Error>(());
+                    }
+                    changed.await;
                 }
-                changed.await;
+            })
+            .await
+            .and_then(|result| result);
+        if let Err(error) = waiting {
+            let mut s = self.pool.lock();
+            if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
+                m.drain = false;
             }
-        })
-        .await??;
+            drop(s);
+            self.pool.changed.notify_waiters();
+            return Err(error);
+        }
+        if let Err(error) = request.begin_send() {
+            let mut s = self.pool.lock();
+            if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
+                m.drain = false;
+            }
+            drop(s);
+            self.pool.changed.notify_waiters();
+            return Err(error);
+        }
+        request.mark_awaiting();
         let session = {
             let mut s = self.pool.lock();
             let m = s
@@ -1014,22 +1537,41 @@ impl Client {
             m.state = MemberState::Retiring;
             m.session.clone()
         };
-        if let Some(session) = session {
-            let _ = session.close().await;
-        }
+        let closed = match session {
+            Some(session) => self
+                .drive(request, async {
+                    std::panic::AssertUnwindSafe(async { session.close().await })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Error::new(
+                                ErrorCode::ShutdownPending,
+                                "draining pool session close panicked; release is unconfirmed",
+                            ))
+                        })
+                })
+                .await
+                .and_then(|result| result),
+            None => Ok(()),
+        };
         let mut s = self.pool.lock();
         if let Some(m) = s.members.iter_mut().find(|m| m.id == id) {
             let epoch = m.epoch;
-            m.state = MemberState::Drained;
-            m.session = None;
-            if !s.uncertain.contains(&(id, epoch)) {
+            m.state = if closed.is_ok() {
+                MemberState::Drained
+            } else {
+                MemberState::Failed
+            };
+            if closed.is_ok() {
+                m.session = None;
+            } else if !s.uncertain.contains(&(id, epoch)) {
                 s.uncertain.push((id, epoch));
             }
         }
         s.affinity.retain(|_, bound| bound.member_id != id);
         drop(s);
         self.pool.changed.notify_waiters();
-        Ok(())
+        closed
     }
     async fn fail_member(&self, id: u64, epoch: u64, code: ErrorCode) {
         let session = {
@@ -1043,9 +1585,10 @@ impl Client {
                     m.session.clone()
                 })
         };
-        if let Some(session) = session {
-            let _ = session.retire_control().await;
-        }
+        let confirmed = match session {
+            Some(session) => session.retire_control().await.is_ok(),
+            None => false,
+        };
         {
             let mut s = self.pool.lock();
             if let Some(m) = s
@@ -1055,8 +1598,55 @@ impl Client {
             {
                 m.state = MemberState::Failed;
             }
-            if !s.uncertain.contains(&(id, epoch)) {
+            if !confirmed && !s.uncertain.contains(&(id, epoch)) {
                 s.uncertain.push((id, epoch));
+            }
+        }
+        self.pool.changed.notify_waiters();
+        self.refresh_state();
+    }
+    async fn recycle_device(&self) {
+        let sessions = {
+            let mut s = self.pool.lock();
+            s.generation = s.generation.saturating_add(1);
+            s.revision = s.revision.saturating_add(1);
+            s.members
+                .iter_mut()
+                .filter_map(|m| {
+                    m.state = MemberState::Retiring;
+                    m.session.clone().map(|v| (m.id, m.epoch, v))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, epoch, session) in sessions {
+            let recycled = session.recycle_control().await;
+            let mut s = self.pool.lock();
+            let Some(member) = s
+                .members
+                .iter_mut()
+                .find(|m| m.id == id && m.epoch == epoch)
+            else {
+                continue;
+            };
+            if recycled.is_ok() && session.is_healthy() {
+                // Old GPASCII lanes and program context are invalidated by the
+                // epoch bump, but the SSH transport is reused.
+                member.epoch = member.epoch.saturating_add(1);
+                member.state = MemberState::Drained;
+                member.last_error = ErrorCode::Ok;
+                s.uncertain.retain(|entry| entry != &(id, epoch));
+            } else {
+                let unconfirmed = recycled
+                    .as_ref()
+                    .is_err_and(|error| error.code == ErrorCode::ShutdownPending);
+                member.state = MemberState::Failed;
+                member.last_error = recycled
+                    .as_ref()
+                    .err()
+                    .map_or(ErrorCode::Disconnected, |error| error.code);
+                if unconfirmed && !s.uncertain.contains(&(id, epoch)) {
+                    s.uncertain.push((id, epoch));
+                }
             }
         }
         self.pool.changed.notify_waiters();
@@ -1076,7 +1666,7 @@ impl Client {
                 .collect::<Vec<_>>()
         };
         for (id, epoch, session) in sessions {
-            let _ = session.retire_control().await;
+            let confirmed = session.retire_control().await.is_ok();
             let mut s = self.pool.lock();
             if let Some(m) = s
                 .members
@@ -1085,7 +1675,9 @@ impl Client {
             {
                 m.state = MemberState::Failed;
             }
-            if !s.uncertain.contains(&(id, epoch)) {
+            if confirmed {
+                s.uncertain.retain(|entry| entry != &(id, epoch));
+            } else if !s.uncertain.contains(&(id, epoch)) {
                 s.uncertain.push((id, epoch));
             }
         }
@@ -1178,14 +1770,12 @@ impl Client {
 struct ActiveTask<'a> {
     client: &'a Client,
     sequence: u64,
+    request_id: u64,
 }
 impl Drop for ActiveTask<'_> {
     fn drop(&mut self) {
         self.client.pool.unregister(self.sequence);
-        self.client.lock_requests().retain(|_, r| {
-            r.upgrade()
-                .is_some_and(|r| r.info().state != RequestState::Completed)
-        });
+        self.client.lock_requests().remove(&self.request_id);
         let mut active = self.client.lock_active_tasks();
         *active = active.saturating_sub(1);
         drop(active);
@@ -1243,4 +1833,194 @@ fn shell_quote(path: &str) -> Result<String, Error> {
         return Err(Error::invalid("invalid shell path"));
     }
     Ok(format!("'{}'", path.replace('\'', "'\\''")))
+}
+
+impl Client {
+    /// Opens an independent continuous error monitor without reserving a request lane.
+    pub async fn start_geterrors(
+        self: &Arc<Self>,
+        options: &crate::GetErrorsOptions,
+    ) -> Result<Box<dyn crate::ErrorMonitorStream>, Error> {
+        options.validate()?;
+        let activity = {
+            let admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = self.lock_state();
+            if *admission || state.closing {
+                return Err(Error::new(ErrorCode::Closing, "client is closing"));
+            }
+            if state.state != ClientState::Ready {
+                return Err(Error::disconnected("client is not connected"));
+            }
+            *self.lock_active_tasks() += 1;
+            MonitorActivity {
+                client: self.clone(),
+            }
+        };
+        let owner = self.clone();
+        let options = options.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        // Cancellation of the caller cannot abandon a remote exec mid-open. The
+        // transport bounds initialization; an undelivered stream cleans up with its guard.
+        self.runtime.spawn(async move {
+            let result = async {
+                let _management = owner.management_lock.lock().await;
+                if owner.snapshot().closing {
+                    return Err(Error::new(
+                        ErrorCode::Closing,
+                        "client closed before monitor open",
+                    ));
+                }
+                let session = {
+                    let pool = owner.pool.lock();
+                    if pool.closing {
+                        return Err(Error::new(ErrorCode::Closing, "pool is closing"));
+                    }
+                    pool.members
+                        .iter()
+                        .filter(|member| {
+                            matches!(member.state, MemberState::Ready | MemberState::Busy)
+                        })
+                        .filter_map(|member| member.session.as_ref())
+                        .find(|session| session.is_healthy())
+                        .cloned()
+                        .ok_or_else(|| {
+                            Error::new(ErrorCode::NoReadyLane, "no healthy monitor SSH session")
+                        })?
+                };
+                let inner = session.geterrors(&options).await?;
+                let mut monitor = ClientErrorMonitor {
+                    inner: Some(inner),
+                    activity: Some(activity),
+                    stop_error: None,
+                };
+                if owner.snapshot().closing {
+                    monitor.stop_inner().await?;
+                    return Err(Error::new(
+                        ErrorCode::Closing,
+                        "client closed during monitor open",
+                    ));
+                }
+                Ok(Box::new(monitor) as Box<dyn crate::ErrorMonitorStream>)
+            }
+            .await;
+            // A canceled receiver drops the returned monitor, preserving its activity
+            // until the asynchronous Drop cleanup completes.
+            let _ = sender.send(result);
+        });
+        receiver
+            .await
+            .map_err(|_| Error::internal("monitor initialization task ended"))?
+    }
+}
+struct MonitorActivity {
+    client: Arc<Client>,
+}
+impl Drop for MonitorActivity {
+    fn drop(&mut self) {
+        let mut active = self.client.lock_active_tasks();
+        *active = active.saturating_sub(1);
+        drop(active);
+        self.client.tasks_stopped.notify_waiters();
+    }
+}
+struct ClientErrorMonitor {
+    inner: Option<Box<dyn crate::ErrorMonitorStream>>,
+    activity: Option<MonitorActivity>,
+    stop_error: Option<Error>,
+}
+impl ClientErrorMonitor {
+    async fn stop_inner(&mut self) -> Result<(), Error> {
+        if let Some(inner) = self.inner.as_mut() {
+            let result = inner.stop().await;
+            self.inner.take();
+            self.activity.take();
+            self.stop_error = result.err();
+        }
+        self.stop_error.clone().map_or(Ok(()), Err)
+    }
+}
+#[async_trait::async_trait]
+impl crate::ErrorMonitorStream for ClientErrorMonitor {
+    async fn read(&mut self) -> Result<Option<crate::MonitorChunk>, Error> {
+        match self.inner.as_mut() {
+            Some(inner) => inner.read().await,
+            None => Ok(None),
+        }
+    }
+    async fn stop(&mut self) -> Result<(), Error> {
+        self.stop_inner().await
+    }
+}
+impl Drop for ClientErrorMonitor {
+    fn drop(&mut self) {
+        if let (Some(mut inner), Some(activity)) = (self.inner.take(), self.activity.take()) {
+            let runtime = activity.client.runtime.clone();
+            runtime.spawn(async move {
+                let _ = inner.stop().await;
+                drop(inner);
+                drop(activity);
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_regressions {
+    use super::*;
+
+    struct NoConnection;
+    #[async_trait::async_trait]
+    impl Transport for NoConnection {
+        async fn connect(
+            &self,
+            _: &ConnectOptions,
+            _: &ExecutionContext,
+        ) -> Result<Arc<dyn crate::Session>, Error> {
+            Err(Error::new(
+                ErrorCode::ConnectError,
+                "test transport reached",
+            ))
+        }
+    }
+
+    #[test]
+    fn prepare_quota_failure_allows_connection_retry() {
+        let runtime = crate::Runtime::new(1).unwrap();
+        let client = runtime
+            .create_client(Arc::new(NoConnection), ClientConfig::default())
+            .unwrap();
+        // Reproduce a set_profile rejection without exhausting a shared process quota
+        // and interfering with parallel tests.
+        client.pool.lock().uncertain.extend([(1, 1), (2, 1)]);
+        let prepare = || Operation::PoolPrepare {
+            options: ConnectOptions::new("test", "test"),
+            profile: PoolProfile {
+                target_size: 1,
+                max_members: 1,
+                ..PoolProfile::default()
+            },
+        };
+        let first = client
+            .submit(runtime.next_id(), prepare(), RequestOptions::default())
+            .unwrap();
+        assert!(first.wait(5_000).completed);
+        assert_eq!(
+            first.result().unwrap().as_ref().as_ref().unwrap_err().code,
+            ErrorCode::ResourceLimit
+        );
+        assert!(client.pool.lock().options.is_none());
+        client.pool.lock().uncertain.clear();
+        let retry = client
+            .submit(runtime.next_id(), prepare(), RequestOptions::default())
+            .unwrap();
+        assert!(retry.wait(5_000).completed);
+        let outcome = retry.result().unwrap();
+        let error = outcome.as_ref().as_ref().unwrap_err();
+        assert_eq!(error.code, ErrorCode::ConnectError);
+        assert_eq!(error.message, "test transport reached");
+        runtime.shutdown_clients(5_000).unwrap();
+    }
 }

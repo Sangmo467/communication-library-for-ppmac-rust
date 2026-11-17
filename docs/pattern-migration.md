@@ -1,5 +1,7 @@
 # GetResponse 模式说明
 
+[中文](pattern-migration.md) | [English](pattern-migration.en.md)
+
 GetResponse 的模式参数用于从已完成请求中提取字节结果。提取不会重新发送命令。
 
 ## 兼容提取模式

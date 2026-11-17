@@ -57,14 +57,10 @@ impl DartCommand {
     pub fn element_size(self) -> usize {
         match self {
             Self::GetUshmChar | Self::SetUshmChar => 1,
-            Self::GetUshmInt
-            | Self::SetUshmInt
-            | Self::GetUshmFloat
-            | Self::SetUshmFloat => 4,
-            Self::GetUshmDouble
-            | Self::SetUshmDouble
-            | Self::GetPVariable
-            | Self::SetPVariable => 8,
+            Self::GetUshmInt | Self::SetUshmInt | Self::GetUshmFloat | Self::SetUshmFloat => 4,
+            Self::GetUshmDouble | Self::SetUshmDouble | Self::GetPVariable | Self::SetPVariable => {
+                8
+            }
         }
     }
 
@@ -102,11 +98,7 @@ pub struct DartTransfer {
 }
 
 impl DartTransfer {
-    pub fn get(
-        command: DartCommand,
-        address: u32,
-        length: usize,
-    ) -> Result<Self, ProtocolError> {
+    pub fn get(command: DartCommand, address: u32, length: usize) -> Result<Self, ProtocolError> {
         if command.is_write() {
             return Err(ProtocolError::Dart(
                 "a write command cannot be used for Get".into(),
@@ -122,11 +114,7 @@ impl DartTransfer {
         Ok(transfer)
     }
 
-    pub fn set(
-        command: DartCommand,
-        address: u32,
-        data: Vec<u8>,
-    ) -> Result<Self, ProtocolError> {
+    pub fn set(command: DartCommand, address: u32, data: Vec<u8>) -> Result<Self, ProtocolError> {
         if !command.is_write() {
             return Err(ProtocolError::Dart(
                 "a read command cannot be used for Set".into(),
@@ -159,6 +147,10 @@ impl DartTransfer {
         self.length
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
     pub fn into_wire_data(self) -> Vec<u8> {
         self.command.native_to_wire(self.data)
     }
@@ -178,7 +170,7 @@ impl DartTransfer {
             )));
         }
         let width = self.command.element_size();
-        if length % width != 0 {
+        if !length.is_multiple_of(width) {
             return Err(ProtocolError::Dart(format!(
                 "data length {length} is not aligned to {width}-byte elements"
             )));
@@ -223,7 +215,10 @@ mod tests {
             transfer.wire_header(),
             [0, 0, 0, 0x90, 0, 0, 0xff, 0xff, 0, 0, 0, 8]
         );
-        assert_eq!(DartCommand::try_from(0x10).unwrap(), DartCommand::GetUshmChar);
+        assert_eq!(
+            DartCommand::try_from(0x10).unwrap(),
+            DartCommand::GetUshmChar
+        );
         assert!(DartCommand::try_from(0x20).is_err());
         assert!(DartCommand::try_from(0x21).is_err());
         assert!(DartCommand::try_from(0x92).is_err());

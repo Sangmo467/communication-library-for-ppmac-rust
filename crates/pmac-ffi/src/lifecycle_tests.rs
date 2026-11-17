@@ -4,7 +4,7 @@ use pmac_core::ClientConfig;
 use pmac_testkit::MockTransport;
 
 use super::*;
-use crate::pool::{pmac_pool_confirm_recovery, pmac_pool_get_state};
+use crate::pool::pmac_pool_get_state;
 use crate::registry::Entry;
 
 static CLEANUP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -424,6 +424,20 @@ fn error_info_tracks_sent_cancellation_and_pending_certainty() {
         ErrorCode::Cancelled as i32
     );
     let terminal = unsafe { info.assume_init() };
+    let mut last = std::mem::MaybeUninit::<PmacErrorInfo>::uninit();
+    let mut required = 0;
+    assert_eq!(
+        pmac_copy_last_error(last.as_mut_ptr(), std::ptr::null_mut(), 0, &mut required),
+        ErrorCode::BufferTooSmall as i32
+    );
+    let last = unsafe { last.assume_init() };
+    assert_eq!(last.status, ErrorCode::Cancelled as i32);
+    assert_eq!(
+        last.certainty,
+        pmac_core::ExecutionCertainty::MayHaveExecuted as u32
+    );
+    assert_eq!(last.request_id, sent);
+    assert_eq!(last.connection_epoch, terminal.connection_epoch);
     for _ in 0..32 {
         let error = error_info(sent);
         assert_eq!(error.status, ErrorCode::Cancelled as i32);
@@ -445,28 +459,7 @@ fn error_info_tracks_sent_cancellation_and_pending_certainty() {
     assert_eq!(pmac_runtime_shutdown(runtime_id, 5_000), 0);
     let mut pool = unsafe { std::mem::zeroed::<PmacPoolState>() };
     assert_eq!(pmac_pool_get_state(client_id, &mut pool), 0);
-    assert_ne!(pool.release_uncertain, 0);
-    assert_eq!(
-        pmac_client_release(client_id),
-        ErrorCode::ShutdownPending as i32
-    );
-    let mut required = 0;
-    assert_eq!(
-        pmac_client_recovery_ids(std::ptr::null_mut(), 0, &mut required),
-        ErrorCode::BufferTooSmall as i32
-    );
-    let mut recovery_ids = vec![0; required];
-    assert_eq!(
-        pmac_client_recovery_ids(recovery_ids.as_mut_ptr(), recovery_ids.len(), &mut required),
-        0
-    );
-    assert!(recovery_ids.contains(&client_id));
-    assert_eq!(pmac_pool_confirm_recovery(client_id, pool.revision, 2), 0);
+    assert_eq!(pool.release_uncertain, 0);
     assert_eq!(pmac_client_release(client_id), 0);
     assert_eq!(pmac_runtime_release(runtime_id), 0);
-    assert_eq!(
-        pmac_client_recovery_ids(std::ptr::null_mut(), 0, &mut required),
-        0
-    );
-    assert_eq!(required, 0);
 }

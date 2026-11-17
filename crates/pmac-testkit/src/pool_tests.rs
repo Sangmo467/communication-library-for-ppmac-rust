@@ -68,8 +68,11 @@ struct PoolSession {
     fail_next: AtomicBool,
     maintenance_fail: AtomicBool,
     retire_gate: Gate,
+    retire_fail_once: AtomicBool,
     close_gate: Gate,
+    close_panic_once: AtomicBool,
     maintenance_retired: AtomicBool,
+    recycle_keeps_transport: AtomicBool,
 }
 impl PoolSession {
     fn new(id: usize) -> Self {
@@ -82,8 +85,11 @@ impl PoolSession {
             fail_next: AtomicBool::new(false),
             maintenance_fail: AtomicBool::new(false),
             retire_gate: Gate::default(),
+            retire_fail_once: AtomicBool::new(false),
             close_gate: Gate::default(),
+            close_panic_once: AtomicBool::new(false),
             maintenance_retired: AtomicBool::new(false),
+            recycle_keeps_transport: AtomicBool::new(false),
         }
     }
 }
@@ -166,8 +172,27 @@ impl Session for PoolSession {
     }
     async fn retire_control(&self) -> Result<(), Error> {
         self.retire_gate.enter().await;
+        if self.retire_fail_once.swap(false, Ordering::AcqRel) {
+            return Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "injected unconfirmed channel release",
+            ));
+        }
         self.healthy.store(false, Ordering::Release);
         Ok(())
+    }
+    async fn recycle_control(&self) -> Result<(), Error> {
+        if !self.recycle_keeps_transport.load(Ordering::Acquire) {
+            return self.retire_control().await;
+        }
+        self.retire_gate.enter().await;
+        if self.retire_fail_once.swap(false, Ordering::AcqRel) {
+            return Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "injected unconfirmed channel release",
+            ));
+        }
+        self.retire_maintenance().await
     }
     async fn retire_maintenance(&self) -> Result<(), Error> {
         self.maintenance_retired.store(true, Ordering::Release);
@@ -178,6 +203,9 @@ impl Session for PoolSession {
         Ok(())
     }
     async fn close(&self) -> Result<(), Error> {
+        if self.close_panic_once.swap(false, Ordering::AcqRel) {
+            panic!("injected transport close panic");
+        }
         self.close_gate.enter().await;
         self.healthy.store(false, Ordering::Release);
         self.maintenance_retired.store(true, Ordering::Release);
@@ -271,7 +299,11 @@ impl Fixture {
     }
     fn command(&self, command: &str, read_pool: bool) -> Arc<Request> {
         self.submit(
-            Operation::Command(Command::raw(command).unwrap()),
+            Operation::Command(
+                self.client
+                    .parse_command_for_current_thread(command)
+                    .unwrap(),
+            ),
             RequestOptions {
                 read_pool,
                 ..options()
@@ -428,7 +460,7 @@ fn timed_out_member_isolated_without_control_migration_or_automatic_repair() {
     let snapshot = fixture.client.pool_snapshot();
     assert_eq!(snapshot.ready, 1);
     assert_eq!(snapshot.failed, 1);
-    assert_eq!(snapshot.release_uncertain, 1);
+    assert_eq!(snapshot.release_uncertain, 0);
     assert!(!snapshot.unknown_write);
     let ordered_error = fixture.finish(fixture.command("#2p", false)).unwrap_err();
     assert_eq!(ordered_error.code, ErrorCode::NoReadyLane);
@@ -572,14 +604,16 @@ fn superseded_creation_cannot_restore_an_obsolete_pool_revision() {
     assert_eq!(snapshot.revision, revision);
     assert_eq!(snapshot.desired, 3);
     assert_eq!(snapshot.creating, 0);
-    assert_eq!(snapshot.release_uncertain, 1);
+    assert_eq!(snapshot.release_uncertain, 0);
+    assert_eq!(snapshot.ready, 3);
     let obsolete_member = fixture
         .client
         .pool_members()
         .into_iter()
         .find(|member| member.member_id == 2)
         .unwrap();
-    assert_eq!(obsolete_member.state, MemberState::Failed);
+    assert_eq!(obsolete_member.state, MemberState::Ready);
+    assert_eq!(obsolete_member.epoch, 2);
     assert!(!fixture.transport.member(1).healthy.load(Ordering::Acquire));
 }
 
@@ -614,9 +648,21 @@ fn close_cancels_inflight_creation_and_prevents_late_member_installation() {
 fn uncertain_remote_lease_counts_against_quota_until_explicit_release_acknowledgement() {
     let fixture = Fixture::new();
     fixture.prepare(2, 2);
-    fixture
-        .finish(fixture.submit(Operation::PoolDrain { member_id: 2 }, options()))
-        .unwrap();
+    let session = fixture.transport.member(1);
+    session.close_gate.block();
+    let drain = fixture.submit(
+        Operation::PoolDrain { member_id: 2 },
+        RequestOptions {
+            timeout_ms: 50,
+            ..options()
+        },
+    );
+    session.close_gate.wait(1);
+    assert_eq!(
+        fixture.finish(drain).unwrap_err().code,
+        ErrorCode::ExecTimeout
+    );
+    session.close_gate.release();
     assert_eq!(fixture.client.pool_snapshot().release_uncertain, 1);
     let repair = fixture
         .finish(fixture.submit(Operation::PoolRepair { member_id: 2 }, options()))
@@ -1018,16 +1064,16 @@ fn compound_resets_retire_every_device_lane_regardless_of_maintenance_order() {
                 .client
                 .pool_members()
                 .iter()
-                .all(|member| member.state == MemberState::Failed),
-            "all old lanes must retire after {wire:?}"
+                .all(|member| member.state == MemberState::Ready),
+            "replacement lanes must be ready after {wire:?}"
         );
         let snapshot = fixture.client.pool_snapshot();
-        assert_eq!(snapshot.ready, 0, "{wire:?}");
-        assert_eq!(snapshot.release_uncertain, 2, "{wire:?}");
+        assert_eq!(snapshot.ready, 2, "{wire:?}");
+        assert_eq!(snapshot.release_uncertain, 0, "{wire:?}");
         assert_eq!(
             fixture.transport.attempts.load(Ordering::Acquire),
-            2,
-            "a reset must not reconnect or replay automatically"
+            4,
+            "only confirmed resets reconnect without replay"
         );
     }
 }
@@ -1074,11 +1120,14 @@ fn verified_global_queries_keep_thread_affinity_but_invalid_read_pool_syntax_is_
         "list prog 100 extra",
         "Q82",
     ] {
+        let Ok(command) = Command::raw(wire) else {
+            continue;
+        };
         let error = fixture
             .client
             .submit(
                 fixture.runtime.next_id(),
-                Operation::Command(Command::raw(wire).unwrap()),
+                Operation::Command(command),
                 RequestOptions {
                     read_pool: true,
                     ..options()
@@ -1117,11 +1166,14 @@ fn bounded_parameter_range_can_use_read_pool_but_oversize_reverse_and_write_rang
         "P1..8192=1",
         "P1..8192 extra",
     ] {
+        let Ok(command) = Command::raw(wire) else {
+            continue;
+        };
         let error = fixture
             .client
             .submit(
                 fixture.runtime.next_id(),
-                Operation::Command(Command::raw(wire).unwrap()),
+                Operation::Command(command),
                 RequestOptions {
                     read_pool: true,
                     ..options()
@@ -1140,4 +1192,965 @@ fn bounded_parameter_range_can_use_read_pool_but_oversize_reverse_and_write_rang
             .as_slice(),
         ["P1..8192"]
     );
+}
+
+#[test]
+fn rereview_drain_cancel_after_close_started() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    let session = fixture.transport.member(1);
+    session.close_gate.block();
+    let request = fixture.submit(Operation::PoolDrain { member_id: 2 }, options());
+    session.close_gate.wait(1);
+    request.cancel();
+    let result = request.wait(1000);
+    assert!(result.completed);
+    assert_eq!(result.info.code, ErrorCode::Cancelled);
+    assert_eq!(result.info.certainty, ExecutionCertainty::MayHaveExecuted);
+    assert_eq!(
+        fixture
+            .client
+            .pool_members()
+            .into_iter()
+            .find(|m| m.member_id == 2)
+            .unwrap()
+            .state,
+        MemberState::Failed
+    );
+    session.close_gate.release();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        fixture
+            .client
+            .pool_members()
+            .into_iter()
+            .find(|m| m.member_id == 2)
+            .unwrap()
+            .state,
+        MemberState::Failed
+    );
+}
+#[test]
+fn rereview_drain_success_after_execution_deadline() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    let session = fixture.transport.member(1);
+    session.close_gate.block();
+    let request = fixture.submit(
+        Operation::PoolDrain { member_id: 2 },
+        RequestOptions {
+            timeout_ms: 100,
+            ..options()
+        },
+    );
+    session.close_gate.wait(1);
+    let result = request.wait(1000);
+    assert!(result.completed);
+    assert_eq!(result.info.code, ErrorCode::ExecTimeout);
+    assert_eq!(result.info.certainty, ExecutionCertainty::MayHaveExecuted);
+    session.close_gate.release();
+}
+
+fn parsed_program_request(fixture: &Fixture, text: &str) -> Arc<Request> {
+    let command = fixture
+        .client
+        .parse_command_for_current_thread(text)
+        .unwrap();
+    fixture.submit(Operation::Command(command), options())
+}
+
+#[test]
+fn confirmed_program_buffer_passthrough_is_thread_and_epoch_bound() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .is_err());
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    let program = fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .unwrap();
+    assert!(program.is_program_line());
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                assert!(fixture
+                    .client
+                    .parse_command_for_current_thread("abort")
+                    .is_err())
+            })
+            .join()
+            .unwrap();
+    });
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("close;abort")
+        .is_err());
+    let body = parsed_program_request(&fixture, "abort");
+    fixture.finish(body.clone()).unwrap();
+    let close = parsed_program_request(&fixture, "close");
+    fixture.finish(close.clone()).unwrap();
+    assert_eq!(body.info().member_id, close.info().member_id);
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .is_err());
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 2"))
+        .unwrap();
+    fixture
+        .transport
+        .member(0)
+        .fail_next
+        .store(true, Ordering::Release);
+    assert!(fixture
+        .finish(parsed_program_request(&fixture, "P1=2"))
+        .is_err());
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .is_err());
+}
+
+#[test]
+fn program_buffer_requires_successful_open_confirmation() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 4);
+    let member = fixture.transport.member(0);
+    member.control_gate.block();
+    let open = parsed_program_request(&fixture, "open prog 1");
+    member.control_gate.wait(1);
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .is_err());
+    member.control_gate.release();
+    fixture.finish(open).unwrap();
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .unwrap()
+        .is_program_line());
+    fixture
+        .finish(parsed_program_request(&fixture, "close"))
+        .unwrap();
+    member.fail_next.store(true, Ordering::Release);
+    assert!(fixture
+        .finish(parsed_program_request(&fixture, "open prog 2"))
+        .is_err());
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .is_err());
+}
+
+#[test]
+fn queued_close_blocks_program_admission_and_not_sent_cancel_reopens_it() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 4);
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    let member = fixture.transport.member(0);
+    member.control_gate.block();
+    let body = parsed_program_request(&fixture, "P1=1");
+    member.control_gate.wait(2);
+    let close = parsed_program_request(&fixture, "close");
+    assert_eq!(
+        fixture
+            .client
+            .parse_command_for_current_thread("abort")
+            .unwrap_err()
+            .code,
+        ErrorCode::MaintenanceActive
+    );
+    assert_eq!(close.cancel(), ErrorCode::Ok);
+    assert_eq!(close.info().certainty, ExecutionCertainty::NotSent);
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .unwrap()
+        .is_program_line());
+    member.control_gate.release();
+    fixture.finish(body).unwrap();
+    fixture
+        .finish(parsed_program_request(&fixture, "abort"))
+        .unwrap();
+    fixture
+        .finish(parsed_program_request(&fixture, "close"))
+        .unwrap();
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abort")
+        .is_err());
+}
+
+#[test]
+fn program_close_boundary_respects_quotes_and_rejects_context_escape() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 4);
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    for text in [
+        "close;abort",
+        "close // comment",
+        "P1=1; close",
+        "$$$",
+        "reboot",
+    ] {
+        assert!(
+            fixture
+                .client
+                .parse_command_for_current_thread(text)
+                .is_err(),
+            "accepted {text}"
+        );
+    }
+    for text in ["cmd \"text;close\"", "P1=1 // ;close", "P1=1;P2=2"] {
+        assert!(
+            fixture
+                .client
+                .parse_command_for_current_thread(text)
+                .unwrap()
+                .is_program_line(),
+            "{text}"
+        );
+    }
+    fixture
+        .finish(parsed_program_request(&fixture, "close"))
+        .unwrap();
+}
+
+#[test]
+fn confirmed_close_all_buffers_invalidates_other_threads_program_contexts() {
+    for wire in [
+        "CLOSE  all\tbuffers",
+        "P1;close all buffers",
+        "close all buffers;P1",
+    ] {
+        let fixture = Fixture::new();
+        fixture.prepare(2, 4);
+        fixture
+            .finish(parsed_program_request(&fixture, "open prog 1"))
+            .unwrap();
+        assert!(fixture
+            .client
+            .parse_command_for_current_thread("abort")
+            .unwrap()
+            .is_program_line());
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let command = fixture
+                        .client
+                        .parse_command_for_current_thread(wire)
+                        .unwrap();
+                    assert_eq!(command.effect(), pmac_protocol::CommandEffect::Maintenance);
+                    fixture
+                        .finish(fixture.submit(Operation::Command(command), options()))
+                        .unwrap();
+                })
+                .join()
+                .unwrap();
+        });
+        assert!(
+            fixture
+                .client
+                .parse_command_for_current_thread("abort")
+                .is_err(),
+            "stale program context after {wire:?}"
+        );
+        let stale = Command::program_line("abort").unwrap();
+        assert!(fixture
+            .client
+            .submit(
+                fixture.runtime.next_id(),
+                Operation::Command(stale),
+                options()
+            )
+            .is_err());
+    }
+}
+#[test]
+fn program_buffer_open_accepts_protocol_whitespace() {
+    for wire in ["open  prog 1", "open\tprog 1", "&1open  forward"] {
+        let fixture = Fixture::new();
+        fixture.prepare(1, 4);
+        fixture
+            .finish(parsed_program_request(&fixture, wire))
+            .unwrap();
+        assert!(
+            fixture
+                .client
+                .parse_command_for_current_thread("dwell 10")
+                .unwrap()
+                .is_program_line(),
+            "{wire:?}"
+        );
+    }
+}
+
+#[test]
+fn compound_program_open_is_rejected_even_after_online_prefix() {
+    let fixture = Fixture::new();
+    for wire in ["P1;open prog 1", "P1=2;open  prog 1", "&1P;open\tprog 1"] {
+        assert!(
+            fixture
+                .client
+                .parse_command_for_current_thread(wire)
+                .is_err(),
+            "{wire:?}"
+        );
+    }
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("&1cpx P1=2;open prog 1")
+        .is_ok());
+}
+
+#[test]
+fn close_all_buffers_in_inline_program_text_preserves_other_threads_contexts() {
+    for wire in [
+        "&1cpx P1=2;close all buffers",
+        "&1cx P1=2;close all buffers",
+        "P1;&1cpx P1=2;close all buffers",
+    ] {
+        let fixture = Fixture::new();
+        fixture.prepare(2, 4);
+        fixture
+            .finish(parsed_program_request(&fixture, "open prog 1"))
+            .unwrap();
+        let (result, _) = fixture.command_on_new_thread(wire, false);
+        result.unwrap();
+        assert!(
+            fixture
+                .client
+                .parse_command_for_current_thread("dwell 10")
+                .unwrap()
+                .is_program_line(),
+            "inline program text cleared context: {wire:?}"
+        );
+    }
+}
+
+#[test]
+fn failed_compound_close_all_buffers_retires_all_control_members() {
+    for wire in ["P1;close all buffers", "close all buffers;P1"] {
+        let fixture = Fixture::new();
+        fixture.prepare(2, 4);
+        fixture
+            .finish(parsed_program_request(&fixture, "open prog 1"))
+            .unwrap();
+        for session in fixture.transport.sessions.lock().unwrap().iter() {
+            session.fail_next.store(true, Ordering::Release);
+        }
+        let (result, _) = fixture.command_on_new_thread(wire, false);
+        assert!(result.is_err());
+        assert!(fixture
+            .client
+            .pool_members()
+            .iter()
+            .all(|member| member.state == MemberState::Failed));
+        assert!(fixture
+            .client
+            .parse_command_for_current_thread("dwell 10")
+            .is_err());
+        assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
+    }
+}
+
+#[test]
+fn opaque_commands_bypass_program_context_and_never_enter_read_pool() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 2);
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    let wire = "  save  ";
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread(wire)
+        .is_err());
+    let result = fixture.submit(
+        Operation::Command(Command::passthrough(wire).unwrap()),
+        options(),
+    );
+    fixture.finish(result).unwrap();
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap(),
+        wire
+    );
+    let result = fixture.client.submit(
+        fixture.runtime.next_id(),
+        Operation::Command(Command::passthrough("P1").unwrap()),
+        RequestOptions {
+            read_pool: true,
+            ..options()
+        },
+    );
+    assert!(matches!(result, Err(error) if error.code == ErrorCode::InvalidArgument));
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("dwell 10")
+        .unwrap()
+        .is_program_line());
+}
+
+#[test]
+fn panicked_transport_close_is_retried_without_claiming_release() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 2);
+    let session = fixture.transport.member(0);
+    session.close_panic_once.store(true, Ordering::Release);
+    session.close_gate.block();
+    assert_eq!(
+        fixture.runtime.shutdown_clients(10).unwrap_err().code,
+        ErrorCode::ShutdownPending
+    );
+    // The first attempt panicked; the next attempt remains blocked in real cleanup.
+    session.close_gate.wait(1);
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Closing
+    );
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 1);
+    assert!(session.healthy.load(Ordering::Acquire));
+    session.close_gate.release();
+    fixture.runtime.shutdown_clients(5_000).unwrap();
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Closed
+    );
+    assert!(!session.healthy.load(Ordering::Acquire));
+    assert!(fixture.runtime.is_shutdown());
+    assert!(!fixture.client.has_unreleased_gpascii());
+}
+
+#[test]
+fn close_retries_only_members_without_confirmation() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 2);
+    let confirmed = fixture.transport.member(0);
+    let retried = fixture.transport.member(1);
+    retried.close_panic_once.store(true, Ordering::Release);
+    fixture.runtime.shutdown_clients(5_000).unwrap();
+    assert_eq!(*confirmed.close_gate.entered.lock().unwrap(), 1);
+    assert_eq!(*retried.close_gate.entered.lock().unwrap(), 1);
+    assert!(!fixture.client.has_unreleased_gpascii());
+    assert!(fixture.runtime.is_shutdown());
+}
+
+#[test]
+fn requested_motion_program_upload_preserves_each_line_on_the_confirmed_member() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    // open 必须先收到成功响应；本测试只向模拟 Transport 上传，不执行真实运动。
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    let lines = [
+        "abs",
+        "linear",
+        "ta 50",
+        "ts 25",
+        "gather.enable=2",
+        "dwell 10",
+        "frax(a,b,c,x,y)",
+        "x 50",
+        "x 100 y 50 f30.5",
+        "a 50 x 0 y30.5",
+        "b(L2) x 10",
+        "normal k -1",
+        "circle2",
+        "x 0 y 0 i 30 j 0",
+        "x 0 y 0 r (P2)",
+        "dwell 0",
+        "gather.enable=0",
+    ];
+    for line in lines {
+        let command = fixture
+            .client
+            .parse_command_for_current_thread(line)
+            .unwrap();
+        assert!(command.is_program_line());
+        assert!(!command.is_passthrough());
+        let request = fixture.submit(Operation::Command(command), options());
+        fixture.finish(request.clone()).unwrap();
+        assert_eq!(request.info().member_id, 1);
+    }
+    // close 单独提交并等待确认，避免正文错误地落入在线解释器。
+    fixture
+        .finish(parsed_program_request(&fixture, "close"))
+        .unwrap();
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("abs")
+        .is_err());
+    let mut expected = vec!["open prog 1"];
+    expected.extend(lines);
+    expected.push("close");
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        expected
+    );
+    assert!(fixture
+        .transport
+        .member(1)
+        .commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn custom_array_and_modbus_commands_use_control_member_and_reject_read_pool() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    for text in [
+        "StimulusType",
+        "StimulusType(11)",
+        "MotorState_Mtr(11)",
+        "ModbusConnect 0",
+        "ModbusRegisterRead 0,10,2,P100",
+        "ModbusCoilRead 0,10,12,mbarray(0)",
+        "ModbusServerState",
+    ] {
+        let command = fixture
+            .client
+            .parse_command_for_current_thread(text)
+            .unwrap();
+        let error = fixture
+            .client
+            .submit(
+                fixture.runtime.next_id(),
+                Operation::Command(command),
+                RequestOptions {
+                    read_pool: true,
+                    ..options()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        fixture.finish(fixture.command(text, false)).unwrap();
+    }
+    assert_eq!(
+        fixture.transport.member(0).commands.lock().unwrap().len(),
+        7
+    );
+    assert!(fixture
+        .transport
+        .member(1)
+        .commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn requested_buffer_jog_syntax_is_forwarded_without_online_reclassification() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture
+        .finish(parsed_program_request(&fixture, "open prog 1"))
+        .unwrap();
+    let lines = [
+        "jog1..3,5..7:0;",
+        "jog25..27:*",
+        "jog=10000^-50;",
+        "jog1:-50000^(P10);",
+        "jog1..3=*^0;",
+        "jogret1,2,3=-2468;",
+        "jogret25..27=*",
+        "jog^5000;",
+        "jog1^(Q1);",
+        "jog2=3000;",
+        "jog3=(Q1);",
+        "jog7=*",
+        "jog/1,2,3;",
+        "jog+ ",
+        "jog+ 1..5,8",
+        "jog-1,2,3;",
+    ];
+    let mut expected = vec!["open prog 1".to_string()];
+    for line in lines {
+        for text in [line.to_string(), line.to_ascii_uppercase()] {
+            // 列表、范围、变量表达式、星号、尾部分号与空格都保留给控制器解释。
+            let command = fixture
+                .client
+                .parse_command_for_current_thread(&text)
+                .unwrap();
+            assert!(command.is_program_line());
+            assert!(!command.is_passthrough());
+            assert_eq!(command.text(), text);
+            let request = fixture.submit(Operation::Command(command), options());
+            fixture.finish(request.clone()).unwrap();
+            assert_eq!(request.info().member_id, 1);
+            expected.push(text);
+        }
+    }
+    fixture
+        .finish(parsed_program_request(&fixture, "close"))
+        .unwrap();
+    expected.push("close".to_string());
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        expected
+    );
+    assert!(fixture
+        .transport
+        .member(1)
+        .commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn confirmed_reset_retires_pool_without_false_release_uncertainty() {
+    for wire in ["$$$", "$$$***"] {
+        let fixture = Fixture::new();
+        fixture.prepare(2, 4);
+        fixture.finish(fixture.command(wire, false)).unwrap();
+        assert_eq!(
+            fixture.client.snapshot().state,
+            pmac_core::ClientState::Ready
+        );
+        assert_eq!(fixture.client.pool_snapshot().ready, 2);
+        assert_eq!(fixture.client.pool_snapshot().release_uncertain, 0);
+        assert!(!fixture.client.has_unreleased_gpascii());
+        assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 4);
+        assert!(fixture
+            .client
+            .pool_members()
+            .iter()
+            .all(|member| member.state == MemberState::Ready));
+        assert_eq!(
+            fixture
+                .transport
+                .member(0)
+                .commands
+                .lock()
+                .unwrap()
+                .as_slice(),
+            [wire]
+        );
+        assert!(!fixture.transport.member(0).healthy.load(Ordering::Acquire));
+        assert!(!fixture.transport.member(1).healthy.load(Ordering::Acquire));
+        fixture
+            .finish(fixture.command("Sys.ServoTime", false))
+            .unwrap();
+        fixture.runtime.shutdown_clients(5_000).unwrap();
+        assert_eq!(
+            fixture.client.snapshot().state,
+            pmac_core::ClientState::Closed
+        );
+        assert!(!fixture.client.has_unreleased_gpascii());
+    }
+}
+
+#[test]
+fn reset_release_uncertainty_is_cleared_only_by_that_sessions_confirmed_close() {
+    let fixture = Fixture::new();
+    // Keep the recovery budget short so an unconfirmed close still surfaces as a
+    // bounded recovery failure rather than waiting for the default connect budget.
+    fixture
+        .finish(fixture.submit(
+            Operation::PoolPrepare {
+                options: ConnectOptions::new("mock", "test"),
+                profile: PoolProfile {
+                    connect_timeout_ms: 100,
+                    ..profile(1, 2)
+                },
+            },
+            options(),
+        ))
+        .unwrap();
+    let session = fixture.transport.member(0);
+    session.retire_fail_once.store(true, Ordering::Release);
+    session.close_gate.block();
+    let reset = fixture.submit(
+        Operation::Command(Command::raw("$$$").unwrap()),
+        RequestOptions {
+            timeout_ms: 100,
+            ..options()
+        },
+    );
+    let error = fixture.finish(reset).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ExecTimeout);
+    assert_eq!(error.certainty, ExecutionCertainty::Confirmed);
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 1);
+    assert!(fixture.client.has_unreleased_gpascii());
+    session.close_gate.block();
+    assert_eq!(
+        fixture.runtime.shutdown_clients(10).unwrap_err().code,
+        ErrorCode::ShutdownPending
+    );
+    session.close_gate.wait(1);
+    assert!(
+        fixture.client.has_unreleased_gpascii(),
+        "unconfirmed close must preserve ownership"
+    );
+    assert_eq!(fixture.client.pool_snapshot().release_uncertain, 1);
+    session.close_gate.release();
+    fixture.runtime.shutdown_clients(5_000).unwrap();
+    assert!(!session.healthy.load(Ordering::Acquire));
+    assert!(!fixture.client.has_unreleased_gpascii());
+    assert_eq!(
+        fixture.transport.attempts.load(Ordering::Acquire),
+        1,
+        "cleanup must not open a replacement client/session"
+    );
+}
+
+#[test]
+fn confirmed_passthrough_reset_restores_same_client_and_retries_only_connections() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture.transport.fail_attempt.store(3, Ordering::Release);
+    let reset = fixture.submit(
+        Operation::Command(Command::passthrough("$$$***").unwrap()),
+        options(),
+    );
+    let original = fixture.finish(reset).unwrap();
+    assert_eq!(original.response, b"1:$$$***");
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Ready
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 5);
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        ["$$$***"]
+    );
+    fixture
+        .finish(fixture.command("Sys.ServoTime", false))
+        .unwrap();
+}
+
+#[test]
+fn confirmed_reset_reuses_surviving_transport_without_reconnecting() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    for index in 0..2 {
+        fixture
+            .transport
+            .member(index)
+            .recycle_keeps_transport
+            .store(true, Ordering::Release);
+    }
+    let reset = fixture.submit(
+        Operation::Command(Command::passthrough("$$$***").unwrap()),
+        options(),
+    );
+    let original = fixture.finish(reset).unwrap();
+    assert_eq!(original.response, b"1:$$$***");
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Ready
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(
+        fixture.transport.attempts.load(Ordering::Acquire),
+        2,
+        "a confirmed reset must not open replacement SSH connections"
+    );
+    assert!(fixture.transport.member(0).healthy.load(Ordering::Acquire));
+    assert!(fixture.transport.member(1).healthy.load(Ordering::Acquire));
+    fixture
+        .finish(fixture.command("Sys.ServoTime", false))
+        .unwrap();
+}
+
+#[test]
+fn confirmed_reset_recovery_outlives_the_reset_request_deadline() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture.transport.gated_attempt.store(3, Ordering::Release);
+    fixture.transport.connect_gate.block();
+    let reset = fixture.submit(
+        Operation::Command(Command::raw("$$$").unwrap()),
+        RequestOptions {
+            timeout_ms: 100,
+            ..options()
+        },
+    );
+    // Let the original 100 ms execution deadline pass while the first recovery
+    // connection is still blocked. Recovery owns a fresh budget.
+    fixture.transport.connect_gate.wait(1);
+    std::thread::sleep(Duration::from_millis(250));
+    fixture.transport.connect_gate.release();
+    let original = fixture.finish(reset).unwrap();
+    assert_eq!(original.response, b"1:$$$");
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Ready
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 4);
+}
+
+#[test]
+fn confirmed_reset_recovery_budget_is_bounded_and_preserves_certainty() {
+    let fixture = Fixture::new();
+    fixture
+        .finish(fixture.submit(
+            Operation::PoolPrepare {
+                options: ConnectOptions::new("mock", "test"),
+                profile: PoolProfile {
+                    connect_timeout_ms: 300,
+                    ..profile(2, 4)
+                },
+            },
+            options(),
+        ))
+        .unwrap();
+    fixture.transport.gated_attempt.store(3, Ordering::Release);
+    fixture.transport.connect_gate.block();
+    let reset = fixture.submit(
+        Operation::Command(Command::raw("$$$").unwrap()),
+        RequestOptions {
+            timeout_ms: 100,
+            ..options()
+        },
+    );
+    let error = fixture.finish(reset).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ExecTimeout);
+    assert_eq!(error.certainty, ExecutionCertainty::Confirmed);
+    assert!(error
+        .message
+        .starts_with("reset confirmed; automatic pool recovery failed:"));
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Disconnected
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 0);
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        ["$$$"]
+    );
+    fixture.transport.connect_gate.release();
+    assert_eq!(fixture.transport.sessions.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn unknown_reset_result_never_triggers_automatic_reconnection_or_replay() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    fixture
+        .transport
+        .member(0)
+        .fail_next
+        .store(true, Ordering::Release);
+    let error = fixture.finish(fixture.command("$$$", false)).unwrap_err();
+    assert_eq!(error.certainty, ExecutionCertainty::MayHaveExecuted);
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Disconnected
+    );
+    assert_eq!(fixture.client.pool_snapshot().ready, 0);
+    assert!(fixture.client.pool_snapshot().unknown_write);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 2);
+    assert_eq!(
+        fixture
+            .transport
+            .member(0)
+            .commands
+            .lock()
+            .unwrap()
+            .as_slice(),
+        ["$$$"]
+    );
+    assert_eq!(
+        fixture
+            .client
+            .submit(
+                fixture.runtime.next_id(),
+                Operation::Command(Command::raw("P1=1").unwrap()),
+                options()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::RecoveryRequired
+    );
+}
+
+#[test]
+fn panicked_old_session_close_during_repair_preserves_capacity_and_owner() {
+    let fixture = Fixture::new();
+    fixture.prepare(1, 4);
+    let session = fixture.transport.member(0);
+    session.healthy.store(false, Ordering::Release);
+    session.close_panic_once.store(true, Ordering::Release);
+    let error = fixture
+        .finish(fixture.submit(Operation::PoolRepair { member_id: 1 }, options()))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ShutdownPending);
+    let snapshot = fixture.client.pool_snapshot();
+    assert_eq!(snapshot.creating, 0);
+    assert_eq!(snapshot.failed, 1);
+    assert_eq!(snapshot.release_uncertain, 1);
+    assert_eq!(fixture.transport.attempts.load(Ordering::Acquire), 1);
+    fixture
+        .finish(fixture.submit(Operation::PoolRepair { member_id: 1 }, options()))
+        .unwrap();
+    assert_eq!(*session.close_gate.entered.lock().unwrap(), 1);
+    assert_eq!(fixture.client.pool_snapshot().ready, 1);
+    fixture.finish(fixture.command("#1p", false)).unwrap();
+}
+#[test]
+fn panicked_session_close_during_drain_remains_explicitly_repairable() {
+    let fixture = Fixture::new();
+    fixture.prepare(2, 4);
+    let session = fixture.transport.member(1);
+    session.close_panic_once.store(true, Ordering::Release);
+    let error = fixture
+        .finish(fixture.submit(Operation::PoolDrain { member_id: 2 }, options()))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ShutdownPending);
+    let snapshot = fixture.client.pool_snapshot();
+    assert_eq!(snapshot.retiring, 0);
+    assert_eq!(snapshot.failed, 1);
+    assert_eq!(snapshot.release_uncertain, 1);
+    fixture
+        .finish(fixture.submit(Operation::PoolRepair { member_id: 2 }, options()))
+        .unwrap();
+    assert_eq!(*session.close_gate.entered.lock().unwrap(), 1);
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
 }

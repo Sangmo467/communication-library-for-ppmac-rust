@@ -23,9 +23,8 @@ struct DartConnectionPermit {
 
 impl DartBudget {
     fn shared(host: &str) -> Arc<Self> {
-        static REGISTRY: std::sync::OnceLock<
-            std::sync::Mutex<HashMap<String, Weak<DartBudget>>>,
-        > = std::sync::OnceLock::new();
+        static REGISTRY: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Weak<DartBudget>>>> =
+            std::sync::OnceLock::new();
         let registry = REGISTRY.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
         let key = host.to_ascii_lowercase();
         let mut registry = registry
@@ -34,6 +33,7 @@ impl DartBudget {
         if let Some(existing) = registry.get(&key).and_then(Weak::upgrade) {
             return existing;
         }
+        registry.retain(|_, budget| budget.strong_count() != 0);
         let budget = Arc::new(Self {
             connections: Arc::new(Semaphore::new(MAX_DART_CONNECTIONS)),
         });
@@ -42,16 +42,12 @@ impl DartBudget {
     }
 
     fn reserve(self: &Arc<Self>) -> Result<DartConnectionPermit, Error> {
-        let permit = self
-            .connections
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::ResourceLimit,
-                    "controller DART TCP connection limit reached (10)",
-                )
-            })?;
+        let permit = self.connections.clone().try_acquire_owned().map_err(|_| {
+            Error::new(
+                ErrorCode::ResourceLimit,
+                "controller DART TCP connection limit reached (10)",
+            )
+        })?;
         Ok(DartConnectionPermit {
             _budget: self.clone(),
             _permit: permit,
@@ -71,6 +67,7 @@ pub(crate) async fn connect(
     context: &ExecutionContext,
 ) -> Result<DartConnection, Error> {
     let port = discover(session, context).await?;
+    context.begin_independent_tcp();
     connect_port(host, port).await
 }
 
@@ -177,12 +174,15 @@ async fn discover(session: &RusshSession, context: &ExecutionContext) -> Result<
         .await
         .map_err(discovery_error)?;
     let port = discovery_value(&port.response, "Dart.Port")?;
-    u16::try_from(port).ok().filter(|port| *port != 0).ok_or_else(|| {
-        Error::new(
-            ErrorCode::Unsupported,
-            "DART service returned an invalid TCP port",
-        )
-    })
+    u16::try_from(port)
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unsupported,
+                "DART service returned an invalid TCP port",
+            )
+        })
 }
 
 fn discovery_value(response: &[u8], expected_name: &str) -> Result<u64, Error> {
@@ -224,11 +224,7 @@ fn discovery_error(error: Error) -> Error {
 }
 
 fn dart_io_error(operation: &str, error: std::io::Error) -> Error {
-    Error::new(
-        ErrorCode::Disconnected,
-        format!("{operation}: {error}"),
-    )
-    .sent()
+    Error::new(ErrorCode::Disconnected, format!("{operation}: {error}")).sent()
 }
 
 #[cfg(test)]
@@ -251,10 +247,19 @@ mod tests {
 
     async fn test_connection() -> (DartConnection, tokio::net::TcpStream) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let stream = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
         let (peer, _) = listener.accept().await.unwrap();
         let permit = DartBudget::shared("dart-fault-test").reserve().unwrap();
-        (DartConnection { stream, _permit: permit, port: 0 }, peer)
+        (
+            DartConnection {
+                stream,
+                _permit: permit,
+                port: 0,
+            },
+            peer,
+        )
     }
 
     #[tokio::test]
@@ -268,7 +273,10 @@ mod tests {
         let request = DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap();
         let error = transfer(&mut connection, request).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::Disconnected);
-        assert_eq!(error.certainty, pmac_core::ExecutionCertainty::MayHaveExecuted);
+        assert_eq!(
+            error.certainty,
+            pmac_core::ExecutionCertainty::MayHaveExecuted
+        );
         server.await.unwrap();
     }
 
@@ -279,10 +287,14 @@ mod tests {
             let mut request = [0; 20];
             peer.read_exact(&mut request).await.unwrap();
         });
-        let request = DartTransfer::set(pmac_protocol::DartCommand::SetPVariable, 1, vec![0; 8]).unwrap();
+        let request =
+            DartTransfer::set(pmac_protocol::DartCommand::SetPVariable, 1, vec![0; 8]).unwrap();
         let error = transfer(&mut connection, request).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::Disconnected);
-        assert_eq!(error.certainty, pmac_core::ExecutionCertainty::MayHaveExecuted);
+        assert_eq!(
+            error.certainty,
+            pmac_core::ExecutionCertainty::MayHaveExecuted
+        );
         server.await.unwrap();
     }
 
@@ -296,14 +308,25 @@ mod tests {
             assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
         });
         let request = DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap();
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(100), transfer(&mut connection, request)).await.is_err());
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            transfer(&mut connection, request)
+        )
+        .await
+        .is_err());
         drop(connection);
-        tokio::time::timeout(std::time::Duration::from_secs(2), server).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
     fn discovery_accepts_plain_or_exact_named_values_only() {
-        assert_eq!(discovery_value(b"Dart.Enable=1\r\n", "Dart.Enable").unwrap(), 1);
+        assert_eq!(
+            discovery_value(b"Dart.Enable=1\r\n", "Dart.Enable").unwrap(),
+            1
+        );
         assert_eq!(discovery_value(b"1027\r\n", "Dart.Port").unwrap(), 1027);
         assert!(discovery_value(b"Dart.Port=1027", "Dart.Enable").is_err());
         assert!(discovery_value(b"Dart.Enable=1=0", "Dart.Enable").is_err());

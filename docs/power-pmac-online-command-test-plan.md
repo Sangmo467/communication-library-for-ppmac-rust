@@ -9,7 +9,7 @@
 
 ## 1 依据与覆盖范围
 
-主依据为 [Power_PMAC_Software_Reference_Manual_3.pdf](Power_PMAC_Software_Reference_Manual_3.pdf)，封面日期 2023-05-19，修订历史 D，文档号 O015-E-01。文件 SHA-256：`FCA50AEC74A56DEC0A717BCB4AB6DBAB86F94BCE3D605F2116C9E1B412C1A2B5`。
+主依据为 `Power_PMAC_Software_Reference_Manual`，封面日期 2023-05-19，修订历史 D，文档号 O015-E-01。文件 SHA-256：`FCA50AEC74A56DEC0A717BCB4AB6DBAB86F94BCE3D605F2116C9E1B412C1A2B5`。
 
 在线指令章节为第 **1119–1319 页**，本 PDF 的文件页序与这些印刷页码一致。附录 A 逐项登记正文的 **249 个 Function 条目**，保留长短别名、读写及列表语法的独立条目；这不是去重后的基础命令数量，也不是执行用例数量。正文共 105 个主测试用例，其中 open/close 16 项、list 12 项、多线程专项 11 项。每个条目关联正文测试用例，测试时还需展开其参数变体。
 

@@ -27,6 +27,14 @@ foreach ($package in $sbom.packages) {
 foreach ($relationship in $sbom.relationships) {
     if (-not $identifiers.Contains($relationship.spdxElementId) -or -not $identifiers.Contains($relationship.relatedSpdxElement)) { throw 'SPDX relationship references an absent package' }
 }
-$library = if ($manifest.target -like '*windows*') { 'pmac.dll' } else { 'libpmac.so' }
+# 面向调用者的 SDK 包必须实际包含可编译工程，不能只有 DLL/so。
+foreach ($required in @('cmake/PmacConfig.cmake','examples/CMakeLists.txt',
+    'examples/c/sdk_smoke.c','examples/c/getresponse.c','examples/cpp/sdk_smoke.cpp','examples/cpp/getresponse.cpp',
+    'examples/python/sdk_smoke.py','examples/dotnet/getresponse/Pmac.GetResponse.csproj','scripts/Test-SdkExamples.ps1','README.md')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $required) -PathType Leaf)) { throw "Missing SDK consumer file: $required" }
+}
+if ($manifest.target -like '*windows*' -and -not (Test-Path -LiteralPath (Join-Path $packageRoot 'native/pmac.dll.lib'))) { throw 'Windows SDK requires the MSVC import library' }
+$targetProfile = & (Join-Path $PSScriptRoot 'Get-ReleaseTarget.ps1') -Target $manifest.target
+$library = $targetProfile.library
 $identity = & (Join-Path $PSScriptRoot 'Test-NativeTarget.ps1') -Library (Join-Path $packageRoot "native/$library") -Target $manifest.target
 [pscustomobject]@{ integrity = 'passed'; target = $identity.target; files = $manifest.files.Count; dependencyPackages = $sbom.packages.Count; acceptance = $manifest.acceptance }

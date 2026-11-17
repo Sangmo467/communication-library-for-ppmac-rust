@@ -1,0 +1,143 @@
+name: Prebuilt SDK and GitHub Release
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish all validated SDKs (select an existing version tag)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: prebuilt-sdk-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      reuse_run: ${{ steps.targets.outputs.reuse_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: targets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $profiles = @(./scripts/Get-ReleaseTarget.ps1 | Where-Object { -not $_.preview })
+          $matrix = @{ include=$profiles } | ConvertTo-Json -Compress -Depth 5
+          "matrix=$matrix" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8NoBOM
+          $reuse = ''
+          # 已成功验证相同提交的 main 构建时，tag 发布直接复用其原始产物，不重编译。
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $text = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/release.yml/runs?head_sha=$env:GITHUB_SHA&branch=main&status=success&per_page=10"
+            if ($LASTEXITCODE -eq 0) {
+              $runs = ($text -join "`n") | ConvertFrom-Json
+              $match = @($runs.workflow_runs | Where-Object { $_.head_sha -eq $env:GITHUB_SHA -and $_.head_branch -eq 'main' })
+              if ($match.Count) { $reuse = [string]$match[0].id }
+            }
+          }
+          "reuse_run=$reuse" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8NoBOM
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.reuse_run == ''
+    name: SDK ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Windows' && runner.arch != 'ARM64'
+        uses: ilammy/setup-nasm@v1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.0'
+          targets: ${{ matrix.target }}
+      - if: matrix.target == 'i686-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
+      - if: matrix.qemu == true
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf qemu-user
+      - if: matrix.managed
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.python_arch }}
+      - if: matrix.managed
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install x86 .NET runtime
+        if: matrix.target == 'i686-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build -Force | Out-Null
+          Invoke-WebRequest https://dot.net/v1/dotnet-install.ps1 -OutFile build/dotnet-install.ps1
+          ./build/dotnet-install.ps1 -Runtime dotnet -Channel 8.0 -Architecture x86 -InstallDir build/dotnet-x86 -NoPath
+      - uses: actions/cache/restore@v4
+        if: matrix.target == 'loongarch64-unknown-linux-gnu'
+        id: sysroot-cache
+        with:
+          path: build/loongarch-sysroot
+          key: loongarch-glibc236-${{ hashFiles('scripts/Build-LoongArchNative.ps1', 'scripts/loongarch.Dockerfile') }}
+      - name: Build and validate LoongArch64 SDK in isolated toolchain
+        if: matrix.target == 'loongarch64-unknown-linux-gnu'
+        shell: pwsh
+        run: ./scripts/Build-LoongArchSdk.ps1
+      - uses: actions/cache/save@v4
+        if: always() && matrix.target == 'loongarch64-unknown-linux-gnu' && steps.sysroot-cache.outputs.cache-hit != 'true' && hashFiles('build/loongarch-sysroot/.complete') != ''
+        with:
+          path: build/loongarch-sysroot
+          key: loongarch-glibc236-${{ hashFiles('scripts/Build-LoongArchNative.ps1', 'scripts/loongarch.Dockerfile') }}
+      - name: Build, validate ABI and package SDK
+        if: matrix.target != 'loongarch64-unknown-linux-gnu'
+        shell: pwsh
+        run: |
+          $arguments = @{ Target='${{ matrix.target }}' }
+          if ('${{ matrix.managed }}' -eq 'true') {
+            $arguments.PythonExecutable = 'python'
+            $arguments.DotnetExecutable = if ('${{ matrix.target }}' -eq 'i686-pc-windows-msvc') { (Join-Path $PWD 'build/dotnet-x86/dotnet.exe') } else { 'dotnet' }
+          }
+          ./scripts/Build-Release.ps1 @arguments
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+  publish:
+    name: Publish GitHub Release attachments
+    needs: [prepare, build]
+    if: always() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sdk-*
+          merge-multiple: true
+          path: release-assets
+          run-id: ${{ needs.prepare.outputs.reuse_run || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Validate and upload SDK archives
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          ./scripts/Publish-GitHubRelease.ps1 -AssetDirectory release-assets -Tag $env:RELEASE_TAG -Commit $env:RELEASE_COMMIT -Owner $env:GITHUB_REPOSITORY_OWNER -Repository ($env:GITHUB_REPOSITORY.Split('/')[1])

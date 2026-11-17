@@ -6,7 +6,6 @@ use std::env;
 
 use data_encoding::BASE64_MIME;
 use hmac::{Hmac, KeyInit, Mac};
-use log::debug;
 use sha1::Sha1;
 
 use crate::keys::Error;
@@ -65,47 +64,68 @@ pub fn known_host_keys_path<P: AsRef<Path>>(
     port: u16,
     path: P,
 ) -> Result<Vec<(usize, ssh_key::PublicKey)>, Error> {
+    let entries = known_host_key_entries_path(host, port, path)?;
+    if entries.iter().any(|(_, _, revoked)| *revoked) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+            "known_hosts contains a revocation that this API cannot represent").into());
+    }
+    Ok(entries.into_iter().map(|(line, key, _)| (line, key)).collect())
+}
+
+/// Read matching keys, preserving revocation markers for the caller to enforce.
+/// Unsupported markers and host patterns fail closed.
+pub fn known_host_key_entries_path<P: AsRef<Path>>(
+    host: &str,
+    port: u16,
+    path: P,
+) -> Result<Vec<(usize, ssh_key::PublicKey, bool)>, Error> {
     use crate::keys::parse_public_key_base64;
 
-    let mut f = if let Ok(f) = File::open(path) {
-        BufReader::new(f)
-    } else {
-        return Ok(vec![]);
+    let mut f = match File::open(path) {
+        Ok(file) => BufReader::new(file),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
     };
     let mut buffer = String::new();
-
     let host_port = if port == 22 {
         Cow::Borrowed(host)
     } else {
         Cow::Owned(format!("[{host}]:{port}"))
     };
-    debug!("host_port = {host_port:?}");
-    let mut line = 1;
+    let mut line = 0;
     let mut matches = vec![];
     while f.read_line(&mut buffer)? > 0 {
-        {
-            if buffer.as_bytes().first() == Some(&b'#') {
-                buffer.clear();
-                continue;
-            }
-            debug!("line = {buffer:?}");
-            let mut s = buffer.split(' ');
-            let hosts = s.next();
-            let _ = s.next();
-            let key = s.next();
-            if let (Some(h), Some(k)) = (hosts, key) {
-                debug!("{h:?} {k:?}");
-                if match_hostname(&host_port, h) {
-                    matches.push((line, parse_public_key_base64(k)?));
+        line += 1;
+        let mut fields = buffer.split_whitespace();
+        if let Some(first) = fields.next() {
+            if !first.starts_with('#') {
+                let (hosts, revoked) = if first.starts_with('@') {
+                    if first != "@revoked" {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                            format!("unsupported known_hosts marker on line {line}")).into());
+                    }
+                    (fields.next().ok_or_else(|| std::io::Error::new(
+                        std::io::ErrorKind::InvalidData, "missing revoked host"))?, true)
+                } else {
+                    (first, false)
+                };
+                if hosts.contains('!') || (revoked && hosts.bytes().any(|b| matches!(b, b'*' | b'?'))) {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                        format!("unsupported known_hosts host pattern on line {line}")).into());
+                }
+                let algorithm = fields.next();
+                let key = fields.next();
+                if match_hostname(&host_port, hosts) {
+                    let (_, key) = algorithm.zip(key).ok_or_else(|| std::io::Error::new(
+                        std::io::ErrorKind::InvalidData, "incomplete known_hosts entry"))?;
+                    matches.push((line, parse_public_key_base64(key)?, revoked));
                 }
             }
         }
         buffer.clear();
-        line += 1;
     }
     Ok(matches)
 }
-
 fn match_hostname(host: &str, pattern: &str) -> bool {
     for entry in pattern.split(',') {
         if entry.starts_with("|1|") {

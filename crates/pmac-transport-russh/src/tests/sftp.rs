@@ -450,7 +450,13 @@ fn deadline_during_publish_reports_publish_unknown_without_replaying() {
                 remote: "/target".into(),
             },
             pmac_core::RequestOptions {
-                timeout_ms: 250,
+                // 交叉目标的 QEMU 执行需先完成 SSH/SFTP 握手，再在发布门控处等待超时。
+                // 保持门控阻塞及全部结果断言，只给模拟器更充足的前置阶段时间。
+                timeout_ms: if cfg!(any(target_arch = "arm", target_arch = "loongarch64")) {
+                    3_000
+                } else {
+                    250
+                },
                 ..pmac_core::RequestOptions::default()
             },
         )
@@ -534,4 +540,36 @@ fn cancelling_download_preserves_local_target_and_removes_local_staging() {
         .unwrap()
         .flatten()
         .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix)));
+}
+
+#[test]
+fn overlong_quoted_upload_publish_is_rejected_before_writing_staging() {
+    let fixture = super::Fixture::new(None);
+    fixture.connect();
+    let source = super::TestFile::new(b"must not be uploaded");
+    for remote in [
+        format!("/{}target", "valid-component/".repeat(40)),
+        format!("/{}", "'".repeat(140)),
+    ] {
+        let error = fixture
+            .run(pmac_core::Operation::Upload {
+                local: source.0.to_string_lossy().into(),
+                remote,
+            })
+            .unwrap_err();
+        assert_eq!(error.code, pmac_core::ErrorCode::InvalidArgument);
+        assert!(!fixture.client.pool_snapshot().unknown_write);
+        assert!(fixture.observed.filesystem.files.lock().unwrap().is_empty());
+    }
+    // A validation failure must leave the connection usable for ordinary uploads.
+    fixture
+        .run(pmac_core::Operation::Upload {
+            local: source.0.to_string_lossy().into(),
+            remote: "/short-target".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        fixture.observed.filesystem.get("/short-target"),
+        b"must not be uploaded"
+    );
 }

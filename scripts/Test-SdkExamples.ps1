@@ -1,0 +1,71 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$PackageDirectory,
+    [string]$BuildDirectory = '',
+    [string]$PythonExecutable = '',
+    [string]$DotnetExecutable = '',
+    [string[]]$CmakeArguments = @()
+)
+$ErrorActionPreference = 'Stop'
+$package = (Resolve-Path -LiteralPath $PackageDirectory).Path
+$manifest = Get-Content -LiteralPath (Join-Path $package 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if (-not $BuildDirectory) { $BuildDirectory = Join-Path ([IO.Path]::GetTempPath()) "pmac-sdk-$([guid]::NewGuid().ToString('N'))" }
+# 构建目录必须在包外，避免破坏包内清单校验；保留目录便于查看编译输出。
+$BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
+if ($BuildDirectory.StartsWith($package.TrimEnd([char]92,[char]47) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or $BuildDirectory -eq $package) {
+    throw 'BuildDirectory must be outside the immutable SDK package'
+}
+$arguments = @('-S',(Join-Path $package 'examples'),'-B',$BuildDirectory,'-DCMAKE_BUILD_TYPE=Release')
+if ($IsWindows) {
+    $arch = if ($manifest.target -like 'i686-*') { 'Win32' } elseif ($manifest.target -like 'aarch64-*') { 'ARM64' } else { 'x64' }
+    # runner 可安装 VS 2022 或更新版本；按实际实例选择 CMake 支持的生成器。
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+        $installedVersion = & $vswhere -latest -products '*' -property installationVersion
+        if ($LASTEXITCODE -ne 0 -or -not $installedVersion) { throw 'No Visual Studio C++ installation found' }
+        $major = ([version]($installedVersion | Select-Object -First 1)).Major
+        $capabilitiesText = & cmake -E capabilities
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect CMake generators' }
+        $capabilities = ($capabilitiesText -join "`n") | ConvertFrom-Json
+        $generator = @($capabilities.generators | Where-Object { $_.name -like "Visual Studio $major *" })
+        if ($generator.Count -ne 1) { throw "Upgrade CMake to support installed Visual Studio $major (VS 2026 requires CMake 4.2+)" }
+        $arguments += @('-G', $generator[0].name)
+    }
+    $arguments += @('-A', $arch)
+} elseif ($manifest.target -like 'i686-*') {
+    $arguments += @('-DCMAKE_C_FLAGS=-m32','-DCMAKE_CXX_FLAGS=-m32')
+}
+cmake @arguments @CmakeArguments
+if ($LASTEXITCODE -ne 0) { throw 'SDK example configuration failed' }
+cmake --build $BuildDirectory --config Release --parallel 2
+if ($LASTEXITCODE -ne 0) { throw 'SDK example compilation failed' }
+ctest --test-dir $BuildDirectory -C Release --output-on-failure
+if ($LASTEXITCODE -ne 0) { throw 'SDK C/C++ offline tests failed' }
+$targetProfile = & (Join-Path $PSScriptRoot 'Get-ReleaseTarget.ps1') -Target $manifest.target
+$library = Join-Path $package ('native/' + $targetProfile.library)
+$oldLibrary = $env:PMAC_LIBRARY
+$oldPythonPath = $env:PYTHONPATH
+try {
+    $env:PMAC_LIBRARY = $library
+    $env:PYTHONPATH = Join-Path $package 'bindings/python'
+    if ($PythonExecutable) {
+        # 解释器必须与库同位数；不使用当前机器默认 Python 猜测目标位数。
+        & $PythonExecutable -B (Join-Path $package 'examples/python/sdk_smoke.py')
+        if ($LASTEXITCODE -ne 0) { throw 'SDK Python lifecycle smoke failed' }
+        & $PythonExecutable -B (Join-Path $package 'examples/python/getresponse.py') --native-version
+        if ($LASTEXITCODE -ne 0) { throw 'SDK Python GetResponse offline check failed' }
+    }
+    if ($DotnetExecutable) {
+        $project = Join-Path $package 'examples/dotnet/getresponse/Pmac.GetResponse.csproj'
+        # .NET 8 的 --artifacts-path 把 obj/bin 留在包外。x86 使用匹配的 runtime 执行 IL。
+        dotnet build $project -c Release --artifacts-path (Join-Path $BuildDirectory 'dotnet') --nologo
+        if ($LASTEXITCODE -ne 0) { throw 'SDK .NET example build failed' }
+        $assembly = Join-Path $BuildDirectory 'dotnet/bin/Pmac.GetResponse/release/Pmac.GetResponse.dll'
+        & $DotnetExecutable $assembly --check
+        if ($LASTEXITCODE -ne 0) { throw 'SDK .NET offline check failed' }
+    }
+} finally {
+    $env:PMAC_LIBRARY = $oldLibrary
+    $env:PYTHONPATH = $oldPythonPath
+}
+Write-Host "SDK examples passed: $($manifest.target)"

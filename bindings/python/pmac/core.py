@@ -1,7 +1,7 @@
 import asyncio
 import ctypes as C
 from enum import IntEnum
-from collections import namedtuple
+from collections import deque, namedtuple
 import os
 import queue
 import threading
@@ -36,13 +36,44 @@ def check(status, operation="PMAC operation"):
         raise PmacError(status, f"{operation} failed with status {status}")
 
 
+def _check_business(lib, status, operation):
+    if status == 0:
+        return
+    function = getattr(lib, "pmac_copy_last_error", None)
+    if function is not None:
+        info, required = N.ErrorInfo(), C.c_size_t()
+        copied = function(N.byref(info), None, 0, N.byref(required))
+        if copied in (0, -11) and info.status == status:
+            data = (C.c_uint8 * required.value)() if required.value else None
+            if data is None or function(N.byref(info), data, len(data), N.byref(required)) == 0:
+                message = bytes(data).decode("utf-8", "replace") if data else operation
+                raise PmacError(status, message, info.request_id, info.certainty)
+    raise PmacError(status, f"{operation} failed with status {status}", certainty=1)
+
+def _checked_integer(value, minimum, maximum, name):
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} is outside the native integer range")
+    return value
+
 def options(value=None):
     value = value or {}
-    return N.RequestOptions(N.sizeof(N.RequestOptions), 2000,
-                            value.get("timeout_ms", 5000),
-                            (1 if value.get("infinite") else 0) | (2 if value.get("read_pool") else 0),
-                            value.get("max_response_bytes", 1024 * 1024))
+    timeout_ms = _checked_integer(value.get("timeout_ms", 5000), 0, 0xffffffff, "timeout_ms")
+    max_response_bytes = _checked_integer(value.get("max_response_bytes", 1024 * 1024),
+                                          0, 2**(8 * C.sizeof(C.c_size_t)) - 1, "max_response_bytes")
+    classify_command = not value.get("read_pool") and not value.get("passthrough", True)
+    return N.RequestOptions(N.sizeof(N.RequestOptions), 2000, timeout_ms,
+                            (1 if value.get("infinite") else 0) | (2 if value.get("read_pool") else 0) | (8 if classify_command else 0),
+                            max_response_bytes)
 
+
+def _command_options(command, value):
+    # Only a standalone reset gets the longer default; explicit budgets always win.
+    normalized = command.strip() if isinstance(command, str) else bytes(command or b"").strip()
+    if "timeout_ms" not in value and not value.get("infinite") and normalized in ("$$$", "$$$***", b"$$$", b"$$$***"):
+        value = dict(value, timeout_ms=30000)
+    return options(value)
 
 def _release_request(lib, request_id, created_pid):
     if os.getpid() != created_pid:
@@ -82,6 +113,7 @@ class Request:
             check(function(self.id, N.byref(member_id), N.byref(epoch)), "request route")
             return RequestRoute(member_id.value, epoch.value)
     def wait(self, wait_ms=0xFFFFFFFF):
+        _checked_integer(wait_ms, 0, 0xffffffff, "wait_ms")
         request_id = self.id
         info = N.RequestInfo()
         status = self.runtime.lib.pmac_request_wait(request_id, wait_ms, N.byref(info))
@@ -125,6 +157,7 @@ class Request:
         return self._copy(True)
 
     def match(self, pattern, group=0):
+        _checked_integer(group, 0, 0xffffffff, "group")
         view, buffer = N.view(pattern)
         with self._lock:
             request_id = self.id
@@ -142,17 +175,28 @@ class Request:
             return self._error_locked(status)
 
     def _error_locked(self, status):
-        info = N.ErrorInfo()
-        required = C.c_size_t()
-        code = self.runtime.lib.pmac_request_copy_error(self._id, N.byref(info), None, 0, N.byref(required))
-        if code not in (0, -11):
-            return PmacError(status, f"request failed with status {status}", self._id)
-        data = (C.c_uint8 * required.value)() if required.value else None
-        if data:
-            self.runtime.lib.pmac_request_copy_error(self._id, N.byref(info), data, len(data), N.byref(required))
-        message = bytes(data).decode("utf-8", "replace") if data else f"request failed with status {status}"
-        return PmacError(status, message, info.request_id, info.certainty)
-
+        # Local match/copy errors live in TLS, not on a successful Request.
+        lib = self.runtime.lib
+        sources = ((getattr(lib, "pmac_copy_last_error", None), ()),
+                   (lib.pmac_request_copy_error, (self._id,)))
+        for function, prefix in sources:
+            if function is None:
+                continue
+            info, required = N.ErrorInfo(), C.c_size_t()
+            code = function(*prefix, N.byref(info), None, 0, N.byref(required))
+            if code not in (0, -11) or info.status != status or not required.value:
+                continue
+            data = (C.c_uint8 * required.value)()
+            code = function(*prefix, N.byref(info), data, len(data), N.byref(required))
+            if code == 0 and info.status == status and required.value:
+                message = bytes(data[:required.value]).decode("utf-8", "replace")
+                if not prefix:
+                    request_info, ignored = N.ErrorInfo(), C.c_size_t()
+                    request_status = lib.pmac_request_copy_error(self._id, N.byref(request_info), None, 0, N.byref(ignored))
+                    if request_status in (0, -11):
+                        info.certainty = request_info.certainty
+                return PmacError(status, message, info.request_id or self._id, info.certainty)
+        return PmacError(status, f"request failed with status {status}", self._id)
     def _copy(self, stderr):
         with self._lock:
             request_id = self.id
@@ -222,10 +266,31 @@ class Request:
         self.release()
 
 
+class _ClientHandles:
+    """Native ownership independent of Client weak references; swept by the pump."""
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.ids = set()
+        self.abandoned = set()
+
+    def forget(self, client_id):
+        with self.lock:
+            self.ids.discard(client_id)
+            self.abandoned.discard(client_id)
+
+    def sweep(self, lib):
+        with self.lock:
+            for client_id in list(self.abandoned):
+                status = lib.pmac_client_release(client_id)
+                if status in (0, -2):
+                    self.forget(client_id)
+            return bool(self.abandoned)
+
 class _CompletionPump:
-    def __init__(self, lib, runtime_id, capacity):
+    def __init__(self, lib, runtime_id, capacity, client_handles):
         if capacity < 1:
             raise ValueError("completion_capacity must be positive")
+        self.client_handles = client_handles
         self.lib, self.runtime_id = lib, runtime_id
         self.native_notifications = hasattr(lib, "pmac_runtime_wait_completion") and hasattr(lib, "pmac_runtime_wake")
         self.queue = queue.Queue(maxsize=capacity)
@@ -254,7 +319,7 @@ class _CompletionPump:
         self._wake()
 
     def run(self):
-        pending = []
+        pending = deque()
         cursor = C.c_uint64()
         try:
             while True:
@@ -263,10 +328,11 @@ class _CompletionPump:
                         pending.append(self.queue.get_nowait())
                     except queue.Empty:
                         break
-                for reference in pending[:]:
+                # Visit each current entry once; survivors wait for the next round.
+                for _ in range(len(pending)):
+                    reference = pending.popleft()
                     request = reference()
                     if request is None:
-                        pending.remove(reference)
                         self.slots.release()
                         continue
                     try:
@@ -276,17 +342,19 @@ class _CompletionPump:
                             request._finish_locked(None, error)
                         complete = True
                     if complete:
-                        pending.remove(reference)
                         self.slots.release()
+                    else:
+                        pending.append(reference)
                     request = None
-                if self.stopping.is_set() and not pending and self.queue.empty():
+                orphaned = self.client_handles.sweep(self.lib)
+                if self.stopping.is_set() and not pending and self.queue.empty() and not orphaned:
                     return
                 if self.native_notifications:
                     status = self.lib.pmac_runtime_wait_completion(self.runtime_id, N.byref(cursor), 100)
                     if status not in (0, -6) and not self.stopping.is_set():
                         raise PmacError(status, "runtime completion notification failed", certainty=1)
                 else:
-                    self.wake.wait(0.001 if pending else None)
+                    self.wake.wait(0.001 if pending or orphaned else None)
                     self.wake.clear()
         except Exception as error:
             self.stopping.set()
@@ -314,13 +382,16 @@ def _finalize_runtime(lib, runtime_id, pump, created_pid):
     if os.getpid() != created_pid:
         return
     pump.stop()
-    status = lib.pmac_runtime_shutdown(runtime_id, 0)
-    if status == 0:
+    cleanup = getattr(lib, 'pmac_runtime_cleanup', None)
+    if cleanup is not None:
+        cleanup(runtime_id)
+    elif lib.pmac_runtime_shutdown(runtime_id, 0) == 0:
         lib.pmac_runtime_release(runtime_id)
 
 
 class Runtime:
     def __init__(self, workers=2, library_path=None, completion_capacity=1024):
+        _checked_integer(workers, 1, 256, "workers")
         if completion_capacity < 1:
             raise ValueError("completion_capacity must be positive")
         self.lib = N.load(library_path)
@@ -328,11 +399,12 @@ class Runtime:
         self._lock = threading.RLock()
         self._closing = False
         self._clients = weakref.WeakSet()
+        self._client_handles = _ClientHandles()
         config = N.RuntimeConfig(N.sizeof(N.RuntimeConfig), 2000, workers, 0)
         self._id = C.c_uint64()
         check(self.lib.pmac_runtime_create(N.byref(config), N.byref(self._id)), "runtime create")
         try:
-            self._pump = _CompletionPump(self.lib, self._id.value, completion_capacity)
+            self._pump = _CompletionPump(self.lib, self._id.value, completion_capacity, self._client_handles)
         except BaseException:
             self.lib.pmac_runtime_shutdown(self._id.value, 0)
             self.lib.pmac_runtime_release(self._id.value)
@@ -357,11 +429,16 @@ class Runtime:
         check(self.lib.pmac_get_runtime_info(N.byref(result)), "runtime info")
         return result
     def create_client(self, max_requests=64, max_retained_bytes=80 * 1024 * 1024, max_file_tasks=1):
+        _checked_integer(max_requests, 1, 0xffffffff, "max_requests")
+        _checked_integer(max_file_tasks, 1, 0xffffffff, "max_file_tasks")
+        _checked_integer(max_retained_bytes, 1, 2**(8 * C.sizeof(C.c_size_t)) - 1, "max_retained_bytes")
         with self._lock:
             self._check_open()
             config = N.ClientConfig(N.sizeof(N.ClientConfig), 2000, max_requests, max_file_tasks, max_retained_bytes)
             client_id = C.c_uint64()
             check(self.lib.pmac_client_create(self._id.value, N.byref(config), N.byref(client_id)), "client create")
+            with self._client_handles.lock:
+                self._client_handles.ids.add(client_id.value)
             client = Client(self, client_id.value)
             self._clients.add(client)
             return client
@@ -383,6 +460,7 @@ class Runtime:
             raise PmacError(-13, "runtime is closing")
 
     def shutdown(self, wait_ms=1000):
+        _checked_integer(wait_ms, 0, 0xffffffff, "wait_ms")
         self._check_pid()
         deadline = time.monotonic() + max(0, wait_ms) / 1000
         with self._lock:
@@ -397,6 +475,12 @@ class Runtime:
                 raise PmacError(-14, "runtime completion pump is still stopping")
             for client in list(self._clients):
                 client.release()
+            with self._client_handles.lock:
+                for client_id in list(self._client_handles.ids):
+                    status = self.lib.pmac_client_release(client_id)
+                    if status != -2:
+                        check(status, "orphaned client release")
+                    self._client_handles.forget(client_id)
             check(self.lib.pmac_runtime_release(self._id.value), "runtime release")
             self._id.value = 0
             self._finalizer.detach()
@@ -407,18 +491,24 @@ class Runtime:
     def __exit__(self, *args):
         self.shutdown()
 
-def _finalize_client(lib, client_id, created_pid):
+def _finalize_client(lib, client_id, created_pid, handles, pump):
     if os.getpid() != created_pid:
         return
     lib.pmac_client_close(client_id, 0, 0)
-    lib.pmac_client_release(client_id)
+    status = lib.pmac_client_release(client_id)
+    if status in (0, -2):
+        handles.forget(client_id)
+    else:
+        with handles.lock:
+            handles.abandoned.add(client_id)
+        pump._wake()
 
 
 class Client:
     def __init__(self, runtime, client_id):
         self.runtime, self._id, self._pid = runtime, client_id, os.getpid()
         self._lock = threading.RLock()
-        self._finalizer = weakref.finalize(self, _finalize_client, runtime.lib, client_id, self._pid)
+        self._finalizer = weakref.finalize(self, _finalize_client, runtime.lib, client_id, self._pid, runtime._client_handles, runtime._pump)
     @property
     def lib(self): return self.runtime.lib
     def _check(self):
@@ -434,9 +524,11 @@ class Client:
         keepalive = []
         for name, value in (("host", host), ("username", username), ("password", password), ("private_key", kwargs.get("private_key")), ("public_key", kwargs.get("public_key")), ("passphrase", kwargs.get("passphrase")), ("known_hosts", kwargs.get("known_hosts")), ("pinned_sha256", kwargs.get("pinned_sha256"))):
             view, buffer = N.view(value); setattr(native, name, view); keepalive.append(buffer)
-        native.port = kwargs.get("port", 22); native.control_pool_size = kwargs.get("control_pool_size", 1)
+        native.port = _checked_integer(kwargs.get("port", 22), 1, 0xffff, "port")
+        native.control_pool_size = _checked_integer(kwargs.get("control_pool_size", 1), 1, 0xff, "control_pool_size")
         native.flags = (1 if kwargs.get("tcp_probe", True) else 0) | (2 if kwargs.get("accept_any_host_key", False) else 0)
-        native.tcp_probe_timeout_ms = kwargs.get("tcp_probe_timeout_ms", 600); native.keepalive_interval_ms = kwargs.get("keepalive_interval_ms", 1000); native.keepalive_max = kwargs.get("keepalive_max", 3)
+        for name, default in (("tcp_probe_timeout_ms", 600), ("keepalive_interval_ms", 1000), ("keepalive_max", 3)):
+            setattr(native, name, _checked_integer(kwargs.get(name, default), 0, 0xffffffff, name))
         return native, keepalive
 
     def connect_async(self, host, username, password=None, **kwargs):
@@ -449,7 +541,7 @@ class Client:
         with request: request.wait()
 
     def command_async(self, command, **kwargs):
-        view, buffer = N.view(command); native = options(kwargs); request = C.c_uint64()
+        view, buffer = N.view(command); native = _command_options(command, kwargs); request = C.c_uint64()
         check(self.lib.pmac_command_submit(self._check(), view.data, view.len, N.byref(native), N.byref(request)), "command submit")
         return Request(self.runtime, request.value)
 
@@ -458,7 +550,7 @@ class Client:
             request.wait(); return request.response()
 
     def get_response_async(self, command, **kwargs):
-        view, buffer = N.view(command); native = options(kwargs); request = C.c_uint64()
+        view, buffer = N.view(command); native = _command_options(command, kwargs); request = C.c_uint64()
         check(self.lib.pmac_get_response_async(self._check(), view.data, view.len, N.byref(native), N.byref(request)), "get response submit")
         return Request(self.runtime, request.value)
 
@@ -484,6 +576,8 @@ class Client:
         with self.dart_disconnect_async(**kwargs) as request: request.wait()
 
     def dart_get_async(self, command, address, length, **kwargs):
+        _checked_integer(command, 0, 0xffffffff, "command"); _checked_integer(address, 0, 0xffffffff, "address")
+        _checked_integer(length, 0, 524288, "length")
         native = options(kwargs); request = C.c_uint64()
         check(self.lib.pmac_dart_get_async(self._check(), command, address, length, N.byref(native), N.byref(request)), "DART get submit")
         return Request(self.runtime, request.value)
@@ -493,6 +587,7 @@ class Client:
             request.wait(); return request.response()
 
     def dart_set_async(self, command, address, data, **kwargs):
+        _checked_integer(command, 0, 0xffffffff, "command"); _checked_integer(address, 0, 0xffffffff, "address")
         view, buffer = N.view(data); native = options(kwargs); request = C.c_uint64()
         check(self.lib.pmac_dart_set_async(self._check(), command, address, view.data, view.len, N.byref(native), N.byref(request)), "DART set submit")
         return Request(self.runtime, request.value)
@@ -532,6 +627,7 @@ class Client:
     @property
     def connected(self): return self.state().state == 4
     def close(self, wait_ms=1000):
+        _checked_integer(wait_ms, 0, 0xffffffff, "wait_ms")
         with self._lock:
             if self._id:
                 check(self.lib.pmac_client_close(self._check(), 0, wait_ms), "client close")
@@ -540,6 +636,7 @@ class Client:
         with self._lock:
             if self._id:
                 check(self.lib.pmac_client_release(self._id), "client release")
+                self.runtime._client_handles.forget(self._id)
                 self._id = 0
                 self._finalizer.detach()
     def __enter__(self): return self
@@ -555,6 +652,11 @@ class Client:
 
     @staticmethod
     def _pool_profile(target_size=1, max_members=None, min_ready=1, connect_timeout_ms=60000):
+        max_members = target_size if max_members is None else max_members
+        _checked_integer(target_size, 1, 255, "target_size")
+        _checked_integer(max_members, target_size, 255, "max_members")
+        _checked_integer(min_ready, 1, target_size, "min_ready")
+        _checked_integer(connect_timeout_ms, 1, 0xffffffff, "connect_timeout_ms")
         return N.PoolProfile(N.sizeof(N.PoolProfile), 2000, target_size,
                              target_size if max_members is None else max_members,
                              min_ready, connect_timeout_ms)
@@ -575,6 +677,7 @@ class Client:
         return Request(self.runtime, request_id.value)
 
     def _pool_member_async(self, name, member_id, kwargs):
+        _checked_integer(member_id, 0, 0xffffffffffffffff, "member_id")
         native = options(kwargs)
         request_id = C.c_uint64()
         check(self._pool_function(name)(self._check(), member_id, N.byref(native), N.byref(request_id)), "pool member management submit")
@@ -613,9 +716,15 @@ class Client:
         raise PmacError(-12, "pool membership changed repeatedly while copying the snapshot")
 
     def pool_confirm_recovery(self, expected_revision, acknowledge_unknown_writes=False, confirm_remote_released=False):
+        _checked_integer(expected_revision, 0, 0xffffffffffffffff, "expected_revision")
         flags = (1 if acknowledge_unknown_writes else 0) | (2 if confirm_remote_released else 0)
         check(self._pool_function("pmac_pool_confirm_recovery")(self._check(), expected_revision, flags), "confirm recovery")
-    def _unit(self, name, *args, **kwargs): native = options(kwargs); check(getattr(self.lib, "pmac_" + name)(self._check(), *args, N.byref(native)), name)
+    def _unit(self, name, *args, **kwargs):
+        if args:
+            _checked_integer(args[0], -0x80000000, 0x7fffffff, "target")
+        if name == "coord_exec_prog":
+            _checked_integer(args[1], -0x80000000, 0x7fffffff, "program")
+        native = options(kwargs); _check_business(self.lib, getattr(self.lib, "pmac_" + name)(self._check(), *args, N.byref(native)), name)
     def abort(self, **kwargs): self._unit("abort", **kwargs)
     def coord_enable(self, n, **kwargs): self._unit("coord_enable", n, **kwargs)
     def coord_exec_prog(self, n, p, **kwargs): self._unit("coord_exec_prog", n, p, **kwargs)
@@ -630,8 +739,9 @@ class Client:
     def motor_inc_jog(self, n, value, **kwargs): self._unit("motor_inc_jog", n, float(value), **kwargs)
 
     def _query(self, name, kind, target=None, **kwargs):
+        if target is not None: _checked_integer(target, -0x80000000, 0x7fffffff, "target")
         native = options(kwargs); value = kind(); args = (self._check(),) + (() if target is None else (target,)) + (N.byref(native), N.byref(value))
-        check(getattr(self.lib, "pmac_" + name)(*args), name); return value.value
+        _check_business(self.lib, getattr(self.lib, "pmac_" + name)(*args), name); return value.value
     def coord_status(self, n, **kwargs): return CoordStatus(self._query("coord_status", C.c_uint64, n, **kwargs))
     def motor_status(self, n, **kwargs): return MotorStatus(self._query("motor_status", C.c_uint64, n, **kwargs))
     def motor_position(self, n, **kwargs): return self._query("motor_position", C.c_double, n, **kwargs)
@@ -648,4 +758,3 @@ class Client:
     def coord_prog_running(self, n, **kwargs): return bool(self._query("coord_prog_running", C.c_uint32, n, **kwargs))
     def motor_closed_loop(self, n, **kwargs): return bool(self._query("motor_closed_loop", C.c_uint32, n, **kwargs))
     def coord_motor_enabled(self, n, **kwargs): return bool(self._query("coord_motor_enabled", C.c_uint32, n, **kwargs))
-

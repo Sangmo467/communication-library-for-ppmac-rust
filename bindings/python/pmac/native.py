@@ -1,5 +1,6 @@
 import ctypes as C
 import os
+import sys
 
 sizeof = C.sizeof
 byref = C.byref
@@ -34,7 +35,7 @@ class PoolMember(C.Structure):
 
 def load(path=None):
     if path is None:
-        path = "pmac.dll" if os.name == "nt" else "libpmac.so"
+        path = "pmac.dll" if os.name == "nt" else ("libpmac.dylib" if sys.platform == "darwin" else "libpmac.so")
     lib = C.CDLL(path)
     lib.pmac_version_string.restype = C.c_char_p
     lib.pmac_version_number.restype = C.c_uint32
@@ -49,6 +50,8 @@ def load(path=None):
         lib.pmac_runtime_wait_completion.argtypes = [C.c_uint64, C.POINTER(C.c_uint64), C.c_uint32]
         lib.pmac_runtime_wake.argtypes = [C.c_uint64]
     lib.pmac_runtime_release.argtypes = [C.c_uint64]
+    if hasattr(lib, "pmac_runtime_cleanup"):
+        lib.pmac_runtime_cleanup.argtypes = [C.c_uint64]
     lib.pmac_client_create.argtypes = [C.c_uint64, C.POINTER(ClientConfig), C.POINTER(C.c_uint64)]
     lib.pmac_client_close.argtypes = [C.c_uint64, C.c_uint32, C.c_uint32]
     lib.pmac_client_release.argtypes = [C.c_uint64]
@@ -79,6 +82,8 @@ def load(path=None):
     copy = [C.c_uint64, C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(C.c_size_t)]
     lib.pmac_request_copy_response.argtypes = copy
     lib.pmac_request_copy_stderr.argtypes = copy
+    if hasattr(lib, "pmac_copy_last_error"):
+        lib.pmac_copy_last_error.argtypes = [C.POINTER(ErrorInfo), C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(C.c_size_t)]
     lib.pmac_request_copy_error.argtypes = [C.c_uint64, C.POINTER(ErrorInfo), C.POINTER(C.c_uint8), C.c_size_t, C.POINTER(C.c_size_t)]
     lib.pmac_request_copy_match.argtypes = [C.c_uint64, C.POINTER(C.c_uint8), C.c_size_t, C.c_uint32] + copy[1:]
     lib.pmac_request_release.argtypes = [C.c_uint64]

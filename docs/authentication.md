@@ -1,5 +1,7 @@
 # 认证与主机身份校验
 
+[English](authentication.en.md)
+
 所有 SDK 都通过同一个 `pmac_connect_submit` 和 russh 认证路径，不维护第二套 SSH 实现。
 
 ## 登录方式
@@ -19,6 +21,8 @@
 1. `known_hosts`：OpenSSH 格式的主机记录文件；
 2. `pinned_sha256`：主机公钥的 32 字节 SHA-256 原始字节；
 3. `accept_any_host_key`：显式接受不校验主机身份的风险，仅用于调用方明确控制的非生产环境。
+
+`known_hosts` 中匹配主机和密钥的 `@revoked` 条目优先于普通允许条目。暂不支持其他 marker，以及包含通配符或否定项的撤销主机模式；遇到这些内容会返回 `PMAC_HOST_KEY`，需调整配置后重试。
 
 指纹不是 64 字符十六进制文本；C ABI 和 SDK 接收的是 32 字节值。主机密钥变化会返回 `PMAC_HOST_KEY`，应先核实设备身份，不要直接关闭校验。
 

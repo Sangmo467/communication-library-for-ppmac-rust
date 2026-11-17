@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -14,7 +14,26 @@ use tokio::net::TcpStream;
 use pmac_core::{ConnectOptions, Error, ErrorCode, ExecutionContext, HostKeyPolicy};
 
 pub(crate) type Channel = russh::Channel<client::Msg>;
-type CloseEvents = Arc<Mutex<HashMap<ChannelId, tokio::sync::oneshot::Sender<()>>>>;
+#[derive(Default)]
+struct CloseState {
+    // None records a canceled waiter until the corresponding late Close arrives.
+    waiting: HashMap<ChannelId, Option<tokio::sync::oneshot::Sender<()>>>,
+    closed: HashSet<ChannelId>,
+}
+impl CloseState {
+    fn confirm(&mut self, channel: ChannelId) {
+        match self.waiting.remove(&channel) {
+            Some(Some(confirmed)) => {
+                let _ = confirmed.send(());
+            }
+            Some(None) => {} // The consumer was canceled; do not cache an orphaned ID.
+            None => {
+                self.closed.insert(channel);
+            }
+        }
+    }
+}
+type CloseEvents = Arc<Mutex<CloseState>>;
 
 struct CloseEventRegistration {
     channel: ChannelId,
@@ -22,10 +41,17 @@ struct CloseEventRegistration {
 }
 impl Drop for CloseEventRegistration {
     fn drop(&mut self) {
-        self.events
+        if let Some(waiter) = self
+            .events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.channel);
+            .waiting
+            .get_mut(&self.channel)
+        {
+            // Keep a tombstone only while the remote channel remains unconfirmed.
+            // If Close already consumed the registration, do not recreate one.
+            *waiter = None;
+        }
     }
 }
 
@@ -54,21 +80,51 @@ impl Connection {
             .map_err(transport_error)
     }
 
-    pub(crate) async fn close_channel(&self, channel: Channel) -> bool {
+    pub(crate) async fn close_channel(&self, mut channel: Channel) -> bool {
         let id = channel.id();
-        let (confirmed, receiver) = tokio::sync::oneshot::channel();
-        let previous = self
-            .close_events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, confirmed);
-        assert!(previous.is_none(), "duplicate channel close registration");
+        let (confirmed, mut receiver) = tokio::sync::oneshot::channel();
+        {
+            let mut events = self
+                .close_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if events.closed.remove(&id) {
+                return true;
+            }
+            let previous = events.waiting.insert(id, Some(confirmed));
+            assert!(previous.is_none(), "duplicate channel close registration");
+        }
         let _registration = CloseEventRegistration {
             channel: id,
             events: self.close_events.clone(),
         };
+        // Give stdin-driven GPASCII a chance to exit before forcing channel close.
+        // This grace period is inside the caller's two-second cleanup deadline.
+        let graceful = async {
+            if channel.eof().await.is_err() {
+                return None;
+            }
+            loop {
+                tokio::select! {
+                    confirmed = &mut receiver => return Some(confirmed.is_ok()),
+                    message = channel.wait() => match message {
+                        Some(russh::ChannelMsg::ExitStatus { .. }
+                            | russh::ChannelMsg::ExitSignal { .. }
+                            | russh::ChannelMsg::Close) | None => return None,
+                        _ => {}
+                    }
+                }
+            }
+        };
+        if let Ok(Some(confirmed)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), graceful).await
+        {
+            return confirmed;
+        }
+        // Exit status alone does not confirm channel release. Always finish the
+        // close handshake; timeout/cancellation retains the uncertain permit.
         if channel.close().await.is_err() {
-            return false;
+            return receiver.try_recv().is_ok();
         }
         receiver.await.is_ok()
     }
@@ -100,11 +156,15 @@ pub(crate) struct ClientHandler {
     verifier: HostKeyVerifier,
     healthy: Arc<AtomicBool>,
     close_events: CloseEvents,
+    track_closes: bool,
 }
 
 enum HostKeyVerifier {
     AcceptAnyExplicit,
-    Known(Vec<PublicKey>),
+    Known {
+        allowed: Vec<PublicKey>,
+        revoked: Vec<PublicKey>,
+    },
     Pinned([u8; 32]),
 }
 
@@ -118,8 +178,13 @@ impl client::Handler for ClientHandler {
         let key = key.public_key();
         let accepted = match &self.verifier {
             HostKeyVerifier::AcceptAnyExplicit => true,
-            HostKeyVerifier::Known(keys) => {
-                keys.iter().any(|known| known.key_data() == key.key_data())
+            HostKeyVerifier::Known { allowed, revoked } => {
+                !revoked
+                    .iter()
+                    .any(|known| known.key_data() == key.key_data())
+                    && allowed
+                        .iter()
+                        .any(|known| known.key_data() == key.key_data())
             }
             HostKeyVerifier::Pinned(expected) => {
                 Sha256::digest(key.public_key_bytes()).as_slice() == expected
@@ -136,13 +201,12 @@ impl client::Handler for ClientHandler {
         channel: ChannelId,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        let confirmed = self
-            .close_events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&channel);
-        if let Some(confirmed) = confirmed {
-            let _ = confirmed.send(());
+        if self.track_closes {
+            let mut events = self
+                .close_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            events.confirm(channel);
         }
         Ok(())
     }
@@ -151,6 +215,7 @@ impl client::Handler for ClientHandler {
 pub(crate) async fn connect(
     options: &ConnectOptions,
     _context: &ExecutionContext,
+    track_closes: bool,
 ) -> Result<Arc<Connection>, Error> {
     validate_options(options)?;
     let verifier = load_verifier(options).await?;
@@ -196,6 +261,7 @@ pub(crate) async fn connect(
         verifier,
         healthy: healthy.clone(),
         close_events: close_events.clone(),
+        track_closes,
     };
     let mut handle = client::connect_stream(config, stream, handler)
         .await
@@ -269,11 +335,22 @@ async fn load_verifier(options: &ConnectOptions) -> Result<HostKeyVerifier, Erro
             let port = options.port;
             let path = path.clone();
             tokio::task::spawn_blocking(move || {
-                russh::keys::known_hosts::known_host_keys_path(&host, port, path)
+                russh::keys::known_hosts::known_host_key_entries_path(&host, port, path)
             })
             .await
             .map_err(|error| Error::internal(error.to_string()))?
-            .map(|keys| HostKeyVerifier::Known(keys.into_iter().map(|(_, key)| key).collect()))
+            .map(|keys| {
+                let mut allowed = Vec::new();
+                let mut revoked = Vec::new();
+                for (_, key, is_revoked) in keys {
+                    if is_revoked {
+                        revoked.push(key);
+                    } else {
+                        allowed.push(key);
+                    }
+                }
+                HostKeyVerifier::Known { allowed, revoked }
+            })
             .map_err(|error| {
                 Error::new(
                     ErrorCode::HostKey,
@@ -332,4 +409,63 @@ fn authentication_error(error: russh::Error) -> Error {
 }
 pub(crate) fn disconnected(message: impl Into<String>) -> Error {
     Error::disconnected(message).sent()
+}
+
+#[cfg(test)]
+mod close_event_tests {
+    use super::*;
+    use russh::keys::ssh_encoding::Decode;
+
+    fn id() -> ChannelId {
+        ChannelId::decode(&mut &7u32.to_be_bytes()[..]).unwrap()
+    }
+
+    #[test]
+    fn canceled_registration_consumes_late_close_without_retaining_id() {
+        let id = id();
+        let events = CloseEvents::default();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        events.lock().unwrap().waiting.insert(id, Some(sender));
+        let registration = CloseEventRegistration {
+            channel: id,
+            events: events.clone(),
+        };
+        drop(receiver);
+        drop(registration);
+        let mut state = events.lock().unwrap();
+        state.confirm(id);
+        assert!(state.waiting.is_empty());
+        assert!(
+            state.closed.is_empty(),
+            "late close must not become an unconsumable cached ID"
+        );
+    }
+
+    #[test]
+    fn confirmed_registration_drop_does_not_recreate_a_tombstone() {
+        let id = id();
+        let events = CloseEvents::default();
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
+        events.lock().unwrap().waiting.insert(id, Some(sender));
+        let registration = CloseEventRegistration {
+            channel: id,
+            events: events.clone(),
+        };
+        events.lock().unwrap().confirm(id);
+        assert_eq!(receiver.try_recv(), Ok(()));
+        drop(registration);
+        let state = events.lock().unwrap();
+        assert!(state.waiting.is_empty());
+        assert!(state.closed.is_empty());
+    }
+
+    #[test]
+    fn early_close_stays_available_for_subsequent_registration() {
+        let id = id();
+        let mut state = CloseState::default();
+        state.confirm(id);
+        assert!(state.closed.remove(&id));
+        assert!(state.closed.is_empty());
+        assert!(state.waiting.is_empty());
+    }
 }

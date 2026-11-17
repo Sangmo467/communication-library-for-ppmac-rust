@@ -12,27 +12,57 @@ namespace pmac98 {
 
 class Error : public std::runtime_error {
 public:
-    explicit Error(int status, const std::string& operation) : std::runtime_error(operation + " failed"), status_(status) {}
+    explicit Error(int status, const std::string& operation, uint64_t request = 0, uint32_t certainty = 1)
+        : std::runtime_error(diagnostic(status, operation, request)), status_(status), request_(request), certainty_(certainty) {}
     int status() const { return status_; }
+    uint64_t requestId() const { return request_; }
+    uint32_t certainty() const { return certainty_; }
     const char* statusName() const { return pmac::statusName(status_); }
     pmac::ErrorCategory category() const { return pmac::errorCategory(status_); }
     bool isTransportError() const { return pmac::isTransportError(status_); }
 private:
+    static std::string diagnostic(int status, const std::string& operation, uint64_t request) {
+        for (int source = 0; source < 2; ++source) {
+            if (source == 1 && !request) break;
+            pmac_error_info info = {}; size_t required = 0;
+            int copied = source == 0 ? pmac_copy_last_error(&info, 0, 0, &required)
+                                     : pmac_request_copy_error(request, &info, 0, 0, &required);
+            if ((copied != PMAC_OK && copied != PMAC_BUFFER_TOO_SMALL) || info.status != status || required == 0) continue;
+            std::vector<char> message(required);
+            copied = source == 0 ? pmac_copy_last_error(&info, &message[0], message.size(), &required)
+                                 : pmac_request_copy_error(request, &info, &message[0], message.size(), &required);
+            if (copied == PMAC_OK && info.status == status && required != 0)
+                return std::string(&message[0], required);
+        }
+        return operation + " failed: " + pmac::statusName(status);
+    }
     int status_;
+    uint64_t request_;
+    uint32_t certainty_;
 };
 
-inline void check(int status, const char* operation) { if (status != PMAC_OK) throw Error(status, operation); }
+inline void check(int status, const char* operation) {
+    if (status == PMAC_OK) return;
+#ifdef PMAC_ENABLE_LAST_ERROR_DETAILS
+    pmac_error_info info = {}; size_t required = 0;
+    int copied = pmac_copy_last_error(&info, 0, 0, &required);
+    if ((copied == PMAC_OK || copied == PMAC_BUFFER_TOO_SMALL) && info.status == status)
+        throw Error(status, operation, info.request_id, info.certainty);
+#endif
+    throw Error(status, operation);
+}
 
 struct Options {
     uint32_t timeout_ms;
     bool infinite;
     bool read_pool;
     size_t max_response_bytes;
-    Options() : timeout_ms(5000), infinite(false), read_pool(false), max_response_bytes(1024 * 1024) {}
+    bool passthrough;
+    Options() : timeout_ms(5000), infinite(false), read_pool(false), max_response_bytes(1024 * 1024), passthrough(true) {}
     pmac_request_options native() const {
         pmac_request_options value = {};
         value.struct_size = sizeof(value); value.abi_version = PMAC_ABI_VERSION;
-        value.timeout_ms = timeout_ms; value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (read_pool ? PMAC_REQUEST_READ_POOL : 0u); value.max_response_bytes = max_response_bytes;
+        value.timeout_ms = timeout_ms; value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (read_pool ? PMAC_REQUEST_READ_POOL : 0u) | (read_pool ? 0u : (passthrough ? 0u : PMAC_REQUEST_CLASSIFY)); value.max_response_bytes = max_response_bytes;
         return value;
     }
 };
@@ -119,22 +149,25 @@ public:
         check(pmac_connect_submit(id_, &options, &request), "connect_submit");
         pmac_request_info info = {};
         const int status = pmac_request_wait(request, 0xffffffff, &info);
-        if (status != PMAC_OK) { (void)pmac_request_release(request); throw Error(status, "connect"); }
+        if (status != PMAC_OK) { const Error error(status, "connect", request, info.request_id == request ? info.certainty : 1u); (void)pmac_request_release(request); throw error; }
         check(pmac_request_release(request), "request_release");
     }
 
-    std::vector<uint8_t> command(const std::string& command, const Options& options = Options()) {
+    std::vector<uint8_t> command(const std::string& command) {
+        return this->command(command, defaultCommandOptions(command));
+    }
+    std::vector<uint8_t> command(const std::string& command, const Options& options) {
         pmac_request_options native = options.native(); pmac_request_id request = 0;
         check(pmac_command_submit(id_, data(command), command.size(), &native, &request), "command_submit");
+        ScopedRequest owner(request);
         pmac_request_info info = {};
         const int status = pmac_request_wait(request, 0xffffffff, &info);
-        if (status != PMAC_OK) { (void)pmac_request_release(request); throw Error(status, "command"); }
+        if (status != PMAC_OK) { throw Error(status, "command", request, info.request_id == request ? info.certainty : 1u); }
         size_t required = 0;
         int copy_status = pmac_request_copy_response(request, 0, 0, &required);
-        if (copy_status != PMAC_BUFFER_TOO_SMALL && copy_status != PMAC_OK) { (void)pmac_request_release(request); throw Error(copy_status, "copy_response"); }
+        if (copy_status != PMAC_BUFFER_TOO_SMALL && copy_status != PMAC_OK) { throw Error(copy_status, "copy_response"); }
         std::vector<uint8_t> result(required);
         copy_status = pmac_request_copy_response(request, result.empty() ? 0 : &result[0], result.size(), &required);
-        (void)pmac_request_release(request);
         check(copy_status, "copy_response");
         return result;
     }
@@ -167,17 +200,22 @@ public:
         }
     }
     void confirmRecovery(uint64_t revision, uint32_t flags) { check(pmac_pool_confirm_recovery(id_, revision, flags), "confirm_recovery"); }
-    std::vector<uint8_t> getResponse(const std::string& text, const std::string& pattern = "", const Options& options = Options()) {
+    std::vector<uint8_t> getResponse(const std::string& text, const std::string& pattern = "") {
+        return getResponse(text, pattern, defaultCommandOptions(text));
+    }
+    std::vector<uint8_t> getResponse(const std::string& text, const std::string& pattern, const Options& options) {
         pmac_request_options native = options.native(); uint64_t request = 0;
         check(pmac_get_response_async(id_, data(text), text.size(), &native, &request), "get_response_submit");
         ScopedRequest owner(request); pmac_request_info info = {};
-        check(pmac_request_wait(request, 0xffffffffu, &info), "get_response_wait");
+        const int wait_status = pmac_request_wait(request, 0xffffffffu, &info);
+        if (wait_status != PMAC_OK) throw Error(wait_status, "get_response_wait", request, info.request_id == request ? info.certainty : 1u);
         size_t required = 0;
         int status = pattern.empty() ? pmac_request_copy_response(request, 0, 0, &required) : pmac_request_copy_match(request, data(pattern), pattern.size(), 0, 0, 0, &required);
-        if (status != PMAC_BUFFER_TOO_SMALL && status != PMAC_OK) check(status, "get_response_copy");
+        if (status != PMAC_BUFFER_TOO_SMALL && status != PMAC_OK) throw Error(status, "get_response_copy", request, info.certainty);
         std::vector<uint8_t> result(required);
         status = pattern.empty() ? pmac_request_copy_response(request, result.empty()?0:&result[0], result.size(), &required) : pmac_request_copy_match(request, data(pattern), pattern.size(), 0, result.empty()?0:&result[0], result.size(), &required);
-        check(status, "get_response_copy"); return result;
+        if (status != PMAC_OK) throw Error(status, "get_response_copy", request, info.certainty);
+        return result;
     }
     void upload(const std::string& local, const std::string& remote, const Options& options = Options()) { pmac_request_options native = options.native(); pmac_request_id request = 0; check(pmac_upload_submit(id_, data(local), local.size(), data(remote), remote.size(), &native, &request), "upload_submit"); wait(request, "upload"); }
     void download(const std::string& remote, const std::string& local, const Options& options = Options()) { pmac_request_options native = options.native(); pmac_request_id request = 0; check(pmac_download_submit(id_, data(remote), remote.size(), data(local), local.size(), &native, &request), "download_submit"); wait(request, "download"); }
@@ -224,6 +262,16 @@ public:
     bool coordMotorEnabled(int n, const Options& o = Options()) { pmac_request_options native_options = o.native(); uint32_t v = 0; check(pmac_coord_motor_enabled(id_, n, &native_options, &v), "coord_motor_enabled"); return v != 0; }
 
 private:
+    static Options defaultCommandOptions(const std::string& text) {
+        Options options;
+        const std::string::size_type first = text.find_first_not_of(" \t\r\n\v\f");
+        if (first == std::string::npos) return options;
+        const std::string::size_type last = text.find_last_not_of(" \t\r\n\v\f");
+        const std::string::size_type length = last - first + 1;
+        if ((length == 3 && text.compare(first, length, "$$$") == 0) ||
+            (length == 6 && text.compare(first, length, "$$$***") == 0)) options.timeout_ms = 30000;
+        return options;
+    }
     class ScopedRequest {
     public:
         explicit ScopedRequest(uint64_t id) : id_(id) {}
@@ -234,7 +282,7 @@ private:
     };    Client(const Client&); Client& operator=(const Client&);
     static const uint8_t* data(const std::string& value) { return reinterpret_cast<const uint8_t*>(value.data()); }
     static pmac_bytes bytes(const std::string& value) { pmac_bytes result = { data(value), value.size() }; return result; }
-    static void wait(pmac_request_id request, const char* operation) { pmac_request_info info = {}; const int status = pmac_request_wait(request, 0xffffffff, &info); (void)pmac_request_release(request); check(status, operation); }
+    static void wait(pmac_request_id request, const char* operation) { pmac_request_info info = {}; const int status = pmac_request_wait(request, 0xffffffff, &info); const uint32_t certainty = info.request_id == request ? info.certainty : 1u; (void)pmac_request_release(request); if (status != PMAC_OK) throw Error(status, operation, request, certainty); }
     uint64_t id_;
 };
 }

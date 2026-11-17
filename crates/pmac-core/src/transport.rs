@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use crate::{Error, ErrorCode, OperationResult, Request};
 
-const MAX_GPASCII_CHANNELS: usize = 8;
+const MAX_GPASCII_CHANNELS: usize = 16;
 
 #[derive(Default)]
 struct GpasciiBudgetState {
@@ -59,10 +59,12 @@ impl GpasciiBudget {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.used >= MAX_GPASCII_CHANNELS {
+        // All pool members of one Client carry the same process-unique owner.
+        // Keep controller-wide accounting for lifetime/recovery, but admit per owner.
+        if state.owners.get(&owner).copied().unwrap_or(0) >= MAX_GPASCII_CHANNELS {
             return Err(Error::new(
                 ErrorCode::ResourceLimit,
-                "controller GPASCII channel limit reached (8)",
+                "client GPASCII channel limit reached (16)",
             ));
         }
         state.used += 1;
@@ -253,11 +255,23 @@ pub enum HostKeyPolicy {
 
 pub struct ExecutionContext {
     request: Arc<Request>,
+    independent_tcp: std::sync::atomic::AtomicBool,
 }
 
 impl ExecutionContext {
     pub(crate) fn new(request: Arc<Request>) -> Self {
-        Self { request }
+        Self {
+            request,
+            independent_tcp: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    pub fn begin_independent_tcp(&self) {
+        self.independent_tcp
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    pub fn independent_tcp_started(&self) -> bool {
+        self.independent_tcp
+            .load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn is_cancelled(&self) -> bool {
         self.request.is_cancelled()
@@ -315,26 +329,74 @@ pub trait Transport: Send + Sync + 'static {
     ) -> Result<Arc<dyn Session>, Error>;
 }
 
+/// Options for the controller's continuous geterrors utility.
+#[derive(Debug, Clone)]
+pub struct GetErrorsOptions {
+    pub period_seconds: f64,
+    pub append_date: bool,
+    pub coord_mask: Option<u64>,
+    pub motor_mask: Option<u64>,
+    pub ring_mask: Option<u64>,
+    pub global_mask: Option<u64>,
+}
+impl Default for GetErrorsOptions {
+    fn default() -> Self {
+        Self {
+            period_seconds: 0.01,
+            append_date: false,
+            coord_mask: None,
+            motor_mask: None,
+            ring_mask: None,
+            global_mask: None,
+        }
+    }
+}
+impl GetErrorsOptions {
+    pub fn validate(&self) -> Result<(), Error> {
+        if !self.period_seconds.is_finite() || !(0.01..=1.0).contains(&self.period_seconds) {
+            return Err(Error::invalid(
+                "geterrors period must be finite and between 0.01 and 1 seconds",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone)]
+pub struct MonitorChunk {
+    pub data: Vec<u8>,
+    pub stderr: bool,
+}
+#[async_trait]
+pub trait ErrorMonitorStream: Send {
+    /// Returns one bounded byte chunk; no text or line boundaries are implied.
+    async fn read(&mut self) -> Result<Option<MonitorChunk>, Error>;
+    /// Interrupts this monitor and confirms its channel cleanup.
+    async fn stop(&mut self) -> Result<(), Error>;
+}
+
 #[async_trait]
 pub trait Session: Send + Sync + 'static {
+    async fn geterrors(
+        &self,
+        _options: &GetErrorsOptions,
+    ) -> Result<Box<dyn ErrorMonitorStream>, Error> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this transport does not provide geterrors monitoring",
+        ))
+    }
     async fn command(
         &self,
         command: &Command,
         context: &ExecutionContext,
     ) -> Result<OperationResult, Error>;
-    async fn dart_connect(
-        &self,
-        _context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_connect(&self, _context: &ExecutionContext) -> Result<OperationResult, Error> {
         Err(Error::new(
             ErrorCode::Unsupported,
             "this transport does not provide DART TCP",
         ))
     }
-    async fn dart_disconnect(
-        &self,
-        _context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_disconnect(&self, _context: &ExecutionContext) -> Result<OperationResult, Error> {
         Err(Error::new(
             ErrorCode::Unsupported,
             "this transport does not provide DART TCP",
@@ -382,6 +444,12 @@ pub trait Session: Send + Sync + 'static {
     async fn retire_control(&self) -> Result<(), Error> {
         self.close().await
     }
+    /// Invalidates controller-side GPASCII state after a confirmed device reset
+    /// while preserving the SSH transport when the implementation can. The
+    /// default is conservative and retires the whole session.
+    async fn recycle_control(&self) -> Result<(), Error> {
+        self.retire_control().await
+    }
     async fn retire_maintenance(&self) -> Result<(), Error> {
         Ok(())
     }
@@ -399,28 +467,64 @@ mod tests {
     #[test]
     fn gpascii_budget_is_bounded_and_uncertain_release_requires_confirmation() {
         let budget = Arc::new(GpasciiBudget::new());
-        let mut permits = (0..8)
+        let mut permits = (0..16)
             .map(|_| budget.reserve(1).unwrap())
             .collect::<Vec<_>>();
-        let error = budget.reserve(2).err().unwrap();
+        assert_eq!(budget.owner_usage(1), 16);
+        let error = budget.reserve(1).err().unwrap();
         assert_eq!(error.code, ErrorCode::ResourceLimit);
         assert_eq!(error.certainty, ExecutionCertainty::NotSent);
-        drop(permits.pop());
-        permits.push(budget.reserve(1).unwrap());
-        permits.pop().unwrap().retain_uncertain();
-        assert!(budget.reserve(2).is_err());
+
+        permits.pop().unwrap().release();
+        assert_eq!(budget.owner_usage(1), 15);
+        budget.reserve(1).unwrap().retain_uncertain();
+        assert_eq!(budget.owner_usage(1), 16);
+        assert!(budget.owner_has_uncertain(1));
+        assert!(budget.reserve(1).is_err());
         budget.confirm_remote_release(2);
-        assert!(budget.reserve(2).is_err());
+        assert!(budget.reserve(1).is_err());
         budget.confirm_remote_release(1);
-        permits.push(budget.reserve(2).unwrap());
-        assert_eq!(permits.len(), 8);
+        assert_eq!(budget.owner_usage(1), 15);
+        assert!(!budget.owner_has_uncertain(1));
+        permits.push(budget.reserve(1).unwrap());
+        assert_eq!(permits.len(), 16);
+        drop(permits);
+        assert_eq!(budget.owner_usage(1), 0);
+    }
+
+    #[test]
+    fn each_client_owner_has_sixteen_channels_in_a_shared_controller_budget() {
+        let budget = Arc::new(GpasciiBudget::new());
+        let mut first = (0..16)
+            .map(|_| budget.reserve(1).unwrap())
+            .collect::<Vec<_>>();
+        let mut second = (0..16)
+            .map(|_| budget.reserve(2).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(budget.owner_usage(1), 16);
+        assert_eq!(budget.owner_usage(2), 16);
+        assert!(budget.reserve(1).is_err());
+        assert!(budget.reserve(2).is_err());
+        first.pop().unwrap().retain_uncertain();
+        drop(second.pop());
+        second.push(budget.reserve(2).unwrap());
+        budget.confirm_remote_release(2);
+        assert_eq!(budget.owner_usage(1), 16);
+        assert!(budget.reserve(1).is_err());
+        budget.confirm_remote_release(1);
+        first.push(budget.reserve(1).unwrap());
+        assert_eq!(first.len(), 16);
+        assert_eq!(second.len(), 16);
+        assert_eq!(budget.owner_usage(1), 16);
+        assert_eq!(budget.owner_usage(2), 16);
     }
 
     #[test]
     fn uncertain_budget_outlives_external_owners_until_confirmation() {
         let owner = GpasciiBudget::allocate_owner().unwrap();
+        let other_owner = GpasciiBudget::allocate_owner().unwrap();
         let budget = GpasciiBudget::shared("budget-lifetime-test", 32_000);
-        let permits = (0..8)
+        let permits = (0..16)
             .map(|_| budget.reserve(owner).unwrap())
             .collect::<Vec<_>>();
         for permit in permits {
@@ -428,11 +532,19 @@ mod tests {
         }
         drop(budget);
         let budget = GpasciiBudget::shared("BUDGET-LIFETIME-TEST", 32_000);
-        assert!(budget.reserve(owner + 1).is_err());
+        assert_eq!(budget.owner_usage(owner), 16);
+        assert!(budget.reserve(owner).is_err());
+        let other_permits = (0..16)
+            .map(|_| budget.reserve(other_owner).unwrap())
+            .collect::<Vec<_>>();
+        budget.confirm_remote_release(other_owner);
+        assert!(budget.reserve(owner).is_err());
         budget.confirm_remote_release(owner);
-        assert!(budget.reserve(owner + 1).is_ok());
+        assert_eq!(budget.owner_usage(owner), 0);
+        assert_eq!(budget.owner_usage(other_owner), 16);
+        assert!(budget.reserve(owner).is_ok());
+        drop(other_permits);
     }
-
     #[test]
     fn budget_owner_tokens_are_process_unique() {
         assert_ne!(

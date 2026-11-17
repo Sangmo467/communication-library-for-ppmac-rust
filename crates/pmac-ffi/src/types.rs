@@ -187,3 +187,36 @@ pub struct PmacPoolMember {
     pub last_error: i32,
     pub reserved: u32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PmacGatherConfig {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub period: u32,
+    pub items: u32,
+    pub addresses: *const PmacBytes,
+    pub local_ip: PmacBytes,
+    pub port: u16,
+    pub reserved: u16,
+    pub max_samples: u32,
+    pub batch_rows: u32,
+    pub queue_batches: u32,
+    pub timeout_ms: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PmacGetErrorsConfig {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub period_seconds: f64,
+    pub coord_mask: u64,
+    pub motor_mask: u64,
+    pub ring_mask: u64,
+    pub global_mask: u64,
+    pub flags: u32,
+    pub timeout_ms: u32,
+    pub queue_lines: u32,
+    pub max_line_bytes: u32,
+}

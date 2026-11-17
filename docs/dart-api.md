@@ -1,5 +1,7 @@
 # DART 接口使用指南
 
+[中文](dart-api.md) | [English](dart-api.en.md)
+
 DART 通过独立 TCP 连接传输 P 变量和用户共享内存（USHM）的二进制数据。先完成 SSH 连接，再调用 DART 连接接口；库通过 GPASCII 读取 `Dart.Enable` 和 `Dart.Port`，要求服务已启用。完成操作后关闭 DART 连接。控制器对 DART 客户端数量有限制，应用应及时释放连接。
 
 ## 命令与地址

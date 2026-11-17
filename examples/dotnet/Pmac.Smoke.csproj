@@ -3,4 +3,5 @@
   <ItemGroup><ProjectReference Include="../../bindings/dotnet/Pmac/Pmac.csproj" /></ItemGroup>
   <ItemGroup><Content Include="../../target/debug/pmac.dll" Link="pmac.dll" CopyToOutputDirectory="Always" Condition="Exists('../../target/debug/pmac.dll')" /></ItemGroup>
   <ItemGroup><Content Include="../../bindings/python/tests/legacy-status-fields.json" Link="legacy-status-fields.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup><Compile Remove="getresponse/**/*.cs" /></ItemGroup>
 </Project>

@@ -4,6 +4,7 @@ mod command;
 mod dart;
 mod error;
 mod gpascii;
+mod online;
 mod parse;
 mod reset;
 mod shell;
@@ -15,9 +16,12 @@ pub use dart::{
     DART_WRITE_ACK,
 };
 pub use error::ProtocolError;
-pub use gpascii::{GpasciiDecoder, GpasciiFrame};
+pub use gpascii::{
+    contains_controller_error, is_buffer_closed_error, GpasciiDecoder, GpasciiFrame,
+};
 pub use parse::{
-    parse_bool, parse_f64, parse_u32, parse_u64, regex_match, response_text, RegexMatch,
+    parse_bool, parse_f64, parse_u32, parse_u64, regex_capture, regex_match, response_text,
+    RegexMatch,
 };
 pub use shell::{ShellDecoder, ShellEvent, ShellMarkers, ShellStderrDecoder};
 pub use status::{CoordStatus, MotorStatus};

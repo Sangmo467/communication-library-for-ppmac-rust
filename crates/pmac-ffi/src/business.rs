@@ -250,7 +250,7 @@ pub extern "C" fn pmac_coord_status(
 ) -> i32 {
     match self::coord(coord_number, "?") {
         Ok(command) => u64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -263,7 +263,7 @@ pub extern "C" fn pmac_motor_status(
 ) -> i32 {
     match self::motor(motor_number, "?") {
         Ok(command) => u64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -276,7 +276,7 @@ pub extern "C" fn pmac_motor_position(
 ) -> i32 {
     match self::motor(motor_number, "p") {
         Ok(command) => f64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -289,7 +289,7 @@ pub extern "C" fn pmac_motor_desired_position(
 ) -> i32 {
     match self::motor(motor_number, "d") {
         Ok(command) => f64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -302,7 +302,7 @@ pub extern "C" fn pmac_motor_velocity(
 ) -> i32 {
     match self::motor(motor_number, "v") {
         Ok(command) => f64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -315,7 +315,7 @@ pub extern "C" fn pmac_motor_position_error(
 ) -> i32 {
     match self::motor(motor_number, "f") {
         Ok(command) => f64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -327,7 +327,7 @@ pub extern "C" fn pmac_servo_error_count(
 ) -> i32 {
     match raw_system("Sys.ServoErrorCtr") {
         Ok(command) => u32_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -339,7 +339,7 @@ pub extern "C" fn pmac_phase_error_count(
 ) -> i32 {
     match raw_system("Sys.PhaseErrorCtr") {
         Ok(command) => u32_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -351,7 +351,7 @@ pub extern "C" fn pmac_servo_count(
 ) -> i32 {
     match raw_system("Sys.ServoCount") {
         Ok(command) => u32_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -363,7 +363,7 @@ pub extern "C" fn pmac_phase_time(
 ) -> i32 {
     match raw_system("Sys.PhaseTime") {
         Ok(command) => f64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -375,7 +375,7 @@ pub extern "C" fn pmac_servo_time(
 ) -> i32 {
     match raw_system("Sys.ServoTime") {
         Ok(command) => f64_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -387,7 +387,7 @@ pub extern "C" fn pmac_abort_all_flag(
 ) -> i32 {
     match raw_system("Sys.AbortAll") {
         Ok(command) => bool_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -400,7 +400,7 @@ pub extern "C" fn pmac_plc_running(
 ) -> i32 {
     match raw_system(&format!("Plc[{plc}].Active")) {
         Ok(command) => bool_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -413,7 +413,7 @@ pub extern "C" fn pmac_coord_prog_running(
 ) -> i32 {
     match raw_system(&format!("Coord[{coord_number}].ProgActive")) {
         Ok(command) => bool_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }
 
@@ -436,6 +436,6 @@ pub extern "C" fn pmac_coord_motor_enabled(
 ) -> i32 {
     match raw_system(&format!("Coord[{coord_number}].AmpEna")) {
         Ok(command) => bool_query(client, command, options, out),
-        Err(error) => error.code as i32,
+        Err(error) => crate::ffi_status(|| Err(error)),
     }
 }

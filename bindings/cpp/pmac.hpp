@@ -6,7 +6,10 @@
 #include "pmac_error.hpp"
 
 #include <cstring>
+#include <functional>
+#include <exception>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -35,12 +38,13 @@ struct RequestOptions {
     bool infinite = false;
     bool readPool = false;
     size_t maxResponseBytes = 1024 * 1024;
+    bool passthrough = true;
     pmac_request_options native() const {
         pmac_request_options value{};
         value.struct_size = sizeof(value);
         value.abi_version = PMAC_ABI_VERSION;
         value.timeout_ms = timeoutMs;
-        value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (readPool ? PMAC_REQUEST_READ_POOL : 0u);
+        value.flags = (infinite ? PMAC_REQUEST_INFINITE : 0u) | (readPool ? PMAC_REQUEST_READ_POOL : 0u) | (readPool ? 0u : (passthrough ? 0u : PMAC_REQUEST_CLASSIFY));
         value.max_response_bytes = maxResponseBytes;
         return value;
     }
@@ -146,16 +150,192 @@ private:
     static const uint8_t* bytes(const std::string& value) { return reinterpret_cast<const uint8_t*>(value.data()); }
     void check(int32_t status) const { if (status != PMAC_OK) throwStatus(status); }
     [[noreturn]] void throwStatus(int32_t status) const {
-        pmac_error_info info{}; size_t required = 0;
-        (void)pmac_request_copy_error(id_, &info, nullptr, 0, &required);
-        std::vector<char> message(required);
-        const int32_t copied = pmac_request_copy_error(id_, &info, message.data(), message.size(), &required);
-        throw Error(status, id_, info.certainty, copied == PMAC_OK ? std::string(message.begin(), message.end()) : "PMAC request failed with status " + std::to_string(status));
+        // API-local errors (for example a malformed regex) are not stored on a
+        // successfully completed Request. Copy TLS before another API clears it.
+        for (int source = 0; source < 2; ++source) {
+            pmac_error_info info{}; size_t required = 0;
+            int32_t copied = source == 0 ? pmac_copy_last_error(&info, nullptr, 0, &required)
+                                        : pmac_request_copy_error(id_, &info, nullptr, 0, &required);
+            if ((copied != PMAC_OK && copied != PMAC_BUFFER_TOO_SMALL) || info.status != status || required == 0) continue;
+            std::vector<char> message(required);
+            copied = source == 0 ? pmac_copy_last_error(&info, message.data(), message.size(), &required)
+                                 : pmac_request_copy_error(id_, &info, message.data(), message.size(), &required);
+            if (copied == PMAC_OK && info.status == status && required != 0) {
+                const std::string diagnostic(message.data(), required);
+                if (source == 0) {
+                    pmac_error_info requestInfo{}; size_t ignored = 0;
+                    const auto requestStatus = pmac_request_copy_error(id_, &requestInfo, nullptr, 0, &ignored);
+                    if (requestStatus == PMAC_OK || requestStatus == PMAC_BUFFER_TOO_SMALL)
+                        info.certainty = requestInfo.certainty;
+                }
+                throw Error(status, id_, info.certainty, diagnostic);
+            }
+        }
+        throw Error(status, id_, 0, "PMAC request failed with status " + std::to_string(status));
     }
     uint64_t id_ = 0;
     std::shared_ptr<RuntimeOwner> owner_;
 };
 
+// Omitted masks use geterrors defaults; an explicitly supplied zero is preserved.
+struct GetErrorsConfig {
+    double periodSeconds = 0.01;
+    bool date = false;
+    std::optional<uint64_t> coordMask, motorMask, ringMask, globalMask;
+    uint32_t timeoutMs = 5000, queueLines = 256, maxLineBytes = 65536;
+};
+class GetErrorsMonitor {
+public:
+    using OnMessage = std::function<void(uint32_t kind, const std::string& text)>;
+    using OnError = std::function<void(const Error&)>;
+    GetErrorsMonitor() = default;
+    ~GetErrorsMonitor() { release(); }
+    GetErrorsMonitor(const GetErrorsMonitor&) = delete;
+    GetErrorsMonitor& operator=(const GetErrorsMonitor&) = delete;
+    GetErrorsMonitor(GetErrorsMonitor&& other) noexcept
+        : id_(std::exchange(other.id_, 0)), context_(std::move(other.context_)), owner_(std::move(other.owner_)) {}
+    GetErrorsMonitor& operator=(GetErrorsMonitor&& other) noexcept {
+        if (this != &other) {
+            release(); id_ = std::exchange(other.id_, 0);
+            context_ = std::move(other.context_); owner_ = std::move(other.owner_);
+        }
+        return *this;
+    }
+    // Safe in callbacks; stop/destruction must run outside the callback thread.
+    void requestStop() { check(pmac_geterrors_request_stop(id_)); }
+    void stop() {
+        const auto status = pmac_geterrors_stop(id_);
+        if (status == PMAC_INVALID_ARGUMENT) check(status);
+        if (context_ && context_->exception) std::rethrow_exception(context_->exception);
+        check(status);
+    }
+private:
+    friend class Client;
+    struct Context { OnMessage message; OnError error; std::exception_ptr exception; };
+    static int32_t dispatch(void* user, int32_t status, uint32_t kind,
+                            const uint8_t* text, size_t length) noexcept {
+        auto& c = *static_cast<Context*>(user);
+        try {
+            const std::string value = length ? std::string(reinterpret_cast<const char*>(text), length) : std::string();
+            if (status == PMAC_OK) c.message(kind, value);
+            else if (c.error) c.error(Error(status, 0, 0, value));
+            return 0;
+        } catch (...) { c.exception = std::current_exception(); return 1; }
+    }
+    GetErrorsMonitor(uint64_t client, std::shared_ptr<RuntimeOwner> owner,
+                     const GetErrorsConfig& config, OnMessage onMessage, OnError onError)
+        : context_(new Context{std::move(onMessage), std::move(onError), {}}), owner_(std::move(owner)) {
+        if (!context_->message) throw std::invalid_argument("geterrors message callback is required");
+        pmac_geterrors_config c{};
+        c.struct_size = sizeof(c); c.abi_version = PMAC_ABI_VERSION;
+        c.period_seconds = config.periodSeconds;
+        c.timeout_ms = config.timeoutMs; c.queue_lines = config.queueLines; c.max_line_bytes = config.maxLineBytes;
+        c.flags = config.date ? PMAC_GETERRORS_DATE : 0u;
+        if (config.coordMask) { c.flags |= PMAC_GETERRORS_COORD_MASK; c.coord_mask = *config.coordMask; }
+        if (config.motorMask) { c.flags |= PMAC_GETERRORS_MOTOR_MASK; c.motor_mask = *config.motorMask; }
+        if (config.ringMask) { c.flags |= PMAC_GETERRORS_RING_MASK; c.ring_mask = *config.ringMask; }
+        if (config.globalMask) { c.flags |= PMAC_GETERRORS_GLOBAL_MASK; c.global_mask = *config.globalMask; }
+        check(pmac_geterrors_start(client, &c, dispatch, context_.get(), &id_));
+    }
+    static void check(int32_t status) {
+        if (status == PMAC_OK) return;
+        pmac_error_info info{}; size_t required = 0;
+        const auto first = pmac_copy_last_error(&info, nullptr, 0, &required);
+        if ((first == PMAC_OK || first == PMAC_BUFFER_TOO_SMALL) && info.status == status) {
+            std::vector<char> message(required);
+            if (pmac_copy_last_error(&info, message.data(), message.size(), &required) == PMAC_OK)
+                throw Error(status, 0, info.certainty, std::string(message.begin(), message.end()));
+        }
+        throw Error(status, 0, 0, "geterrors operation failed with status " + std::to_string(status));
+    }
+    void release() noexcept {
+        if (id_) { (void)pmac_geterrors_release(id_); id_ = 0; }
+    }
+    uint64_t id_ = 0;
+    std::unique_ptr<Context> context_;
+    std::shared_ptr<RuntimeOwner> owner_;
+};
+struct GatherConfig {
+    uint32_t period = 1;
+    std::vector<std::string> addresses;
+    std::string localIp;
+    uint16_t port = 0;
+    uint32_t maxSamples = 2048, batchRows = 128, queueBatches = 32, timeoutMs = 5000;
+};
+// Borrowed view valid only for the duration of the callback; values are row-major.
+struct GatherBatch {
+    const double* data;
+    size_t rows, items;
+    uint64_t firstSample;
+    double at(size_t row, size_t item) const {
+        if (row >= rows || item >= items) throw std::out_of_range("Gather sample index");
+        return data[row * items + item];
+    }
+    std::vector<double> copy() const { return {data, data + rows * items}; }
+};
+class Gather {
+public:
+    using OnData = std::function<void(const GatherBatch&)>;
+    using OnError = std::function<void(const Error&)>;
+    Gather() = default;
+    ~Gather() { release(); }
+    Gather(const Gather&) = delete;
+    Gather& operator=(const Gather&) = delete;
+    Gather(Gather&& other) noexcept
+        : id_(std::exchange(other.id_, 0)), context_(std::move(other.context_)), owner_(std::move(other.owner_)) {}
+    Gather& operator=(Gather&& other) noexcept {
+        if (this != &other) { release(); id_ = std::exchange(other.id_, 0); context_ = std::move(other.context_); owner_ = std::move(other.owner_); }
+        return *this;
+    }
+    // Use requestStop inside callbacks. stop is a barrier and must run outside callbacks.
+    void requestStop() { check(pmac_gather_request_stop(id_)); }
+    void stop() {
+        const auto status = pmac_gather_stop(id_);
+        if (status == PMAC_INVALID_ARGUMENT) { check(status); }
+        if (context_ && context_->exception) std::rethrow_exception(context_->exception);
+        check(status);
+    }
+private:
+    friend class Client;
+    struct Context { OnData data; OnError error; std::exception_ptr exception; };
+    static int32_t dispatch(void* user, int32_t status, const double* data, size_t rows,
+                            size_t items, uint64_t first, const uint8_t* message, size_t length) noexcept {
+        auto& c = *static_cast<Context*>(user);
+        try {
+            if (status == PMAC_OK) c.data({data, rows, items, first});
+            else if (c.error) c.error(Error(status, 0, 0, std::string(reinterpret_cast<const char*>(message), length)));
+            return 0;
+        } catch (...) { c.exception = std::current_exception(); return 1; }
+    }
+    Gather(uint64_t client, std::shared_ptr<RuntimeOwner> owner, const GatherConfig& config, OnData onData, OnError onError)
+        : context_(new Context{std::move(onData), std::move(onError), {}}), owner_(std::move(owner)) {
+        if (!context_->data) throw std::invalid_argument("Gather data callback is required");
+        if (config.addresses.empty() || config.addresses.size() > 128) throw std::invalid_argument("Gather needs 1..=128 addresses");
+        std::vector<pmac_bytes> addresses;
+        for (const auto& a : config.addresses) addresses.push_back({reinterpret_cast<const uint8_t*>(a.data()), a.size()});
+        pmac_gather_config c{};
+        c.struct_size = sizeof(c); c.abi_version = PMAC_ABI_VERSION;
+        c.period = config.period; c.items = static_cast<uint32_t>(addresses.size()); c.addresses = addresses.data();
+        c.local_ip = {reinterpret_cast<const uint8_t*>(config.localIp.data()), config.localIp.size()};
+        c.port = config.port; c.max_samples = config.maxSamples; c.batch_rows = config.batchRows;
+        c.queue_batches = config.queueBatches; c.timeout_ms = config.timeoutMs;
+        check(pmac_gather_start(client, &c, dispatch, context_.get(), &id_));
+    }
+    static void check(int32_t status) {
+        if (status == PMAC_OK) return;
+        pmac_error_info info{}; size_t required = 0;
+        (void)pmac_copy_last_error(&info, nullptr, 0, &required);
+        std::vector<char> message(required);
+        const auto copied = pmac_copy_last_error(&info, message.data(), message.size(), &required);
+        throw Error(status, 0, info.certainty, copied == PMAC_OK ? std::string(message.begin(), message.end()) : "Gather operation failed");
+    }
+    void release() noexcept {
+        if (id_) { (void)pmac_gather_release(id_); id_ = 0; }
+    }
+    uint64_t id_ = 0;
+    std::unique_ptr<Context> context_;
+    std::shared_ptr<RuntimeOwner> owner_;
+};
 class Runtime;
 
 class Client {
@@ -165,11 +345,18 @@ public:
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
     Client(Client&& other) noexcept { *this = std::move(other); }
-    Client& operator=(Client&& other) noexcept {
-        if (this != &other) { reset(); id_ = other.id_; runtime_ = std::move(other.runtime_); other.id_ = 0; }
+    Client& operator=(Client&& other) {
+        if (this != &other) { check(reset()); id_ = other.id_; runtime_ = std::move(other.runtime_); other.id_ = 0; }
         return *this;
     }
 
+    GetErrorsMonitor startGetErrors(const GetErrorsConfig& config, GetErrorsMonitor::OnMessage onMessage,
+                                   GetErrorsMonitor::OnError onError = {}) {
+        return GetErrorsMonitor(id_, runtime_, config, std::move(onMessage), std::move(onError));
+    }
+    Gather startGather(const GatherConfig& config, Gather::OnData onData, Gather::OnError onError = {}) {
+        return Gather(id_, runtime_, config, std::move(onData), std::move(onError));
+    }
     Request connect(const ConnectOptions& options) {
         NativeConnect native(options);
         return createRequest(pmac_connect_submit(id_, &native.value, &requestSlot()));
@@ -204,21 +391,36 @@ public:
     }
     void confirmRecovery(uint64_t revision, uint32_t flags) { check(pmac_pool_confirm_recovery(id_, revision, flags)); }
     void connectSync(const ConnectOptions& options) { Request request = connect(options); request.wait(); }
-    Request commandAsync(const std::string& command, const RequestOptions& options = {}) {
+    Request commandAsync(const std::string& command) {
+        return commandAsync(command, defaultCommandOptions(command));
+    }
+    Request commandAsync(const std::string& command, const RequestOptions& options) {
         auto native = options.native();
         return createRequest(pmac_command_submit(id_, byteData(command), command.size(), &native, &requestSlot()));
     }
-    std::vector<uint8_t> command(const std::string& command, const RequestOptions& options = {}) {
+    std::vector<uint8_t> command(const std::string& command) {
+        return this->command(command, defaultCommandOptions(command));
+    }
+    std::vector<uint8_t> command(const std::string& command, const RequestOptions& options) {
         Request request = commandAsync(command, options); request.wait(); return request.response();
     }
-    std::string commandText(const std::string& command, const RequestOptions& options = {}) {
+    std::string commandText(const std::string& command) {
+        return commandText(command, defaultCommandOptions(command));
+    }
+    std::string commandText(const std::string& command, const RequestOptions& options) {
         auto bytes = this->command(command, options); return std::string(bytes.begin(), bytes.end());
     }
-    Request getResponseAsync(const std::string& command, const RequestOptions& options = {}) {
+    Request getResponseAsync(const std::string& command) {
+        return getResponseAsync(command, defaultCommandOptions(command));
+    }
+    Request getResponseAsync(const std::string& command, const RequestOptions& options) {
         auto native = options.native();
         return createRequest(pmac_get_response_async(id_, byteData(command), command.size(), &native, &requestSlot()));
     }
-    std::vector<uint8_t> getResponse(const std::string& command, const std::string& pattern = "", const RequestOptions& options = {}) {
+    std::vector<uint8_t> getResponse(const std::string& command, const std::string& pattern = "") {
+        return getResponse(command, pattern, defaultCommandOptions(command));
+    }
+    std::vector<uint8_t> getResponse(const std::string& command, const std::string& pattern, const RequestOptions& options) {
         Request request = getResponseAsync(command, options);
         request.wait();
         return pattern.empty() ? request.response() : request.match(pattern);
@@ -386,8 +588,32 @@ private:
         result = value.native();
         return &result;
     }
+    // Only omitted options select the extended reset budget. Explicit options,
+    // including a five-second timeout or infinite=true, are never rewritten.
+    static RequestOptions defaultCommandOptions(const std::string& command) {
+        RequestOptions options;
+        const auto first = command.find_first_not_of(" \t\r\n\v\f");
+        if (first == std::string::npos) return options;
+        const auto last = command.find_last_not_of(" \t\r\n\v\f");
+        const auto length = last - first + 1;
+        if ((length == 3 && command.compare(first, length, "$$$") == 0) ||
+            (length == 6 && command.compare(first, length, "$$$***") == 0)) options.timeoutMs = 30000;
+        return options;
+    }
     static uint64_t& requestSlot() { thread_local uint64_t id = 0; return id; }
-    static void check(int32_t status) { if (status != PMAC_OK) throw Error(status, 0, 0, "PMAC operation failed with status " + std::to_string(status)); }
+    static void check(int32_t status) {
+        if (status == PMAC_OK) return;
+#ifdef PMAC_ENABLE_LAST_ERROR_DETAILS
+        pmac_error_info info{}; size_t required = 0;
+        int copied = pmac_copy_last_error(&info, nullptr, 0, &required);
+        if ((copied == PMAC_OK || copied == PMAC_BUFFER_TOO_SMALL) && info.status == status) {
+            std::vector<char> message(required);
+            if (required == 0 || pmac_copy_last_error(&info, message.data(), message.size(), &required) == PMAC_OK)
+                throw Error(status, info.request_id, info.certainty, std::string(message.begin(), message.end()));
+        }
+#endif
+        throw Error(status, 0, 1u, "PMAC operation failed with status " + std::to_string(status));
+    }
 
     uint64_t id_ = 0;
     std::shared_ptr<Core> runtime_;

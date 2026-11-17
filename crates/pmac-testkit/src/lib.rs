@@ -41,6 +41,8 @@ pub struct MockSession {
     healthy: AtomicBool,
     blocked: watch::Sender<bool>,
     commands: Mutex<Vec<String>>,
+    shell_commands: Mutex<Vec<String>>,
+    ssh_connection: Mutex<String>,
     started: AtomicUsize,
     started_notify: Notify,
 }
@@ -52,6 +54,8 @@ impl Default for MockSession {
             healthy: AtomicBool::new(true),
             blocked,
             commands: Mutex::new(Vec::new()),
+            shell_commands: Mutex::new(Vec::new()),
+            ssh_connection: Mutex::new("127.0.0.1 12345 127.0.0.1 22".into()),
             started: AtomicUsize::new(0),
             started_notify: Notify::new(),
         }
@@ -64,6 +68,18 @@ impl MockSession {
     }
     pub fn commands(&self) -> Vec<String> {
         self.lock_commands().clone()
+    }
+    pub fn shell_commands(&self) -> Vec<String> {
+        self.shell_commands
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    pub fn set_ssh_connection(&self, value: &str) {
+        *self
+            .ssh_connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = value.into();
     }
     pub fn started(&self) -> usize {
         self.started.load(Ordering::Acquire)
@@ -137,6 +153,22 @@ impl Session for MockSession {
         _persistent: bool,
         _context: &ExecutionContext,
     ) -> Result<OperationResult, Error> {
+        self.shell_commands
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(command.into());
+        if command.contains("$SSH_CONNECTION") {
+            return Ok(OperationResult {
+                response: self
+                    .ssh_connection
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_bytes()
+                    .to_vec(),
+                stderr: Vec::new(),
+                exit_code: Some(0),
+            });
+        }
         if command.starts_with("gpascii -2 -i") {
             Ok(OperationResult {
                 response: b"EOF".to_vec(),

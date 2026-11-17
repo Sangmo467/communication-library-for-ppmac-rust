@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,8 +18,18 @@ use zeroize::Zeroizing;
 
 use crate::RusshTransport;
 
+type MonitorPtys = HashMap<(usize, ChannelId), Vec<(russh::Pty, u32)>>;
+
 #[derive(Default)]
 struct Observed {
+    monitor_mode: AtomicUsize,
+    monitor_ptys: std::sync::Mutex<MonitorPtys>,
+    monitor_channels: std::sync::Mutex<HashSet<(usize, ChannelId)>>,
+    monitor_commands: std::sync::Mutex<Vec<String>>,
+    monitor_interrupts: AtomicUsize,
+    gpascii_eof_mode: AtomicUsize,
+    gpascii_eofs: AtomicUsize,
+    gpascii_stderr_pending: AtomicBool,
     dart_port: AtomicUsize,
     password_attempts: AtomicUsize,
     key_attempts: AtomicUsize,
@@ -147,6 +157,11 @@ impl server::Handler for TestServer {
         channel: ChannelId,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.observed
+            .monitor_channels
+            .lock()
+            .unwrap()
+            .remove(&(self.connection_id, channel));
         if self.channels.remove(&channel) {
             self.observed
                 .gpascii_channels
@@ -160,12 +175,103 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.channels.contains(&channel) {
+            self.observed.gpascii_eofs.fetch_add(1, Ordering::AcqRel);
+            match self.observed.gpascii_eof_mode.load(Ordering::Acquire) {
+                1 => session.exit_status_request(channel, 0)?,
+                2 => session.close(channel)?,
+                _ => {} // Simulate a process that ignores EOF.
+            }
+        }
+        Ok(())
+    }
+
+    async fn pty_request(
+        &mut self,
+        channel: ChannelId,
+        _term: &str,
+        _columns: u32,
+        _rows: u32,
+        _pixel_width: u32,
+        _pixel_height: u32,
+        modes: &[(russh::Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.observed.monitor_mode.load(Ordering::Acquire) == 8 {
+            session.channel_failure(channel)?;
+        } else {
+            self.observed
+                .monitor_ptys
+                .lock()
+                .unwrap()
+                .insert((self.connection_id, channel), modes.to_vec());
+            session.channel_success(channel)?;
+        }
+        Ok(())
+    }
+
     async fn exec_request(
         &mut self,
         channel: ChannelId,
         command: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if command.starts_with(b"geterrors -t") {
+            self.observed
+                .monitor_commands
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(command).into_owned());
+            assert!(
+                self.observed
+                    .monitor_ptys
+                    .lock()
+                    .unwrap()
+                    .contains_key(&(self.connection_id, channel)),
+                "geterrors must have its own accepted PTY"
+            );
+            let mode = self.observed.monitor_mode.load(Ordering::Acquire);
+            if mode == 1 {
+                session.channel_failure(channel)?;
+                return Ok(());
+            }
+            if mode == 4 {
+                self.observed
+                    .monitor_channels
+                    .lock()
+                    .unwrap()
+                    .insert((self.connection_id, channel));
+                return Ok(()); // The utility starts, but exec confirmation never arrives.
+            }
+            session.channel_success(channel)?;
+            self.observed
+                .monitor_channels
+                .lock()
+                .unwrap()
+                .insert((self.connection_id, channel));
+            session.data(channel, b"coordinate error\n".to_vec())?;
+            if mode == 6 {
+                session.data(channel, vec![b'x'; 100_000])?;
+            }
+            session.extended_data(channel, 1, b"diagnostic\n".to_vec())?;
+            if mode == 2 {
+                session.exit_status_request(channel, 7)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            } else if mode == 7 {
+                session.exit_signal_request(channel, russh::Sig::TERM, false, "", "")?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            } else if mode == 3 {
+                session.close(channel)?;
+            }
+            return Ok(());
+        }
         if command == b"gpascii -2" {
             let opened = self
                 .observed
@@ -271,6 +377,25 @@ impl server::Handler for TestServer {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self
+            .observed
+            .monitor_channels
+            .lock()
+            .unwrap()
+            .contains(&(self.connection_id, channel))
+        {
+            if data.contains(&3) {
+                self.observed
+                    .monitor_interrupts
+                    .fetch_add(1, Ordering::AcqRel);
+                if self.observed.monitor_mode.load(Ordering::Acquire) != 5 {
+                    session.exit_status_request(channel, 130)?;
+                    session.eof(channel)?;
+                    session.close(channel)?;
+                }
+            }
+            return Ok(());
+        }
         if self.shells.contains(&channel) {
             let buffer = self.buffers.entry(channel).or_default();
             buffer.extend_from_slice(data);
@@ -311,8 +436,74 @@ impl server::Handler for TestServer {
             }
             let program_key = (self.connection_id, channel);
             match command.as_str() {
+                "close all buffers" => {
+                    for lines in self.observed.open_programs.lock().unwrap().values_mut() {
+                        lines.clear();
+                        lines.push("__closed_by_other_thread__".into());
+                    }
+                    session.data(channel, b"\x06".to_vec())?;
+                }
+                "P910002" => session.data(
+                    channel,
+                    b"stdin:1:1: error #5: Invalid statement:\r\n\x06".to_vec(),
+                )?,
+                "P910003" => {
+                    session.extended_data(
+                        channel,
+                        1,
+                        b"stdin:2:3: error #44: Diagnostic on stderr:".to_vec(),
+                    )?;
+                    session.data(channel, b"\x06".to_vec())?;
+                }
+                "P910005" => {
+                    session.data(channel, b"stale\r\n\x06".to_vec())?;
+                    self.observed
+                        .gpascii_stderr_pending
+                        .store(true, Ordering::Release);
+                }
+                _ if self
+                    .observed
+                    .open_programs
+                    .lock()
+                    .unwrap()
+                    .get(&program_key)
+                    .is_some_and(|lines| {
+                        lines
+                            .first()
+                            .is_some_and(|line| line == "__closed_by_other_thread__")
+                    }) =>
+                {
+                    // Mirrors the remote compiler's delayed notification after another client closes all buffers.
+                    for fragment in
+                        b"stdin:1:1: error #31: Buffer closed due to another thread:\r\n\x06"
+                            .chunks(3)
+                    {
+                        session.data(channel, fragment.to_vec())?;
+                    }
+                }
+                "P910004" => {
+                    if self
+                        .observed
+                        .gpascii_stderr_pending
+                        .swap(false, Ordering::AcqRel)
+                    {
+                        session.extended_data(
+                            channel,
+                            1,
+                            b"stdin:2:3: error #20: delayed diagnostic".to_vec(),
+                        )?;
+                    }
+                    session.data(channel, b"7\r\n\x06".to_vec())?;
+                }
                 "Dart.Enable" => session.data(channel, b"Dart.Enable=1\r\n\x06".to_vec())?,
-                "Dart.Port" => session.data(channel, format!("Dart.Port={}\r\n\x06", self.observed.dart_port.load(Ordering::Acquire)).into_bytes())?,
+                "Dart.Port" => session.data(
+                    channel,
+                    format!(
+                        "Dart.Port={}\r\n\x06",
+                        self.observed.dart_port.load(Ordering::Acquire)
+                    )
+                    .into_bytes(),
+                )?,
                 "open prog 1" | "open plc 1" => {
                     self.observed
                         .open_programs
@@ -630,23 +821,43 @@ fn dart_read_timeout_recovers_on_next_request_without_retiring_ssh() {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let fixture = Fixture::new(None);
-    fixture.observed.dart_port.store(listener.local_addr().unwrap().port() as usize, Ordering::Release);
+    fixture.observed.dart_port.store(
+        listener.local_addr().unwrap().port() as usize,
+        Ordering::Release,
+    );
     let server = std::thread::spawn(move || {
         let (mut first, _) = listener.accept().unwrap();
-        first.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        first
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut header = [0u8; 12];
         first.read_exact(&mut header).unwrap();
         let mut byte = [0u8; 1];
         assert_eq!(first.read(&mut byte).unwrap(), 0);
         let (mut second, _) = listener.accept().unwrap();
-        second.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         second.read_exact(&mut header).unwrap();
         second.write_all(&42.0f64.to_be_bytes()).unwrap();
     });
     fixture.connect();
     fixture.run(Operation::DartConnect).unwrap();
-    let make_read = || Operation::Dart(pmac_protocol::DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap());
-    let error = fixture.run_with_options(make_read(), RequestOptions { timeout_ms: 200, ..RequestOptions::default() }).unwrap_err();
+    let make_read = || {
+        Operation::Dart(
+            pmac_protocol::DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8)
+                .unwrap(),
+        )
+    };
+    let error = fixture
+        .run_with_options(
+            make_read(),
+            RequestOptions {
+                timeout_ms: 200,
+                ..RequestOptions::default()
+            },
+        )
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::ExecTimeout);
     assert!(fixture.client.is_connected());
     let response = fixture.run(make_read()).unwrap().response;
@@ -660,17 +871,24 @@ fn dart_write_timeout_requires_reconciliation_and_is_not_replayed() {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let fixture = Fixture::new(None);
-    fixture.observed.dart_port.store(listener.local_addr().unwrap().port() as usize, Ordering::Release);
+    fixture.observed.dart_port.store(
+        listener.local_addr().unwrap().port() as usize,
+        Ordering::Release,
+    );
     let server = std::thread::spawn(move || {
         let (mut first, _) = listener.accept().unwrap();
-        first.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        first
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut request = [0u8; 20];
         first.read_exact(&mut request).unwrap();
         assert_eq!(&request[..4], &0x91u32.to_be_bytes());
         let mut byte = [0u8; 1];
         assert_eq!(first.read(&mut byte).unwrap(), 0);
         let (mut second, _) = listener.accept().unwrap();
-        second.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut header = [0u8; 12];
         second.read_exact(&mut header).unwrap();
         assert_eq!(&header[..4], &0x90u32.to_be_bytes());
@@ -678,16 +896,36 @@ fn dart_write_timeout_requires_reconciliation_and_is_not_replayed() {
     });
     fixture.connect();
     fixture.run(Operation::DartConnect).unwrap();
-    let write = Operation::Dart(pmac_protocol::DartTransfer::set(pmac_protocol::DartCommand::SetPVariable, 1, 7.0f64.to_ne_bytes().to_vec()).unwrap());
-    let error = fixture.run_with_options(write, RequestOptions { timeout_ms: 200, ..RequestOptions::default() }).unwrap_err();
+    let write = Operation::Dart(
+        pmac_protocol::DartTransfer::set(
+            pmac_protocol::DartCommand::SetPVariable,
+            1,
+            7.0f64.to_ne_bytes().to_vec(),
+        )
+        .unwrap(),
+    );
+    let error = fixture
+        .run_with_options(
+            write,
+            RequestOptions {
+                timeout_ms: 200,
+                ..RequestOptions::default()
+            },
+        )
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::ExecTimeout);
     assert_eq!(error.certainty, ExecutionCertainty::MayHaveExecuted);
     assert!(fixture.client.pool_snapshot().unknown_write);
     assert!(fixture.client.is_connected());
-    let read = Operation::Dart(pmac_protocol::DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap());
+    let read = Operation::Dart(
+        pmac_protocol::DartTransfer::get(pmac_protocol::DartCommand::GetPVariable, 1, 8).unwrap(),
+    );
     assert_eq!(fixture.run(read).unwrap().response, 7.0f64.to_ne_bytes());
     let snapshot = fixture.client.pool_snapshot();
-    fixture.client.confirm_recovery(snapshot.revision, 1).unwrap();
+    fixture
+        .client
+        .confirm_recovery(snapshot.revision, 1)
+        .unwrap();
     assert!(!fixture.client.pool_snapshot().unknown_write);
     fixture.run(Operation::DartDisconnect).unwrap();
     server.join().unwrap();
@@ -845,7 +1083,12 @@ fn calling_threads_use_distinct_channels_and_open_program_keeps_its_channel() {
     fixture.connect();
     for command in ["open prog 1", "dwell 10"] {
         fixture
-            .run(Operation::Command(Command::raw(command).unwrap()))
+            .run(Operation::Command(
+                fixture
+                    .client
+                    .parse_command_for_current_thread(command)
+                    .unwrap(),
+            ))
             .unwrap();
     }
     std::thread::scope(|scope| {
@@ -905,7 +1148,12 @@ fn mt06_open_and_close_response_interleavings_preserve_program_ownership() {
                 if gated == "close" {
                     for command in ["open prog 1", "dwell 10"] {
                         fixture
-                            .run(Operation::Command(Command::raw(command).unwrap()))
+                            .run(Operation::Command(
+                                fixture
+                                    .client
+                                    .parse_command_for_current_thread(command)
+                                    .unwrap(),
+                            ))
                             .unwrap();
                     }
                 }
@@ -915,7 +1163,12 @@ fn mt06_open_and_close_response_interleavings_preserve_program_ownership() {
                 if gated == "open prog 1" {
                     for command in ["dwell 10", "close"] {
                         fixture
-                            .run(Operation::Command(Command::raw(command).unwrap()))
+                            .run(Operation::Command(
+                                fixture
+                                    .client
+                                    .parse_command_for_current_thread(command)
+                                    .unwrap(),
+                            ))
                             .unwrap();
                     }
                 }
@@ -1197,14 +1450,22 @@ fn independent_connect_options_share_one_controller_budget_across_clients() {
         )
         .unwrap();
     fixture.run_result(connected).unwrap();
+    let primed = second
+        .submit(
+            fixture.runtime.next_id(),
+            Operation::Command(Command::raw("#1p").unwrap()),
+            RequestOptions::default(),
+        )
+        .unwrap();
+    fixture.run_result(primed).unwrap();
     let clients = [fixture.client.clone(), second.clone()];
-    let ready = std::sync::Barrier::new(8);
-    let release = std::sync::Barrier::new(8);
+    // One main-thread channel and fifteen worker channels for EACH Client.
+    let ready = std::sync::Barrier::new(31);
+    let release = std::sync::Barrier::new(31);
     std::thread::scope(|scope| {
         let clients = &clients;
         let fixture = &fixture;
-        let second = &second;
-        for index in 0..7 {
+        for index in 0..30 {
             let ready = &ready;
             let release = &release;
             scope.spawn(move || {
@@ -1221,22 +1482,29 @@ fn independent_connect_options_share_one_controller_budget_across_clients() {
             });
         }
         ready.wait();
-        let error = scope
-            .spawn(|| {
-                let request = second
-                    .submit(
-                        fixture.runtime.next_id(),
-                        Operation::Command(Command::raw("Motor[2].ServoCtrl=1").unwrap()),
-                        RequestOptions::default(),
-                    )
-                    .unwrap();
-                fixture.run_result(request)
-            })
-            .join()
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::ResourceLimit);
-        assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+        assert_eq!(
+            fixture.observed.gpascii_channels.load(Ordering::Acquire),
+            32
+        );
+        for client in clients {
+            let error = scope
+                .spawn(|| {
+                    let request = client
+                        .submit(
+                            fixture.runtime.next_id(),
+                            Operation::Command(Command::raw("Motor[2].ServoCtrl=1").unwrap()),
+                            RequestOptions::default(),
+                        )
+                        .unwrap();
+                    fixture.run_result(request)
+                })
+                .join()
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::ResourceLimit);
+            assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+            assert!(!error.fatal_transport);
+        }
         release.wait();
     });
     assert!(fixture.client.is_connected());
@@ -1252,6 +1520,7 @@ fn independent_connect_options_share_one_controller_budget_across_clients() {
 
 #[test]
 fn mt08_eight_channel_budget_is_global_and_does_not_reject_buffer_upload() {
+    // All members of this Client share sixteen online channels.
     for members in [1, 2] {
         let fixture = Fixture::new(None);
         let mut options = fixture.options();
@@ -1261,12 +1530,12 @@ fn mt08_eight_channel_budget_is_global_and_does_not_reject_buffer_upload() {
             .run(Operation::Command(Command::raw("#1p").unwrap()))
             .unwrap();
         let source = TestFile::new(b"open plc 1\nP1=42\nclose\n");
-        let ready = std::sync::Barrier::new(8);
-        let release = std::sync::Barrier::new(8);
+        let ready = std::sync::Barrier::new(16);
+        let release = std::sync::Barrier::new(16);
         std::thread::scope(|scope| {
             let fixture = &fixture;
             let source = &source;
-            for _ in 0..7 {
+            for _ in 0..15 {
                 let ready = &ready;
                 let release = &release;
                 scope.spawn(move || {
@@ -1596,7 +1865,7 @@ fn reset_reopened_input_without_ack_is_confirmed_by_one_read_only_probe() {
     let result = fixture
         .run(Operation::Command(Command::raw("$$$***").unwrap()))
         .unwrap();
-    assert_eq!(result.response, b"STDIN Open for ASCII Input");
+    assert!(result.response.is_empty());
     let commands = fixture.observed.commands.lock().unwrap();
     assert_eq!(
         commands
@@ -1611,20 +1880,45 @@ fn reset_reopened_input_without_ack_is_confirmed_by_one_read_only_probe() {
             .filter(|command| command.as_str() == "Sys.ServoCount")
             .count(),
         3,
-        "two initial lane checks plus exactly one post-reset probe"
+        "two initial lane checks plus exactly one post-reset probe; no reconnect"
     );
     drop(commands);
-    assert_eq!(fixture.client.pool_snapshot().ready, 0);
-    assert_eq!(fixture.client.pool_snapshot().failed, 2);
+    assert_eq!(fixture.client.pool_snapshot().ready, 2);
+    assert_eq!(fixture.client.pool_snapshot().failed, 0);
     assert_eq!(
         fixture.observed.password_attempts.load(Ordering::Acquire),
         2,
-        "no implicit reconnect"
+        "a confirmed reset recycles the surviving SSH transports"
     );
-    let error = fixture
+    let response = fixture
         .run(Operation::Command(Command::raw("#1p").unwrap()))
-        .unwrap_err();
-    assert_eq!(error.certainty, ExecutionCertainty::NotSent);
+        .unwrap();
+    assert_eq!(response.response, b"12.5");
+    assert_eq!(
+        fixture.observed.password_attempts.load(Ordering::Acquire),
+        2,
+        "the first query after reset must reuse SSH, too"
+    );
+    assert_eq!(
+        fixture
+            .observed
+            .closed_gpascii_channels
+            .load(Ordering::Acquire),
+        2,
+        "both pre-reset GPASCII channels must be closed"
+    );
+    assert_eq!(
+        fixture
+            .observed
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| command.as_str() == "Sys.ServoCount")
+            .count(),
+        4,
+        "the post-reset query opens and verifies a fresh GPASCII channel"
+    );
 }
 
 #[test]
@@ -1801,4 +2095,586 @@ fn fragmented_ssh_parameter_range_preserves_all_8192_lines_and_request_ownership
             .count(),
         1
     );
+}
+
+#[test]
+fn revoked_known_host_key_takes_precedence_over_allowed_key() {
+    for revoked_first in [false, true] {
+        let fixture = Fixture::new(None);
+        let host = format!("[127.0.0.1]:{}", fixture.address.port());
+        let key = fixture.host_public.to_openssh().unwrap();
+        let contents = if revoked_first {
+            format!("@revoked {host} {key}\n{host} {key}\n")
+        } else {
+            format!("{host} {key}\n@revoked {host} {key}\n")
+        };
+        let hosts = TestFile::new(contents.as_bytes());
+        let mut options = fixture.options();
+        options.host_key = HostKeyPolicy::KnownHosts(hosts.0.clone());
+        assert_eq!(
+            fixture.run(Operation::Connect(options)).unwrap_err().code,
+            ErrorCode::HostKey
+        );
+        assert_eq!(fixture.observed.password_attempts.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn different_revoked_key_does_not_reject_allowed_host_key() {
+    let fixture = Fixture::new(None);
+    let host = format!("[127.0.0.1]:{}", fixture.address.port());
+    let allowed = fixture.host_public.to_openssh().unwrap();
+    let revoked = PrivateKey::random(&mut rand10::rng(), Algorithm::Ed25519)
+        .unwrap()
+        .public_key()
+        .to_openssh()
+        .unwrap();
+    let hosts = TestFile::new(format!("{host} {allowed}\n@revoked {host} {revoked}\n").as_bytes());
+    let mut options = fixture.options();
+    options.host_key = HostKeyPolicy::KnownHosts(hosts.0.clone());
+    fixture.run(Operation::Connect(options)).unwrap();
+}
+#[test]
+fn unknown_known_hosts_marker_fails_closed() {
+    let fixture = Fixture::new(None);
+    let contents = format!(
+        "@cert-authority [127.0.0.1]:{} {}\n",
+        fixture.address.port(),
+        fixture.host_public.to_openssh().unwrap()
+    );
+    let hosts = TestFile::new(contents.as_bytes());
+    let mut options = fixture.options();
+    options.host_key = HostKeyPolicy::KnownHosts(hosts.0.clone());
+    assert_eq!(
+        fixture.run(Operation::Connect(options)).unwrap_err().code,
+        ErrorCode::HostKey
+    );
+}
+
+#[test]
+fn remote_close_before_reclamation_releases_gpascii_budget() {
+    let fixture = Fixture::new(None);
+    let mut options = fixture.options();
+    options.control_pool_size = 16;
+    fixture.run(Operation::Connect(options)).unwrap();
+    assert_eq!(
+        fixture.observed.gpascii_channels.load(Ordering::Acquire),
+        16
+    );
+    assert_eq!(
+        fixture
+            .run(Operation::Command(Command::raw("#3p").unwrap()))
+            .unwrap_err()
+            .code,
+        ErrorCode::Disconnected
+    );
+    assert_eq!(
+        fixture.observed.gpascii_channels.load(Ordering::Acquire),
+        15
+    );
+    // Repair the SAME Client at the capacity boundary. An independent Client's
+    // success would not prove that this owner's confirmed-close permit was freed.
+    fixture
+        .run(Operation::PoolRepair { member_id: 1 })
+        .expect("confirmed close must return this Client's channel permit");
+    assert_eq!(
+        fixture.observed.gpascii_channels.load(Ordering::Acquire),
+        16
+    );
+}
+
+#[test]
+fn gpascii_close_sends_eof_before_waiting_for_exit_status() {
+    assert_gpascii_eof_close(1);
+}
+
+#[test]
+fn gpascii_close_accepts_remote_close_after_eof_without_exit_status() {
+    assert_gpascii_eof_close(2);
+}
+
+#[test]
+fn gpascii_close_falls_back_when_process_ignores_eof() {
+    assert_gpascii_eof_close(0);
+}
+
+fn assert_gpascii_eof_close(mode: usize) {
+    let fixture = Fixture::new(None);
+    fixture
+        .observed
+        .gpascii_eof_mode
+        .store(mode, Ordering::Release);
+    fixture.connect();
+    let client = fixture.client.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    fixture.runtime.spawn(async move {
+        let _ = sender.send(client.close(5_000).await);
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(6))
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.observed.gpascii_eofs.load(Ordering::Acquire), 1);
+    if mode != 2 {
+        assert_eq!(
+            fixture
+                .observed
+                .closed_gpascii_channels
+                .load(Ordering::Acquire),
+            1
+        );
+    }
+}
+
+fn monitor_future<T: Send + 'static>(
+    fixture: &Fixture,
+    future: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    fixture.runtime.spawn(async move {
+        let _ = sender.send(future.await);
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(15))
+        .expect("monitor task timed out")
+}
+#[test]
+fn geterrors_pty_stream_preserves_normal_commands_and_stops_with_ctrl_c() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    let client = fixture.client.clone();
+    let options = pmac_core::GetErrorsOptions {
+        append_date: true,
+        coord_mask: Some(0),
+        motor_mask: Some(0x123),
+        ring_mask: Some(u64::MAX),
+        global_mask: Some(7),
+        ..pmac_core::GetErrorsOptions::default()
+    };
+    let mut monitor = monitor_future(&fixture, async move {
+        client.start_geterrors(&options).await.unwrap()
+    });
+    // Holding and reading the monitor must not reserve the GPASCII request lane.
+    fixture
+        .run(Operation::Command(Command::raw("#1p").unwrap()))
+        .unwrap();
+    let chunks = monitor_future(&fixture, async move {
+        let first = monitor.read().await.unwrap().unwrap();
+        let second = monitor.read().await.unwrap().unwrap();
+        monitor.stop().await.unwrap();
+        monitor.stop().await.unwrap();
+        assert!(monitor.read().await.unwrap().is_none());
+        (first, second)
+    });
+    assert_eq!(chunks.0.data, b"coordinate error\n");
+    assert!(!chunks.0.stderr);
+    assert_eq!(chunks.1.data, b"diagnostic\n");
+    assert!(chunks.1.stderr);
+    assert_eq!(
+        fixture.observed.monitor_interrupts.load(Ordering::Acquire),
+        1
+    );
+    assert_eq!(
+        fixture.observed.monitor_commands.lock().unwrap().as_slice(),
+        ["geterrors -t0.01 -T -c0x0 -m0x123 -r0xffffffffffffffff -g0x7"]
+    );
+    let ptys = fixture.observed.monitor_ptys.lock().unwrap();
+    let modes = ptys.values().next().unwrap();
+    assert!(modes.contains(&(russh::Pty::ISIG, 1)));
+    assert!(modes.contains(&(russh::Pty::VINTR, 3)));
+    assert!(modes.contains(&(russh::Pty::ECHO, 0)));
+}
+#[test]
+fn geterrors_requires_valid_period_connected_client_and_accepted_pty_exec() {
+    let fixture = Fixture::new(None);
+    let client = fixture.client.clone();
+    monitor_future(&fixture, async move {
+        for period in [f64::NAN, f64::INFINITY, 0., 0.009, 1.001] {
+            let options = pmac_core::GetErrorsOptions {
+                period_seconds: period,
+                ..Default::default()
+            };
+            assert_eq!(
+                client.start_geterrors(&options).await.err().unwrap().code,
+                ErrorCode::InvalidArgument
+            );
+        }
+        assert_eq!(
+            client
+                .start_geterrors(&Default::default())
+                .await
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::Disconnected
+        );
+    });
+    fixture.connect();
+    for mode in [1, 8] {
+        fixture.observed.monitor_mode.store(mode, Ordering::Release);
+        let client = fixture.client.clone();
+        let error = monitor_future(&fixture, async move {
+            client
+                .start_geterrors(&Default::default())
+                .await
+                .err()
+                .unwrap()
+        });
+        assert_eq!(error.code, ErrorCode::RemoteError);
+        fixture
+            .run(Operation::Command(Command::raw("#1p").unwrap()))
+            .unwrap();
+    }
+}
+#[test]
+fn geterrors_unexpected_exit_and_unconfirmed_stop_are_reported_without_retiring_ssh() {
+    for mode in [2, 3, 5, 7] {
+        let fixture = Fixture::new(None);
+        fixture.connect();
+        fixture.observed.monitor_mode.store(mode, Ordering::Release);
+        let client = fixture.client.clone();
+        monitor_future(&fixture, async move {
+            let mut monitor = client.start_geterrors(&Default::default()).await.unwrap();
+            assert!(monitor.read().await.unwrap().is_some());
+            assert!(monitor.read().await.unwrap().is_some());
+            if mode == 5 {
+                let error = monitor.stop().await.unwrap_err();
+                assert_eq!(error.code, ErrorCode::ExecTimeout);
+                assert!(error.message.contains("unconfirmed"));
+            } else {
+                let error = monitor.read().await.unwrap_err();
+                assert_eq!(
+                    error.code,
+                    if mode == 2 || mode == 7 {
+                        ErrorCode::RemoteError
+                    } else {
+                        ErrorCode::Disconnected
+                    }
+                );
+                if mode == 2 || mode == 7 {
+                    monitor.stop().await.unwrap();
+                } else {
+                    assert!(monitor.stop().await.is_err());
+                }
+            }
+        });
+        fixture
+            .run(Operation::Command(Command::raw("#1p").unwrap()))
+            .unwrap();
+    }
+}
+#[test]
+fn geterrors_drop_cleanup_keeps_runtime_alive_until_ctrl_c_exit() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    let client = fixture.client.clone();
+    let monitor = monitor_future(&fixture, async move {
+        client.start_geterrors(&Default::default()).await.unwrap()
+    });
+    let client = fixture.client.clone();
+    let error = monitor_future(&fixture, async move { client.close(25).await.unwrap_err() });
+    assert_eq!(error.code, ErrorCode::ShutdownPending);
+    drop(monitor);
+    fixture.runtime.shutdown_clients(5000).unwrap();
+    assert_eq!(
+        fixture.observed.monitor_interrupts.load(Ordering::Acquire),
+        1
+    );
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Closed
+    );
+}
+
+#[test]
+fn geterrors_canceled_open_is_cleaned_before_runtime_shutdown() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture.observed.monitor_mode.store(4, Ordering::Release);
+    let client = fixture.client.clone();
+    monitor_future(&fixture, async move {
+        assert!(tokio::time::timeout(
+            Duration::from_millis(50),
+            client.start_geterrors(&Default::default()),
+        )
+        .await
+        .is_err());
+    });
+    // Open runs independently of its canceled caller, retaining active_tasks until
+    // the missing exec confirmation times out and this process receives Ctrl+C.
+    fixture.runtime.shutdown_clients(10_000).unwrap();
+    assert_eq!(
+        fixture.observed.monitor_interrupts.load(Ordering::Acquire),
+        1
+    );
+    assert_eq!(
+        fixture.client.snapshot().state,
+        pmac_core::ClientState::Closed
+    );
+}
+#[test]
+fn geterrors_large_output_is_delivered_in_bounded_chunks() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture.observed.monitor_mode.store(6, Ordering::Release);
+    let client = fixture.client.clone();
+    monitor_future(&fixture, async move {
+        let mut monitor = client.start_geterrors(&Default::default()).await.unwrap();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = monitor.read().await.unwrap() {
+            assert!(chunk.data.len() <= 32 * 1024);
+            if chunk.stderr {
+                break;
+            }
+            bytes.extend(chunk.data);
+        }
+        assert_eq!(&bytes[..17], b"coordinate error\n");
+        assert_eq!(bytes.len(), 100_017);
+        assert!(bytes[17..].iter().all(|&byte| byte == b'x'));
+        monitor.stop().await.unwrap();
+    });
+}
+
+#[test]
+fn controller_errors_with_ack_or_stderr_are_reported_without_replay() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    let error = fixture
+        .run(Operation::Command(Command::raw("P910002").unwrap()))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::RemoteError);
+    assert_eq!(error.certainty, ExecutionCertainty::Confirmed);
+    assert!(error
+        .message
+        .contains("controller rejected command: P910002"));
+    assert!(error.message.contains("response: stdin:1:1: error #5"));
+    assert!(!error.fatal_transport);
+    assert!(fixture.client.is_connected());
+
+    let diagnostic = fixture
+        .run(Operation::Command(Command::raw("P910003").unwrap()))
+        .unwrap();
+    assert!(diagnostic.response.is_empty());
+    assert_eq!(
+        diagnostic.stderr,
+        b"stdin:2:3: error #44: Diagnostic on stderr:"
+    );
+
+    for command in ["P910002", "P910003"] {
+        assert_eq!(
+            fixture
+                .observed
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.as_str() == command)
+                .count(),
+            1
+        );
+    }
+    assert_eq!(
+        fixture
+            .run(Operation::Command(Command::raw("P910004").unwrap()))
+            .unwrap()
+            .response,
+        b"7"
+    );
+    assert!(!fixture
+        .observed
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c == "close"));
+}
+
+#[test]
+fn gpascii_delayed_stderr_does_not_reject_next_request() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    let first = fixture
+        .run(Operation::Command(Command::raw("P910005").unwrap()))
+        .unwrap();
+    assert_eq!(first.response, b"stale");
+    assert!(first.stderr.is_empty());
+
+    let next = fixture
+        .run(Operation::Command(Command::raw("P910004").unwrap()))
+        .unwrap();
+    assert_eq!(next.response, b"7");
+    assert_eq!(next.stderr, b"stdin:2:3: error #20: delayed diagnostic");
+}
+
+#[test]
+fn gpascii_async_stderr_cannot_fail_the_stdout_response_budget() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    let result = fixture
+        .run_with_options(
+            Operation::Command(Command::raw("P910003").unwrap()),
+            RequestOptions {
+                max_response_bytes: 4,
+                ..RequestOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(result.response.is_empty());
+    assert_eq!(result.stderr, b"stdi");
+}
+
+#[test]
+fn external_client_close_reports_error_31_and_invalidates_the_old_program_context() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture
+        .run(Operation::Command(Command::raw("open prog 1").unwrap()))
+        .unwrap();
+    let external = fixture
+        .runtime
+        .create_client(Arc::new(RusshTransport), ClientConfig::default())
+        .unwrap();
+    let submit_external = |operation| {
+        fixture.run_result(
+            external
+                .submit(
+                    fixture.runtime.next_id(),
+                    operation,
+                    RequestOptions::default(),
+                )
+                .unwrap(),
+        )
+    };
+    submit_external(Operation::Connect(fixture.options())).unwrap();
+    submit_external(Operation::Command(
+        Command::raw("close all buffers").unwrap(),
+    ))
+    .unwrap();
+    let body = fixture
+        .client
+        .parse_command_for_current_thread("dwell 10")
+        .unwrap();
+    assert!(body.is_program_line());
+    let error = fixture.run(Operation::Command(body)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::RemoteError);
+    assert!(error
+        .message
+        .contains("stdin:1:1: error #31: Buffer closed due to another thread:"));
+    assert!(error.fatal_transport);
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("dwell 10")
+        .is_err());
+    assert_eq!(fixture.client.pool_snapshot().failed, 1);
+    assert!(external.is_connected());
+    assert_eq!(
+        submit_external(Operation::Command(Command::raw("P910004").unwrap()))
+            .unwrap()
+            .response,
+        b"7"
+    );
+    let commands = fixture.observed.commands.lock().unwrap();
+    assert_eq!(
+        commands.iter().filter(|c| c.as_str() == "dwell 10").count(),
+        1
+    );
+    assert!(!commands.iter().any(|c| c == "close"));
+}
+#[test]
+fn same_client_global_close_rejects_stale_program_text_and_reports_deferred_error_31() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    fixture
+        .run(Operation::Command(Command::raw("open prog 1").unwrap()))
+        .unwrap();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                fixture
+                    .run(Operation::Command(
+                        Command::raw("close all buffers").unwrap(),
+                    ))
+                    .unwrap();
+            })
+            .join()
+            .unwrap();
+    });
+    // Known local contexts are invalidated before dispatch; there is no silent line replay.
+    assert!(fixture
+        .client
+        .parse_command_for_current_thread("dwell 10")
+        .is_err());
+    // An otherwise valid online request can still expose the remote channel's deferred error.
+    let error = fixture
+        .run(Operation::Command(Command::raw("P910004").unwrap()))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::RemoteError);
+    assert!(error
+        .message
+        .contains("error #31: Buffer closed due to another thread:"));
+    assert!(error.fatal_transport);
+    let commands = fixture.observed.commands.lock().unwrap();
+    assert!(!commands.iter().any(|c| c == "close" || c == "dwell 10"));
+    assert_eq!(
+        commands.iter().filter(|c| c.as_str() == "P910004").count(),
+        1
+    );
+}
+
+#[test]
+fn passthrough_still_reports_remote_diagnostics_without_replay() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    let error = fixture
+        .run(Operation::Command(Command::passthrough("P910002").unwrap()))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::RemoteError);
+    assert_eq!(error.certainty, ExecutionCertainty::Confirmed);
+    assert!(error.message.contains("error #5: Invalid statement:"));
+
+    let diagnostic = fixture
+        .run(Operation::Command(Command::passthrough("P910003").unwrap()))
+        .unwrap();
+    assert!(diagnostic.response.is_empty());
+    assert_eq!(
+        diagnostic.stderr,
+        b"stdin:2:3: error #44: Diagnostic on stderr:"
+    );
+
+    for wire in ["P910002", "P910003"] {
+        assert_eq!(
+            fixture
+                .observed
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.as_str() == wire)
+                .count(),
+            1
+        );
+    }
+    assert!(!fixture
+        .observed
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c == "close"));
+}
+
+#[test]
+fn passthrough_exact_reset_uses_readiness_probe_instead_of_waiting_for_ack() {
+    for text in ["$$$", "$$$***"] {
+        let fixture = Fixture::new(None);
+        fixture.observed.reset_mode.store(1, Ordering::Release);
+        fixture.run(Operation::Connect(fixture.options())).unwrap();
+        let result = fixture
+            .run(Operation::Command(Command::passthrough(text).unwrap()))
+            .unwrap();
+        assert!(result.response.is_empty());
+        let commands = fixture.observed.commands.lock().unwrap();
+        assert_eq!(commands.iter().filter(|c| c.as_str() == text).count(), 1);
+        assert!(commands.iter().any(|c| c == "Sys.ServoCount"));
+    }
 }

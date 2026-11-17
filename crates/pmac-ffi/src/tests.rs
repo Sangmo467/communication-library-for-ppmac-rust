@@ -227,3 +227,394 @@ fn password_and_private_key_authentication_options_are_preserved() {
         Some("test-passphrase")
     );
 }
+
+#[test]
+fn synchronous_business_errors_preserve_request_details_per_thread() {
+    let (_runtime_id, runtime) = runtime();
+    let mock = Arc::new(MockTransport::default());
+    let client = mock_client(&runtime, mock.clone());
+    let mut connect = 0;
+    assert_eq!(
+        pmac_connect_submit(client, &connect_options(), &mut connect),
+        0
+    );
+    let mut info = std::mem::MaybeUninit::<PmacRequestInfo>::uninit();
+    assert_eq!(pmac_request_wait(connect, 1000, info.as_mut_ptr()), 0);
+    assert_eq!(pmac_request_release(connect), 0);
+    mock.session.block(true);
+    let options = PmacRequestOptions {
+        struct_size: size_of::<PmacRequestOptions>() as u32,
+        abi_version: ABI_VERSION,
+        timeout_ms: 50,
+        flags: 0,
+        max_response_bytes: 1024,
+    };
+    assert_eq!(
+        pmac_motor_abs_jog(client, 1, 1.0, &options),
+        ErrorCode::ExecTimeout as i32
+    );
+    let mut error = std::mem::MaybeUninit::<PmacErrorInfo>::uninit();
+    let mut required = 0;
+    assert_eq!(
+        pmac_copy_last_error(error.as_mut_ptr(), std::ptr::null_mut(), 0, &mut required),
+        ErrorCode::BufferTooSmall as i32
+    );
+    let error = unsafe { error.assume_init() };
+    assert_eq!(error.status, ErrorCode::ExecTimeout as i32);
+    assert_eq!(
+        error.certainty,
+        pmac_core::ExecutionCertainty::MayHaveExecuted as u32
+    );
+    assert_ne!(error.request_id, 0);
+    assert!(registry().request(error.request_id).is_none());
+    let mut message = vec![0; required];
+    let mut second = std::mem::MaybeUninit::<PmacErrorInfo>::uninit();
+    assert_eq!(
+        pmac_copy_last_error(
+            second.as_mut_ptr(),
+            message.as_mut_ptr(),
+            message.len(),
+            &mut required
+        ),
+        0
+    );
+    assert!(!message.is_empty());
+    assert_eq!(
+        std::thread::spawn(|| {
+            let mut info = std::mem::MaybeUninit::<PmacErrorInfo>::uninit();
+            let mut required = 0;
+            pmac_copy_last_error(info.as_mut_ptr(), std::ptr::null_mut(), 0, &mut required)
+        })
+        .join()
+        .unwrap(),
+        ErrorCode::InvalidHandle as i32
+    );
+    assert_eq!(
+        pmac_motor_abs_jog(client, -1, 1.0, &options),
+        ErrorCode::InvalidArgument as i32
+    );
+    let mut invalid = std::mem::MaybeUninit::<PmacErrorInfo>::uninit();
+    let status = pmac_copy_last_error(invalid.as_mut_ptr(), std::ptr::null_mut(), 0, &mut required);
+    assert_eq!(status, ErrorCode::BufferTooSmall as i32);
+    let invalid = unsafe { invalid.assume_init() };
+    assert_eq!(
+        invalid.certainty,
+        pmac_core::ExecutionCertainty::NotSent as u32
+    );
+    assert_eq!(invalid.request_id, 0);
+    mock.session.block(false);
+    let _ = runtime.shutdown_clients(1000);
+}
+
+#[test]
+fn online_command_corpus_is_submittable_with_correct_read_pool_admission() {
+    let (runtime_id, runtime) = runtime();
+    let mock = Arc::new(MockTransport::default());
+    let client = mock_client(&runtime, mock.clone());
+    let mut connect = 0;
+    assert_eq!(
+        pmac_connect_submit(client, &connect_options(), &mut connect),
+        0
+    );
+    let mut info = std::mem::MaybeUninit::<PmacRequestInfo>::uninit();
+    assert_eq!(pmac_request_wait(connect, 1000, info.as_mut_ptr()), 0);
+    assert_eq!(pmac_request_release(connect), 0);
+    let read_options = PmacRequestOptions {
+        struct_size: size_of::<PmacRequestOptions>() as u32,
+        abi_version: ABI_VERSION,
+        timeout_ms: 1000,
+        flags: 2,
+        max_response_bytes: 1024,
+    };
+    let mut expected = Vec::new();
+    for line in include_str!("../../pmac-protocol/tests/online-command-corpus.tsv").lines() {
+        let (kind, text) = line.split_once('\t').unwrap();
+        let mut request = 0;
+        let status = pmac_get_response_async(
+            client,
+            text.as_ptr(),
+            text.len(),
+            &read_options,
+            &mut request,
+        );
+        if kind == "R" {
+            assert_eq!(status, 0, "{text}");
+            assert_eq!(
+                pmac_request_wait(request, 1000, info.as_mut_ptr()),
+                0,
+                "{text}"
+            );
+            assert_eq!(pmac_request_release(request), 0);
+            expected.push(text.to_owned());
+        } else {
+            assert_eq!(status, ErrorCode::InvalidArgument as i32, "{text}");
+            assert_eq!(request, 0);
+        }
+        assert_eq!(
+            pmac_get_response_async(
+                client,
+                text.as_ptr(),
+                text.len(),
+                std::ptr::null(),
+                &mut request
+            ),
+            0,
+            "{text}"
+        );
+        assert_eq!(
+            pmac_request_wait(request, 1000, info.as_mut_ptr()),
+            0,
+            "{text}"
+        );
+        assert_eq!(pmac_request_release(request), 0);
+        expected.push(text.to_owned());
+        if text.to_ascii_lowercase().contains("open ") {
+            let close = b"close";
+            let mut close_request = 0;
+            assert_eq!(
+                pmac_get_response_async(
+                    client,
+                    close.as_ptr(),
+                    close.len(),
+                    std::ptr::null(),
+                    &mut close_request
+                ),
+                0
+            );
+            assert_eq!(pmac_request_wait(close_request, 1000, info.as_mut_ptr()), 0);
+            assert_eq!(pmac_request_release(close_request), 0);
+            expected.push("close".into());
+        }
+    }
+    assert_eq!(mock.session.commands(), expected);
+    assert_eq!(pmac_client_close(client, 0, 1000), 0);
+    assert_eq!(pmac_client_release(client), 0);
+    assert_eq!(pmac_runtime_shutdown(runtime_id, 1000), 0);
+    assert_eq!(pmac_runtime_release(runtime_id), 0);
+}
+
+#[test]
+fn get_response_program_passthrough_starts_only_after_same_thread_open_ack() {
+    let (runtime_id, runtime) = runtime();
+    let mock = Arc::new(MockTransport::default());
+    let client = mock_client(&runtime, mock.clone());
+    let mut connect = 0;
+    assert_eq!(
+        pmac_connect_submit(client, &connect_options(), &mut connect),
+        0
+    );
+    let mut info = std::mem::MaybeUninit::<PmacRequestInfo>::uninit();
+    assert_eq!(pmac_request_wait(connect, 1000, info.as_mut_ptr()), 0);
+    assert_eq!(pmac_request_release(connect), 0);
+    let checked = PmacRequestOptions {
+        struct_size: size_of::<PmacRequestOptions>() as u32,
+        abi_version: ABI_VERSION,
+        timeout_ms: 1000,
+        flags: 8,
+        max_response_bytes: 4096,
+    };
+    let submit = |text: &str| {
+        let mut request = 0;
+        let status =
+            pmac_get_response_async(client, text.as_ptr(), text.len(), &checked, &mut request);
+        (status, request)
+    };
+    assert_eq!(submit("abort"), (ErrorCode::InvalidArgument as i32, 0));
+    let (status, open) = submit("open prog 1");
+    assert_eq!(status, 0);
+    assert_eq!(pmac_request_wait(open, 1000, info.as_mut_ptr()), 0);
+    assert_eq!(pmac_request_release(open), 0);
+    let other = std::thread::spawn(move || {
+        let text = b"abort";
+        let mut request = 0;
+        (
+            pmac_get_response_async(client, text.as_ptr(), text.len(), &checked, &mut request),
+            request,
+        )
+    })
+    .join()
+    .unwrap();
+    assert_eq!(other, (ErrorCode::InvalidArgument as i32, 0));
+    let (status, body) = submit("abort");
+    assert_eq!(status, 0);
+    assert_eq!(pmac_request_wait(body, 1000, info.as_mut_ptr()), 0);
+    assert_eq!(pmac_request_release(body), 0);
+    let (status, close) = submit("close");
+    assert_eq!(status, 0);
+    assert_eq!(pmac_request_wait(close, 1000, info.as_mut_ptr()), 0);
+    assert_eq!(pmac_request_release(close), 0);
+    assert_eq!(submit("abort"), (ErrorCode::InvalidArgument as i32, 0));
+    assert_eq!(
+        mock.session.commands(),
+        vec!["open prog 1", "abort", "close"]
+    );
+    assert_eq!(pmac_client_close(client, 0, 1000), 0);
+    assert_eq!(pmac_client_release(client), 0);
+    assert_eq!(pmac_runtime_shutdown(runtime_id, 1000), 0);
+    assert_eq!(pmac_runtime_release(runtime_id), 0);
+}
+
+#[test]
+fn get_response_passthrough_flag_bypasses_rules_and_preserves_exact_text() {
+    let (runtime_id, runtime) = runtime();
+    let mock = Arc::new(MockTransport::default());
+    let client = mock_client(&runtime, mock.clone());
+    let mut request = 0;
+    let mut info = std::mem::MaybeUninit::<PmacRequestInfo>::uninit();
+    assert_eq!(
+        pmac_connect_submit(client, &connect_options(), &mut request),
+        0
+    );
+    assert_eq!(pmac_request_wait(request, 1000, info.as_mut_ptr()), 0);
+    assert_eq!(pmac_request_release(request), 0);
+    let wire = b"  Vendor.FutureCommand(7);;dwell 10  ";
+    let mut options = PmacRequestOptions {
+        struct_size: size_of::<PmacRequestOptions>() as u32,
+        abi_version: ABI_VERSION,
+        timeout_ms: 1000,
+        flags: 0,
+        max_response_bytes: 4096,
+    };
+    // 空选项、零标志、显式透传均保留原文，且无需已确认的本地程序上下文。
+    for flags in [None, Some(0), Some(4)] {
+        options.flags = flags.unwrap_or(0);
+        let pointer = if flags.is_none() {
+            std::ptr::null()
+        } else {
+            &options
+        };
+        assert_eq!(
+            pmac_get_response_async(client, wire.as_ptr(), wire.len(), pointer, &mut request),
+            0
+        );
+        assert_eq!(pmac_request_wait(request, 1000, info.as_mut_ptr()), 0);
+        assert_eq!(pmac_request_release(request), 0);
+    }
+    assert_eq!(
+        mock.session.commands(),
+        vec![String::from_utf8(wire.to_vec()).unwrap(); 3]
+    );
+    // 显式分类、只读池、相互冲突或未知标志不能让任意正文绕过校验。
+    for flags in [2, 6, 8, 12, 16] {
+        options.flags = flags;
+        request = 99;
+        assert_eq!(
+            pmac_get_response_async(client, wire.as_ptr(), wire.len(), &options, &mut request),
+            ErrorCode::InvalidArgument as i32
+        );
+        assert_eq!(request, 0);
+    }
+    for wire in ["dwell 10\nclose", "P1\0", " ", "P1\u{6}"] {
+        assert_eq!(
+            pmac_get_response_async(
+                client,
+                wire.as_ptr(),
+                wire.len(),
+                std::ptr::null(),
+                &mut request
+            ),
+            ErrorCode::InvalidArgument as i32
+        );
+        assert_eq!(request, 0);
+    }
+    assert_eq!(pmac_client_close(client, 0, 1000), 0);
+    assert_eq!(pmac_client_release(client), 0);
+    assert_eq!(pmac_runtime_shutdown(runtime_id, 1000), 0);
+    assert_eq!(pmac_runtime_release(runtime_id), 0);
+}
+
+#[test]
+fn native_version_matches_workspace_package_version() {
+    // C 导出版本必须跟随工作区版本，防止包名已更新而 DLL/so/dylib 仍报告旧版本。
+    let pointer = pmac_version_string();
+    assert!(!pointer.is_null());
+    let version = unsafe { std::ffi::CStr::from_ptr(pointer) }
+        .to_str()
+        .unwrap();
+    assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(version, VERSION);
+}
+
+#[test]
+fn invalid_business_target_replaces_previous_last_error() {
+    let mut id = 0;
+    let bad = PmacRuntimeConfig {
+        struct_size: 0,
+        abi_version: 0,
+        worker_threads: 0,
+        reserved: 0,
+    };
+    assert_ne!(pmac_runtime_create(&bad, &mut id), 0);
+    let mut value = 0.0;
+    assert_eq!(
+        pmac_motor_position(0, -1, std::ptr::null(), &mut value),
+        ErrorCode::InvalidArgument as i32
+    );
+    let mut info = std::mem::MaybeUninit::<PmacErrorInfo>::uninit();
+    let mut required = 0;
+    let mut bytes = [0u8; 512];
+    assert_eq!(
+        pmac_copy_last_error(
+            info.as_mut_ptr(),
+            bytes.as_mut_ptr(),
+            bytes.len(),
+            &mut required
+        ),
+        0
+    );
+    let message = std::str::from_utf8(&bytes[..required]).unwrap();
+    assert!(message.contains("motor"), "{message}");
+}
+
+#[test]
+fn reset_defaults_use_thirty_seconds_but_explicit_options_are_preserved() {
+    for (command, explicit, expected) in [
+        ("$$$***", false, 30_000u32),
+        ("$$$", true, 5_000),
+        ("Sys.ServoCount", false, 5_000),
+    ] {
+        let (runtime_id, runtime) = runtime();
+        let mock = Arc::new(MockTransport::default());
+        let client = mock_client(&runtime, mock.clone());
+        let mut id = 0;
+        assert_eq!(pmac_connect_submit(client, &connect_options(), &mut id), 0);
+        let mut info = std::mem::MaybeUninit::<PmacRequestInfo>::uninit();
+        assert_eq!(pmac_request_wait(id, 1000, info.as_mut_ptr()), 0);
+        assert_eq!(pmac_request_release(id), 0);
+        mock.session.block(true);
+        let options = PmacRequestOptions {
+            struct_size: size_of::<PmacRequestOptions>() as u32,
+            abi_version: ABI_VERSION,
+            timeout_ms: 5000,
+            flags: 0,
+            max_response_bytes: 1024,
+        };
+        assert_eq!(
+            pmac_command_submit(
+                client,
+                command.as_ptr(),
+                command.len(),
+                if explicit { &options } else { std::ptr::null() },
+                &mut id
+            ),
+            0
+        );
+        let (request, _) = request(id).unwrap();
+        let remaining = request
+            .deadline()
+            .unwrap()
+            .saturating_duration_since(tokio::time::Instant::now())
+            .as_millis();
+        assert!(
+            remaining <= u128::from(expected) && remaining > u128::from(expected - 1000),
+            "remaining={remaining}, expected={expected}"
+        );
+        request.cancel();
+        mock.session.block(false);
+        let _ = pmac_request_wait(id, 5000, info.as_mut_ptr());
+        assert_eq!(pmac_request_release(id), 0);
+        runtime.shutdown_clients(5000).unwrap();
+        assert_eq!(pmac_client_release(client), 0);
+        assert_eq!(pmac_runtime_release(runtime_id), 0);
+    }
+}

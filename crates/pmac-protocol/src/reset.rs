@@ -111,8 +111,12 @@ impl ResetDecoder {
                                     .into(),
                             ));
                         }
+                        let response = self.response_body();
+                        if response.len() > self.maximum {
+                            return Err(ProtocolError::ResponseTooLarge(self.maximum));
+                        }
                         self.phase = Phase::Complete;
-                        events.push(ResetEvent::Complete(self.response_body()));
+                        events.push(ResetEvent::Complete(response));
                     } else if self.ready_line(byte) {
                         // Repeated startup banners do not authorize another probe/reset.
                         self.probe_output.clear();
@@ -163,7 +167,9 @@ impl ResetDecoder {
         {
             body = trim_ascii(&body[self.command.len()..]);
         }
-        body.to_vec()
+        let mut body = body.to_vec();
+        crate::gpascii::filter_input_ready(&mut body);
+        trim_ascii(&body).to_vec()
     }
 }
 
@@ -209,7 +215,7 @@ mod tests {
                 decoder.probe_sent().unwrap();
                 let mut events = decoder.push(&probe[..probe_split]).unwrap();
                 events.extend(decoder.push(&probe[probe_split..]).unwrap());
-                assert_eq!(events, vec![ResetEvent::Complete(INPUT_READY.to_vec())]);
+                assert_eq!(events, vec![ResetEvent::Complete(Vec::new())]);
             }
         }
     }
@@ -282,6 +288,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn probe_completion_enforces_filtered_response_limit() {
+        for (body, accepted) in [("12345678", true), ("123456789", false)] {
+            let mut decoder = ResetDecoder::new(b"$$$", 8);
+            let banner = format!("$$$\r\n{body}\r\nSTDIN Open for ASCII Input\r\n");
+            assert_eq!(
+                decoder.push(banner.as_bytes()).unwrap(),
+                vec![ResetEvent::ProbeRequired]
+            );
+            decoder.probe_sent().unwrap();
+            let result = decoder.push(b"42\r\n\x06");
+            if accepted {
+                assert_eq!(
+                    result.unwrap(),
+                    vec![ResetEvent::Complete(body.as_bytes().to_vec())]
+                );
+            } else {
+                assert!(matches!(result, Err(ProtocolError::ResponseTooLarge(8))));
+            }
+        }
+    }
     #[test]
     fn startup_noise_is_bounded_and_trailing_completed_frames_are_rejected() {
         let mut decoder = ResetDecoder::new(b"$$$", 8);

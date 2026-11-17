@@ -1,0 +1,39 @@
+name: Publish validated SDK artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID containing all required successful sdk-* artifacts'
+        type: string
+        required: true
+      tag:
+        description: 'Existing public version tag'
+        type: string
+        required: true
+        default: 'v2.0.7'
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sdk-*
+          merge-multiple: true
+          path: release-assets
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify provenance and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.run_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:BUILD_RUN_ID -notmatch '^\d+$') { throw 'Invalid build run ID' }
+          $build = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:BUILD_RUN_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read source build provenance' }
+          ./scripts/Publish-GitHubRelease.ps1 -AssetDirectory release-assets -Tag $env:RELEASE_TAG -Commit $build.head_sha -Owner $env:GITHUB_REPOSITORY_OWNER -Repository ($env:GITHUB_REPOSITORY.Split('/')[1])

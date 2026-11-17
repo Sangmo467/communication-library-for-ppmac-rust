@@ -397,6 +397,20 @@ class LifecycleTests(unittest.TestCase):
                 results = await asyncio.wait_for(asyncio.gather(first_task, second_task), 1)
                 self.assertEqual({result.request_id for result in results}, {first.id, second.id})
         asyncio.run(run())
+    def test_pool_profile_rejects_truncation_before_native_calls(self):
+        for name in ("target_size", "max_members", "min_ready", "connect_timeout_ms"):
+            for value in (-1, 2**32 + 1, 1.5):
+                with self.subTest(name=name, value=value):
+                    with self.assertRaises((ValueError, TypeError)):
+                        core.Client._pool_profile(**{name: value})
+        self.assertEqual(self.lib.pool_calls, [])
+
+    def test_recovery_revision_rejects_truncation_before_native_call(self):
+        for revision in (-1, 2**64 + 42, 1.5):
+            with self.subTest(revision=revision):
+                with self.assertRaises((ValueError, TypeError)):
+                    self.client.pool_confirm_recovery(revision, True, True)
+        self.assertEqual(self.lib.pool_calls, [])
     def test_pool_abi_layout_and_read_pool_flag(self):
         self.assertEqual(C.sizeof(N.PoolProfile), 24)
         self.assertEqual(C.sizeof(N.PoolState), 64)
@@ -498,5 +512,174 @@ class NativeForkTests(unittest.TestCase):
         self.assertEqual(core.os.WEXITSTATUS(status), 0)
 
 
+
+class BusinessErrorDetailTests(unittest.TestCase):
+    def test_details_and_safe_fallback(self):
+        class Native:
+            def pmac_copy_last_error(self, info, output, capacity, required):
+                info._obj.status = -5
+                info._obj.certainty = 1
+                info._obj.request_id = 42
+                required._obj.value = 7
+                if output is None:
+                    return -11
+                for index, byte in enumerate(b"timeout"):
+                    output[index] = byte
+                return 0
+        with self.assertRaises(core.PmacError) as raised:
+            core._check_business(Native(), -5, "jog")
+        self.assertEqual((raised.exception.request_id, raised.exception.certainty), (42, 1))
+        self.assertEqual(str(raised.exception), "timeout")
+        with self.assertRaises(core.PmacError) as fallback:
+            core._check_business(object(), -5, "jog")
+        self.assertEqual(fallback.exception.certainty, 1)
+
+class IntegerNarrowingTests(unittest.TestCase):
+    def test_invalid_integers_are_rejected_before_native_calls(self):
+        client = core.Client.__new__(core.Client)
+        for value in (2**32 + 1, -(2**32) + 1, 1.0):
+            with self.subTest(value=value):
+                with self.assertRaises((TypeError, ValueError)):
+                    client.motor_kill(value)
+                with self.assertRaises((TypeError, ValueError)):
+                    client.motor_position(value)
+        for command, address in ((2**32 + 0x10, 1), (0x10, 2**32 + 1), (0x10, -1)):
+            with self.subTest(command=command, address=address):
+                with self.assertRaises(ValueError):
+                    client.dart_get_async(command, address, 4)
+                with self.assertRaises(ValueError):
+                    client.dart_set_async(command, address, b"1234")
+    def test_request_options_reject_integer_truncation(self):
+        for name, maximum in (("timeout_ms", 0xffffffff),
+                              ("max_response_bytes", 2**(8 * C.sizeof(C.c_size_t)) - 1)):
+            for value in (-1, maximum + 1, 1.5):
+                with self.subTest(name=name, value=value):
+                    with self.assertRaises((TypeError, ValueError)):
+                        core.options({name: value})
+            self.assertEqual(getattr(core.options({name: 0}), name), 0)
+            self.assertEqual(getattr(core.options({name: maximum}), name), maximum)
+
+    def test_connect_options_reject_integer_truncation(self):
+        client = core.Client.__new__(core.Client)
+        bounds = (("port", 1, 0xffff), ("control_pool_size", 1, 0xff),
+                  ("tcp_probe_timeout_ms", 0, 0xffffffff),
+                  ("keepalive_interval_ms", 0, 0xffffffff), ("keepalive_max", 0, 0xffffffff))
+        for name, minimum, maximum in bounds:
+            for value in (minimum - 1, maximum + 1, 1.5):
+                for method in (client.connect_async, client.pool_prepare_async):
+                    with self.subTest(name=name, value=value, method=method):
+                        with self.assertRaises((TypeError, ValueError)):
+                            method("example.invalid", "test", **{name: value})
+            for value in (minimum, maximum):
+                native, _ = client._connect_options("example.invalid", "test", None, {name: value})
+                self.assertEqual(getattr(native, name), value)
+    def test_pool_member_ids_reject_integer_truncation(self):
+        client = core.Client.__new__(core.Client)
+        for value in (-1, 2**64, 1.0):
+            for method in (client.pool_drain_async, client.pool_repair_async):
+                with self.subTest(value=value, method=method):
+                    with self.assertRaises((TypeError, ValueError)):
+                        method(value)
+
+class CompletionBatchTests(unittest.TestCase):
+    def test_mixed_batch_releases_each_slot_once_and_repolls_only_pending(self):
+        class Entry:
+            def __init__(self, rounds=1, failure=False):
+                self.rounds, self.failure, self.polls = rounds, failure, 0
+                self._lock = threading.RLock()
+                self.errors = []
+            def _poll(self):
+                self.polls += 1
+                if self.failure:
+                    raise RuntimeError("injected poll failure")
+                return self.polls >= self.rounds
+            def _finish_locked(self, info, error):
+                self.errors.append(error)
+
+        pump = core._CompletionPump.__new__(core._CompletionPump)
+        pump.queue = core.queue.Queue()
+        pump.slots = threading.BoundedSemaphore(4)
+        pump.stopping = threading.Event()
+        pump.stopping.set()
+        pump.wake = threading.Event()
+        pump.native_notifications = False
+        pump.client_handles = core._ClientHandles()
+        pump.lib = FakeNative()
+        complete, pending, failed, collected = Entry(), Entry(2), Entry(failure=True), Entry()
+        for entry in (complete, pending, failed, collected):
+            self.assertTrue(pump.slots.acquire(False))
+            pump.queue.put(weakref.ref(entry))
+        del entry, collected
+        pump.run()
+        self.assertEqual((complete.polls, pending.polls, failed.polls), (1, 2, 1))
+        self.assertEqual(len(failed.errors), 1)
+        for _ in range(4):
+            self.assertTrue(pump.slots.acquire(False))
+        self.assertFalse(pump.slots.acquire(False))
+class CreationIntegerTests(unittest.TestCase):
+    def test_workers_rejected_before_loading_native_library(self):
+        with patch.object(N, "load") as load:
+            for value in (-1, 0, 257, 2**32 + 2, 1.5, "2"):
+                with self.subTest(value=value):
+                    with self.assertRaises((TypeError, ValueError)):
+                        core.Runtime(workers=value)
+            load.assert_not_called()
+
+    def test_client_limits_rejected_before_native_creation(self):
+        runtime = core.Runtime.__new__(core.Runtime)
+        for name, maximum in (("max_requests", 0xffffffff),
+                              ("max_file_tasks", 0xffffffff),
+                              ("max_retained_bytes", 2**(8 * C.sizeof(C.c_size_t)) - 1)):
+            for value in (-1, 0, maximum + 1, 1.5, "1"):
+                with self.subTest(name=name, value=value):
+                    with self.assertRaises((TypeError, ValueError)):
+                        runtime.create_client(**{name: value})
+
+    def test_valid_boundaries_are_preserved(self):
+        lib = FakeNative()
+        with patch.object(N, "load", return_value=lib):
+            for workers in (1, 256):
+                with patch.object(lib, "pmac_runtime_create", wraps=lib.pmac_runtime_create) as create:
+                    with core.Runtime(workers=workers) as runtime:
+                        self.assertEqual(create.call_args.args[0]._obj.worker_threads, workers)
+                        for value in (1, 0xffffffff):
+                            with patch.object(lib, "pmac_client_create", wraps=lib.pmac_client_create) as create_client:
+                                client = runtime.create_client(max_requests=value, max_file_tasks=value,
+                                    max_retained_bytes=2**(8 * C.sizeof(C.c_size_t)) - 1)
+                                config = create_client.call_args.args[1]._obj
+                                self.assertEqual((config.max_requests, config.max_file_tasks), (value, value))
+                                self.assertEqual(config.max_retained_bytes, 2**(8 * C.sizeof(C.c_size_t)) - 1)
+                                client.release()
+
+
 if __name__ == "__main__":
     unittest.main()
+
+class FinalizerRetryTests(unittest.TestCase):
+    def test_collected_client_with_pending_native_close_is_retried_by_pump(self):
+        class PendingClose(FakeNative):
+            def __init__(self):
+                super().__init__()
+                self.allow_release = False
+            def pmac_client_release(self, client):
+                if not self.allow_release:
+                    return -14
+                return super().pmac_client_release(client)
+        lib = PendingClose()
+        with patch.object(N, "load", return_value=lib):
+            runtime = core.Runtime()
+        client = runtime.create_client()
+        reference = weakref.ref(client)
+        del client
+        gc.collect()
+        self.assertIsNone(reference())
+        self.assertEqual(runtime._client_handles.ids, {2})
+        lib.allow_release = True
+        runtime._pump._wake()
+        deadline = time.monotonic() + 2
+        while 2 not in lib.client_releases and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(lib.client_releases, [2])
+        self.assertEqual(runtime._client_handles.ids, set())
+        runtime.shutdown()
+        self.assertEqual(lib.client_releases, [2])

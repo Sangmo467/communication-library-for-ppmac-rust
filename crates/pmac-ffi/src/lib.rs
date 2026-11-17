@@ -3,6 +3,8 @@
 
 mod business;
 mod dart;
+mod gather;
+mod geterrors;
 mod helpers;
 mod pool;
 mod registry;
@@ -15,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pmac_core::{Error, ErrorCode, Operation};
-use pmac_protocol::{regex_match, Command};
+use pmac_protocol::regex_capture;
 use zeroize::Zeroizing;
 
 use helpers::*;
@@ -24,14 +26,72 @@ use types::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+thread_local! {
+    static LAST_ERROR: std::cell::RefCell<Option<(PmacErrorInfo, String)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn save_last_error(error: &Error, request_id: u64, connection_epoch: u64) {
+    LAST_ERROR.with(|slot| {
+        *slot.borrow_mut() = Some((
+            PmacErrorInfo {
+                struct_size: size_of::<PmacErrorInfo>() as u32,
+                abi_version: ABI_VERSION,
+                status: error.code as i32,
+                certainty: error.certainty as u32,
+                request_id,
+                connection_epoch,
+            },
+            error.message.clone(),
+        ))
+    });
+}
+
 pub(crate) fn ffi_status(operation: impl FnOnce() -> Result<(), Error>) -> i32 {
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
     match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(Ok(())) => ErrorCode::Ok as i32,
+        Ok(Err(error)) => {
+            LAST_ERROR.with(|slot| {
+                if slot.borrow().is_none() {
+                    save_last_error(&error, 0, 0);
+                }
+            });
+            error.code as i32
+        }
+        Err(_) => {
+            let error = Error::internal("native operation panicked").sent();
+            save_last_error(&error, 0, 0);
+            ErrorCode::Internal as i32
+        }
+    }
+}
+
+/// Copy the calling thread's last FFI error without clearing it.
+#[no_mangle]
+pub extern "C" fn pmac_copy_last_error(
+    out_info: *mut PmacErrorInfo,
+    out: *mut u8,
+    capacity: usize,
+    required: *mut usize,
+) -> i32 {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if out_info.is_null() {
+            return Err(Error::invalid("error info output is null"));
+        }
+        LAST_ERROR.with(|slot| {
+            let slot = slot.borrow();
+            let (info, message) = slot
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorCode::InvalidHandle, "no last error"))?;
+            unsafe { out_info.write(*info) };
+            copy_bytes(message.as_bytes(), out, capacity, required)
+        })
+    })) {
         Ok(Ok(())) => ErrorCode::Ok as i32,
         Ok(Err(error)) => error.code as i32,
         Err(_) => ErrorCode::Internal as i32,
     }
 }
-
 #[no_mangle]
 pub extern "C" fn pmac_runtime_create(config: *const PmacRuntimeConfig, out_id: *mut u64) -> i32 {
     ffi_status(|| {
@@ -68,6 +128,8 @@ pub extern "C" fn pmac_runtime_release(id: u64) -> i32 {
         if !runtime.is_shutdown()
             || !runtime.all_clients_closed()
             || registry().has_children(&runtime)
+            || gather::has_children(&runtime)
+            || geterrors::has_children(&runtime)
         {
             return Err(Error::new(
                 ErrorCode::ShutdownPending,
@@ -206,7 +268,7 @@ pub extern "C" fn pmac_get_runtime_info(out: *mut PmacRuntimeInfo) -> i32 {
                 struct_size: size_of::<PmacRuntimeInfo>() as u32,
                 abi_major: ABI_MAJOR,
                 abi_minor: ABI_MINOR,
-                version_number: 20_000,
+                version_number: 20_007,
                 feature_flags: 0x0000_01ff,
                 pointer_width: usize::BITS,
             })
@@ -217,11 +279,11 @@ pub extern "C" fn pmac_get_runtime_info(out: *mut PmacRuntimeInfo) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn pmac_version_string() -> *const std::ffi::c_char {
-    c"2.0.0".as_ptr()
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
 }
 #[no_mangle]
 pub extern "C" fn pmac_version_number() -> u32 {
-    20_000
+    20_007
 }
 #[no_mangle]
 pub extern "C" fn pmac_abi_version() -> u32 {
@@ -372,8 +434,33 @@ pub extern "C" fn pmac_command_submit(
 ) -> i32 {
     ffi_status(|| {
         unsafe { write_id(out_id, 0)? };
-        let command = Command::raw(unsafe { text(command, command_len)? })?;
-        let request = submit_request(id, Operation::Command(command), options)?;
+        let mut parsed_options = unsafe { request_options(options)? };
+        let command_text = unsafe { text(command, command_len)? };
+        // Null/zero options use passthrough. Read-pool requests necessarily
+        // classify; CLASSIFY explicitly restores online/program validation.
+        let flags = if options.is_null() {
+            0
+        } else {
+            unsafe { read_input::<PmacRequestOptions>(options)? }.flags
+        };
+        let passthrough = flags & (2 | 8) == 0;
+        let command = if passthrough {
+            pmac_protocol::Command::passthrough(command_text)?
+        } else {
+            client(id)?
+                .0
+                .parse_command_for_current_thread(command_text)?
+        };
+        // A null options pointer selects command-aware defaults; explicit budgets stay exact.
+        if options.is_null()
+            && matches!(
+                command.maintenance(),
+                pmac_protocol::MaintenanceKind::Reset | pmac_protocol::MaintenanceKind::GlobalReset
+            )
+        {
+            parsed_options.timeout_ms = 30_000;
+        }
+        let request = submit_owned(id, Operation::Command(command), parsed_options)?;
         unsafe { write_id(out_id, request) }
     })
 }
@@ -555,7 +642,14 @@ pub extern "C" fn pmac_request_wait(id: u64, wait_ms: u32, out: *mut PmacRequest
             ))
         };
         if info.state == pmac_core::RequestState::Completed {
-            Err(Error::new(info.code, "request completed"))
+            let mut error = result
+                .as_ref()
+                .and_then(|result| result.as_ref().as_ref().err())
+                .cloned()
+                .unwrap_or_else(|| Error::new(info.code, "request completed"));
+            error.certainty = info.certainty;
+            save_last_error(&error, id, info.connection_epoch);
+            Err(error)
         } else {
             Err(Error::new(
                 ErrorCode::WaitPending,
@@ -674,21 +768,13 @@ pub extern "C" fn pmac_request_copy_match(
             Ok(result) => &result.response,
             Err(error) => return Err(error.clone()),
         };
-        let found = regex_match(response, &pattern)?.ok_or_else(|| {
-            Error::new(ErrorCode::RemoteError, "regular expression did not match")
-        })?;
-        let selected = if group == 0 {
-            Some(found.matched)
-        } else {
-            found.groups.into_iter().nth(group as usize - 1).flatten()
-        };
-        let selected = selected.ok_or_else(|| {
+        let selected = regex_capture(response, &pattern, group as usize)?.ok_or_else(|| {
             Error::new(
                 ErrorCode::RemoteError,
-                "regular expression capture group did not match",
+                "regular expression or capture group did not match",
             )
         })?;
-        copy_bytes(&selected, out, capacity, required)
+        copy_bytes(selected, out, capacity, required)
     })
 }
 

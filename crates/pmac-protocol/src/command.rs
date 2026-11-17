@@ -26,6 +26,7 @@ pub enum MaintenanceKind {
     GlobalReset,
     EtherCat,
     BufferLoad,
+    Device,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,8 @@ pub struct Command {
     effect: CommandEffect,
     scope: CommandScope,
     maintenance: MaintenanceKind,
+    program_line: bool,
+    passthrough: bool,
 }
 
 impl Command {
@@ -53,6 +56,24 @@ impl Command {
             effect = effect.max(segment_effect);
             scope = merge_scopes(scope, segment_scope);
             maintenance = merge_maintenance(maintenance, segment_maintenance);
+            let lower = segment.to_ascii_lowercase();
+            let coordinate_operation = lower.strip_prefix('&').map(|rest| {
+                rest.trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || matches!(c, ',' | '.' | '*')
+                })
+                .trim_start()
+            });
+            if lower.split_whitespace().next() == Some("modbusascii")
+                || coordinate_operation.is_some_and(|op| {
+                    ["cpx", "cx"].iter().any(|prefix| {
+                        op.strip_prefix(prefix)
+                            .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+                    })
+                })
+            {
+                // The rest of the line is opaque program/shell text, including semicolons.
+                break;
+            }
         }
 
         Ok(Self {
@@ -60,7 +81,57 @@ impl Command {
             effect,
             scope,
             maintenance,
+            program_line: false,
+            passthrough: false,
         })
+    }
+
+    /// A single buffered-program line. The caller must verify an open buffer on
+    /// the same channel before sending it; it must never enter a read-only lane.
+    pub fn program_line(text: impl Into<String>) -> Result<Self, ProtocolError> {
+        let text = text.into();
+        validate_text(&text)?;
+        Ok(Self {
+            text,
+            effect: CommandEffect::Control,
+            scope: CommandScope::Global,
+            maintenance: MaintenanceKind::None,
+            program_line: true,
+            passthrough: false,
+        })
+    }
+
+    /// Send one GPASCII frame without online/program classification or context checks.
+    /// It is conservatively scheduled as a control write, never a read-pool query.
+    pub fn passthrough(text: impl Into<String>) -> Result<Self, ProtocolError> {
+        let text = text.into();
+        validate_text(&text)?;
+        // Exact reset frames need reset framing even when command text is opaque.
+        let maintenance = match text.trim() {
+            "$$$" => MaintenanceKind::Reset,
+            "$$$***" => MaintenanceKind::GlobalReset,
+            _ => MaintenanceKind::None,
+        };
+        Ok(Self {
+            text,
+            effect: if maintenance == MaintenanceKind::None {
+                CommandEffect::Control
+            } else {
+                CommandEffect::Maintenance
+            },
+            scope: CommandScope::Global,
+            maintenance,
+            program_line: false,
+            passthrough: true,
+        })
+    }
+
+    pub fn is_passthrough(&self) -> bool {
+        self.passthrough
+    }
+
+    pub fn is_program_line(&self) -> bool {
+        self.program_line
     }
 
     pub fn motor(
@@ -137,6 +208,8 @@ impl Command {
             effect: CommandEffect::Control,
             scope: CommandScope::Global,
             maintenance: MaintenanceKind::None,
+            program_line: false,
+            passthrough: false,
         }
     }
 
@@ -176,6 +249,9 @@ fn validate_text(text: &str) -> Result<(), ProtocolError> {
 fn classify_segment(
     segment: &str,
 ) -> Result<(CommandEffect, CommandScope, MaintenanceKind), ProtocolError> {
+    if let Some(classification) = crate::online::classify(segment)? {
+        return Ok(classification);
+    }
     let lower = segment.to_ascii_lowercase();
     if lower == "&*adisable" {
         return Ok((
@@ -207,7 +283,13 @@ fn classify_segment(
     }
     if matches!(
         lower.as_str(),
-        "ecatreset" | "ecat reset" | "ecatrescan" | "ecat rescan" | "ecatslaves" | "ecat slaves"
+        "ecatreset"
+            | "ecat reset"
+            | "ecatrescan"
+            | "ecat rescan"
+            | "ecatslaves"
+            | "ecat slaves"
+            | "ecat config"
     ) {
         return Ok((
             CommandEffect::Maintenance,
@@ -270,7 +352,18 @@ fn classify_segment(
         let coord = validate_coord(coord)?;
         let operation = segment[1 + digits..].trim().to_ascii_lowercase();
         let read = matches!(operation.as_str(), "?" | "p");
-        let simple_write = matches!(operation.as_str(), "enable" | "hold" | "run");
+        let simple_write = matches!(
+            operation.as_str(),
+            "enable"
+                | "hold"
+                | "run"
+                | "abort"
+                | "disable"
+                | "adisable"
+                | "ddisable"
+                | "dkill"
+                | "pmach"
+        );
         let valid_program = operation
             .strip_prefix("begin ")
             .and_then(|value| value.strip_suffix(" run"))
@@ -295,7 +388,10 @@ fn classify_segment(
             MaintenanceKind::None,
         ));
     }
-    let indexed_effect = if lower.contains('=') {
+    let indexed_effect = if !structured_read(&lower, "motor")
+        && !structured_read(&lower, "coord")
+        && !structured_read(&lower, "plc")
+    {
         CommandEffect::Control
     } else {
         CommandEffect::ReadOnly
@@ -309,13 +405,7 @@ fn classify_segment(
     if let Some(scope) = indexed_scope(segment, "plc[", validate_plc)? {
         return Ok((indexed_effect, scope, MaintenanceKind::None));
     }
-    if lower.contains("jog")
-        || lower.contains("kill")
-        || lower.contains("adisable")
-        || lower.starts_with("begin ")
-    {
-        return Err(ProtocolError::AmbiguousTarget(segment.into()));
-    }
+
     if lower.starts_with("enable plc ") || lower.starts_with("disable plc ") {
         let number = lower
             .rsplit(' ')
@@ -328,18 +418,103 @@ fn classify_segment(
             MaintenanceKind::None,
         ));
     }
-    let read = lower.starts_with("sys.") && !lower.contains('=');
+    if !symbolic_variable(&lower) {
+        return Err(ProtocolError::UnsupportedCommand(segment.into()));
+    }
     Ok((
-        if read {
-            CommandEffect::ReadOnly
-        } else {
-            CommandEffect::Control
-        },
+        CommandEffect::Control,
         CommandScope::System,
         MaintenanceKind::None,
     ))
 }
 
+// User symbols use parentheses for array indices. Square brackets belong to
+// registered firmware structures and are handled by the online classifier.
+fn symbolic_variable(text: &str) -> bool {
+    if !text
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        return false;
+    }
+    let length = text
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    let root = &text[..length];
+    if crate::online::data_structure_indexed(root).is_some()
+        || matches!(
+            root,
+            "system"
+                | "pread"
+                | "dread"
+                | "resume"
+                | "linear"
+                | "rapid"
+                | "abs"
+                | "inc"
+                | "return"
+                | "break"
+                | "continue"
+                | "else"
+                | "endif"
+                | "endwhile"
+        )
+    {
+        return false;
+    }
+    let mut tail = text[length..].trim_start();
+    if tail.starts_with('(') {
+        // A native online command cannot become a user-array query merely by
+        // appending parentheses; retain target and maintenance classification.
+        if !matches!(crate::online::classify(root), Ok(None)) {
+            return false;
+        }
+        let Some(rest) = parenthesized_index_tail(tail) else {
+            return false;
+        };
+        tail = rest.trim_start();
+    }
+    tail.is_empty()
+        || matches!(tail, "++" | "--")
+        || ["=", "+=", "-=", "*=", "/=", "->"]
+            .iter()
+            .any(|operator| tail.starts_with(operator))
+}
+
+fn parenthesized_index_tail(text: &str) -> Option<&str> {
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, byte) in text.bytes().enumerate() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => delimiters.push(b')'),
+            b'[' => delimiters.push(b']'),
+            b')' | b']' => {
+                if delimiters.pop() != Some(byte) {
+                    return None;
+                }
+                if delimiters.is_empty() {
+                    return (!text[1..index].trim().is_empty()).then_some(&text[index + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
 /// These global queries are safe to distribute only when their complete syntax
 /// is recognized. Assignments, operators, appended commands and implicit Q
 /// variables deliberately fall through to the conservative control path.
@@ -542,6 +717,30 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_abort_and_resume_require_explicit_target_and_are_control_commands() {
+        for (text, coord) in [("&1abort", 1), ("&127ABORT", 127)] {
+            let command = Command::raw(text).unwrap();
+            assert_eq!(command.text(), text);
+            assert_eq!(command.scope(), CommandScope::Coord(coord));
+            assert_eq!(command.effect(), CommandEffect::Control);
+            assert_eq!(command.maintenance(), MaintenanceKind::None);
+        }
+        for text in [
+            "&abort",
+            "&resume",
+            "&128abort",
+            "&128resume",
+            "&1abort extra",
+            "&1resumeX",
+        ] {
+            assert!(Command::raw(text).is_err(), "accepted {text}");
+        }
+        let compound = Command::raw("&1abort;Sys.ServoCount").unwrap();
+        assert_eq!(compound.scope(), CommandScope::Coord(1));
+        assert_eq!(compound.effect(), CommandEffect::Control);
+    }
+
+    #[test]
     fn rejects_ambiguous_motion_and_bad_numbers() {
         for text in [
             "#jog=1",
@@ -553,9 +752,6 @@ mod tests {
             "&128P",
             "&P",
             "#1jog=NaN",
-            "Motor[-1].ClosedLoop",
-            "Coord[128].AmpEna",
-            "Plc[32].Active",
         ] {
             assert!(Command::raw(text).is_err(), "accepted {text}");
         }
@@ -653,16 +849,6 @@ mod tests {
         MaintenanceKind::EtherCat
     );
     maintenance_alias_regression!(
-        ecatslaves_variants_use_device_maintenance,
-        "ecatslaves",
-        MaintenanceKind::EtherCat
-    );
-    maintenance_alias_regression!(
-        ecat_slaves_variants_use_device_maintenance,
-        "ecat slaves",
-        MaintenanceKind::EtherCat
-    );
-    maintenance_alias_regression!(
         save_variants_use_device_maintenance,
         "save",
         MaintenanceKind::Save
@@ -724,7 +910,9 @@ mod tests {
             "ecatreset_extra",
             "ecat slaves_extra",
         ] {
-            let command = Command::raw(wire).unwrap();
+            let Ok(command) = Command::raw(wire) else {
+                continue;
+            };
             assert_eq!(command.maintenance(), MaintenanceKind::None, "{wire:?}");
             assert_ne!(command.effect(), CommandEffect::Maintenance, "{wire:?}");
         }
@@ -897,4 +1085,168 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn requested_online_commands_follow_read_write_classification() {
+        for line in include_str!("../tests/online-command-corpus.tsv").lines() {
+            let (kind, text) = line.split_once('\t').expect("kind and command");
+            let command = Command::raw(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            let expected = match kind {
+                "R" => CommandEffect::ReadOnly,
+                "W" => CommandEffect::Control,
+                "M" => CommandEffect::Maintenance,
+                _ => panic!("bad kind"),
+            };
+            assert_eq!(command.effect(), expected, "{text}");
+            assert_eq!(command.text(), text);
+        }
+    }
+
+    #[test]
+    fn manual_scoped_commands_require_matching_explicit_targets() {
+        for text in [
+            "abort",
+            "adisable",
+            "cpx X10",
+            "start 5",
+            "rotfree",
+            "open rotary",
+            "Q1=1",
+            "kill",
+            "k",
+            "hm",
+            "j+",
+            "j-",
+            "j/",
+            "%100",
+            "&1kill",
+            "&1k",
+            "#1abort",
+            "#1cpx X1",
+            "&128stop",
+            "#256j+",
+            "&1..128r",
+        ] {
+            assert!(Command::raw(text).is_err(), "accepted {text}");
+        }
+    }
+    #[test]
+    fn online_commands_are_case_insensitive_and_preserve_wire_text() {
+        for line in include_str!("../tests/online-command-corpus.tsv").lines() {
+            let (kind, text) = line.split_once('\t').unwrap();
+            for variant in [text.to_ascii_lowercase(), text.to_ascii_uppercase()] {
+                let command = Command::raw(&variant).unwrap_or_else(|e| panic!("{variant}: {e}"));
+                let expected = match kind {
+                    "R" => CommandEffect::ReadOnly,
+                    "W" => CommandEffect::Control,
+                    "M" => CommandEffect::Maintenance,
+                    _ => unreachable!(),
+                };
+                assert_eq!(command.effect(), expected, "{variant}");
+                assert_eq!(command.text(), variant);
+            }
+        }
+        for text in ["&2q", "&2Q"] {
+            assert_eq!(Command::raw(text).unwrap().effect(), CommandEffect::Control);
+        }
+    }
+    #[test]
+    fn ecat_slaves_reports_topology_without_a_maintenance_effect() {
+        for text in ["ecat slaves", "ECAT SLAVES", "ecatslaves", "ecat slaves 0"] {
+            assert_eq!(
+                Command::raw(text).unwrap().effect(),
+                CommandEffect::ReadOnly
+            );
+        }
+    }
+    #[test]
+    fn opaque_inline_programs_keep_semicolons_and_case() {
+        for text in [
+            "&1cpx if (Q10<0) Q300=72; arbitrary text",
+            "&2CX\tQ1=1; arbitrary text",
+        ] {
+            let command = Command::raw(text).unwrap();
+            assert_eq!(command.text(), text);
+            assert_eq!(command.effect(), CommandEffect::Control);
+        }
+        for text in ["&1resume", "&1,3resume", "&1..3RESUME", "&*resume"] {
+            assert_eq!(Command::raw(text).unwrap().effect(), CommandEffect::Control);
+        }
+        for text in [
+            "resume",
+            "#1resume",
+            "&1kill",
+            "&1k",
+            "system anything",
+            "&1pread",
+            "&1dread",
+        ] {
+            assert!(Command::raw(text).is_err(), "{text}");
+        }
+    }
+    #[test]
+    fn user_declared_names_do_not_collide_with_command_substrings() {
+        for text in [
+            "MyVariable",
+            "MyArray(3)",
+            "MyArray(P1)",
+            "JogSpeed",
+            "KillCounter",
+            "AdisableStatus",
+            "SystemTemperature",
+            "JogSpeed=17.5",
+            "SystemTemperature += 1",
+            "MyArray(3)=P1+5",
+        ] {
+            for variant in [text.to_ascii_lowercase(), text.to_ascii_uppercase()] {
+                let command = Command::raw(&variant).unwrap();
+                assert_eq!(command.effect(), CommandEffect::Control, "{variant}");
+                assert_eq!(command.text(), variant);
+            }
+        }
+        for text in ["kill", "jog+", "adisable", "system \"ls\""] {
+            assert!(Command::raw(text).is_err(), "{text}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn passthrough_is_opaque_and_keeps_frame_validation() {
+    for text in [
+        "  abort  ",
+        "dwell 10",
+        "Vendor.FutureCommand(7)",
+        "P1;;open prog 1",
+    ] {
+        let command = Command::passthrough(text).unwrap();
+        assert_eq!(command.text(), text);
+        assert!(command.is_passthrough());
+        assert!(!command.is_program_line());
+        assert_eq!(command.effect(), CommandEffect::Control);
+        assert_eq!(command.maintenance(), MaintenanceKind::None);
+    }
+    for text in ["", "  ", "P1\nP2", "P1\r", "P1\0", "P1\x06", "P1\x15"] {
+        assert!(Command::passthrough(text).is_err());
+    }
+    assert!(Command::passthrough("x".repeat(MAX_COMMAND_LEN + 1)).is_err());
+    assert!(!Command::raw("P1").unwrap().is_passthrough());
+}
+
+#[cfg(test)]
+#[test]
+fn opaque_exact_resets_keep_reset_framing_and_barriers() {
+    for (text, expected) in [
+        ("$$$", MaintenanceKind::Reset),
+        ("  $$$***  ", MaintenanceKind::GlobalReset),
+    ] {
+        let command = Command::passthrough(text).unwrap();
+        assert!(command.is_passthrough());
+        assert_eq!(command.text(), text);
+        assert_eq!(command.maintenance(), expected);
+        assert_eq!(command.effect(), CommandEffect::Maintenance);
+    }
+    assert_eq!(
+        Command::passthrough("P1=1;$$$***").unwrap().maintenance(),
+        MaintenanceKind::None
+    );
 }

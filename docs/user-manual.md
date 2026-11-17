@@ -1,6 +1,13 @@
 # Power PPMAC 通信库使用手册
 
-适用于库版本 2.0.0、C ABI 2.1。本文说明公开 SDK 的日常使用；完整函数和结构定义分别以 `include/pmac.h`、各语言绑定源码及 [C ABI 契约](abi-contract.md) 为准。
+[English](user-manual.en.md)
+
+GetResponse 默认开启透传，跳过规则表和 online/program 分类，原文提交单条命令；显式关闭后启用规则校验。详见 **[GetResponse 透传模式与各语言示例](getresponse-passthrough.md)**。
+
+
+适用于库版本 2.0.7、C ABI 2.1。本文说明公开 SDK 的日常使用；完整函数和结构定义分别以 `include/pmac.h`、各语言绑定源码及 [C ABI 契约](abi-contract.md) 为准。
+
+首次接入建议先阅读 [GetResponse 多语言示例](getresponse-examples.md)，包含 C/C++、[C#](dotnet-getresponse.md)、[Python](python-getresponse.md) 和 [MATLAB MEX](matlab-getresponse.md) 的构建、连接与完整调用步骤；Gather 和 geterrors 作为后续专题。
 
 ## 1. 对象模型与基本顺序
 
@@ -196,7 +203,7 @@ status = pmac_get_response_async(
 |---|---|---|---|
 | `timeoutMs` | `TimeoutMs` | `timeout_ms` | 从提交开始计算的总 deadline，包含排队 |
 | `infinite` | `Infinite` | `infinite=True` | 移除总 deadline；仍可取消或关闭 |
-| `maxResponseBytes` | `MaxResponseBytes` | `max_response_bytes` | 单请求最大保留响应 |
+| `maxResponseBytes` | `MaxResponseBytes` | `max_response_bytes` | 单请求最大保留响应；GPASCII stdout 与异步 stderr 分别限长，stderr 超出部分丢弃并记录警告 |
 | `readPool` | `ReadPool` | `read_pool=True` | 允许分类器认可的只读命令使用连接池规则 |
 
 `request_wait` 的等待预算只限制本次等待。`WAIT_PENDING` 不表示请求失败，也不会取消它；可继续等待、轮询或取消。
@@ -232,6 +239,9 @@ C++ 异常提供 `status()`、`requestId()`、`certainty()`；.NET 的 `PmacExce
 - C：`pmac_pool_*_async`。
 
 池参数满足 `1 <= min_ready <= target_size <= max_members <= 255`。成员是独立 SSH/GPASCII 会话，不是无边界的自动扩容机制。
+同一 Client 最多占用 **16 个 GPASCII 在线通道**，合计其所有池成员的预建、打开中、在用、回收中以及释放不确定的通道。第 17 个通道申请在发送前返回 `RESOURCE_LIMIT`；不同 Client 各自拥有 16 个额度，即使连接到同一控制器也不共用一个 16 通道上限。设备自身仍可能有额外资源限制。profile 的成员数范围不代表允许突破在线通道预算。
+
+只有已确认释放的通道才归还额度；释放不确定的旧通道继续占用所属 Client 的额度，应用核实远端释放后按 revision 显式确认恢复。一个 Client 的恢复声明不能释放其他 Client 的占用。维护面的 BufferUpload 不占用 GPASCII 在线通道额度，在线通道满额时仍可通过维护面执行。
 
 关键规则：
 
@@ -631,3 +641,13 @@ finally:
 ```
 
 C++ 和 .NET 的完整 DART 示例及多元素传输规则见 [DART 接口指南](dart-api.md)。
+## 实时连续 Gather
+
+C 和 C++17 可使用连续采样接口，按批次接收 `Gather.Addr` 对应的行优先数值。完整接入代码、构建命令、参数范围、回调与内存规则、停止/释放、网络部署与错误恢复见[Gather 详细使用方法](gather.md)。
+
+启动前校验 SSH 主机身份并确保控制器能够回连指定本机地址/端口；库验证来源 IP 和本次会话随机握手，数据流仍是明文 TCP。先停止并释放 Gather，再关闭 Client 和 Runtime。回调线程只处理或复制本批数据，阻塞停止与销毁应交回主线程。
+## geterrors 实时状态监控
+
+先连接 Client，再通过 C 的 `pmac_geterrors_start` 或 C++17 的 `client.startGetErrors()` 打开持续监听。周期为 0.01～1.0 秒；四类掩码可选，省略使用系统默认，显式零掩码与省略不同。启动设置和设备状态变化由不同消息类型交付；停止时向本次 SSH 终端发送 Ctrl+C，停止屏障结束后释放 Monitor，再关闭 Client/Runtime。
+
+完整默认/自定义掩码示例、C/C++ 程序、编译命令、回调内存约定、状态判读及现场排查见 [geterrors 详细使用方法](geterrors.md)。

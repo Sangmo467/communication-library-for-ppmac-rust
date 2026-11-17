@@ -34,7 +34,7 @@ impl Transport for RusshTransport {
             ));
         }
         let permit = options.gpascii_budget.reserve(options.gpascii_owner)?;
-        let control = connect(options, context).await?;
+        let control = connect(options, context, true).await?;
         let channel = open_gpascii(&control, context, permit).await?;
         Ok(Arc::new(RusshSession {
             options: options.clone(),
@@ -82,6 +82,15 @@ pub(crate) struct RusshSession {
 
 #[async_trait]
 impl Session for RusshSession {
+    async fn geterrors(
+        &self,
+        options: &pmac_core::GetErrorsOptions,
+    ) -> Result<Box<dyn pmac_core::ErrorMonitorStream>, Error> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::new(ErrorCode::Closing, "session is closed"));
+        }
+        crate::monitor::open(self.control.clone(), options).await
+    }
     async fn command(
         &self,
         command: &Command,
@@ -140,10 +149,7 @@ impl Session for RusshSession {
         result
     }
 
-    async fn dart_connect(
-        &self,
-        context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_connect(&self, context: &ExecutionContext) -> Result<OperationResult, Error> {
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::new(ErrorCode::Closing, "session is closed"));
         }
@@ -154,17 +160,17 @@ impl Session for RusshSession {
         let connection = crate::dart::connect(self, &self.options.host, context).await?;
         if self.closed.load(Ordering::Acquire) {
             crate::dart::disconnect(connection).await?;
-            return Err(Error::new(ErrorCode::Closing, "session closed during DART connect"));
+            return Err(Error::new(
+                ErrorCode::Closing,
+                "session closed during DART connect",
+            ));
         }
         self.dart_port.store(connection.port, Ordering::Release);
         *slot = Some(connection);
         Ok(OperationResult::default())
     }
 
-    async fn dart_disconnect(
-        &self,
-        _context: &ExecutionContext,
-    ) -> Result<OperationResult, Error> {
+    async fn dart_disconnect(&self, _context: &ExecutionContext) -> Result<OperationResult, Error> {
         self.dart_port.store(0, Ordering::Release);
         self.close_dart().await?;
         Ok(OperationResult::default())
@@ -183,7 +189,10 @@ impl Session for RusshSession {
             None => {
                 let port = self.dart_port.load(Ordering::Acquire);
                 if port == 0 {
-                    return Err(Error::new(ErrorCode::Disconnected, "DART is not connected; call DartConnect first"));
+                    return Err(Error::new(
+                        ErrorCode::Disconnected,
+                        "DART is not connected; call DartConnect first",
+                    ));
                 }
                 crate::dart::connect_port(&self.options.host, port).await?
             }
@@ -274,6 +283,27 @@ impl Session for RusshSession {
         }
     }
 
+    async fn recycle_control(&self) -> Result<(), Error> {
+        let dart = self.close_dart().await;
+        let channels = self.close_gpascii_channels().await;
+        // Shells, SFTP and gather state are controller-side and stale after a
+        // reset, but the SSH control transport itself survives and is reused.
+        let _ = self.retire_maintenance().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::new(ErrorCode::Closing, "session is closed"));
+        }
+        if !self.control.is_healthy() {
+            return Err(disconnected("SSH control transport was retired"));
+        }
+        if !channels {
+            return Err(Error::new(
+                ErrorCode::ShutdownPending,
+                "GPASCII channel release has not been confirmed",
+            ));
+        }
+        dart
+    }
+
     async fn retire_maintenance(&self) -> Result<(), Error> {
         self.maintenance_retired.store(true, Ordering::Release);
         let sftp = self.sftp.lock().await.clone();
@@ -294,7 +324,7 @@ impl Session for RusshSession {
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::new(ErrorCode::Closing, "session is closed"));
         }
-        let connection = connect(&self.options, context).await?;
+        let connection = connect(&self.options, context, false).await?;
         let mut guard = self.maintenance.lock().await;
         if self.closed.load(Ordering::Acquire) {
             drop(guard);
@@ -601,7 +631,7 @@ impl RusshSession {
             return Ok(connection.clone());
         }
         *guard = None;
-        let connection = connect(&self.options, context).await?;
+        let connection = connect(&self.options, context, false).await?;
         if self.closed.load(Ordering::Acquire) || self.maintenance_retired.load(Ordering::Acquire) {
             let _ = connection.close().await;
             return Err(disconnected(
@@ -832,21 +862,23 @@ async fn execute_gpascii(
                     if frame.remote_error {
                         let mut error = Error::new(
                             ErrorCode::RemoteError,
-                            format!(
-                                "controller rejected command: {}",
-                                String::from_utf8_lossy(&frame.body)
-                            ),
+                            format!("controller rejected command: {}", command.text()),
                         );
+                        if !frame.body.is_empty() {
+                            error.message.push_str("\nresponse: ");
+                            error
+                                .message
+                                .push_str(&String::from_utf8_lossy(&frame.body));
+                        }
+                        if !stderr.is_empty() {
+                            error.message.push_str("\nstderr: ");
+                            error.message.push_str(&String::from_utf8_lossy(&stderr));
+                        }
                         error.certainty = ExecutionCertainty::Confirmed;
+                        // A global close from another client invalidates this channel's mode.
+                        // Surface the original error and require explicit recovery; never replay.
+                        error.fatal_transport = pmac_protocol::is_buffer_closed_error(&frame.body);
                         return Err(error);
-                    }
-                    if frame.body.len().saturating_add(stderr.len()) > response_limit {
-                        return Err(Error::new(
-                            ErrorCode::ResourceLimit,
-                            "combined GPASCII output limit exceeded",
-                        )
-                        .sent()
-                        .fatal());
                     }
                     return Ok(OperationResult {
                         response: frame.body,
@@ -856,7 +888,7 @@ async fn execute_gpascii(
                 }
             }
             ChannelMsg::ExtendedData { data, .. } => {
-                append_bounded(&mut stderr, &data, response_limit)?;
+                append_gpascii_diagnostic(&mut stderr, &data, response_limit);
             }
             ChannelMsg::Failure => {
                 return Err(disconnected("server rejected GPASCII exec request"))
@@ -897,7 +929,10 @@ async fn execute_reset(
                             decoder.probe_sent().map_err(protocol_error)?;
                         }
                         ResetEvent::Complete(response) => {
-                            connection.retire();
+                            // The readiness probe was acknowledged on this very
+                            // channel, so the SSH transport is still usable. The
+                            // client recycles channels after a confirmed reset
+                            // instead of forcing a new SSH handshake.
                             if response.len().saturating_add(stderr.len())
                                 > context.max_response_bytes()
                             {
@@ -950,6 +985,17 @@ fn output_limit() -> Error {
     .sent()
     .fatal()
 }
+fn append_gpascii_diagnostic(output: &mut Vec<u8>, bytes: &[u8], maximum: usize) {
+    let retained = maximum.saturating_sub(output.len()).min(bytes.len());
+    output.extend_from_slice(&bytes[..retained]);
+    if retained < bytes.len() {
+        tracing::warn!(
+            dropped = bytes.len() - retained,
+            "GPASCII asynchronous stderr exceeded its retained diagnostic budget"
+        );
+    }
+}
+
 fn append_bounded(output: &mut Vec<u8>, bytes: &[u8], maximum: usize) -> Result<(), Error> {
     if output.len().saturating_add(bytes.len()) > maximum {
         return Err(output_limit());
@@ -1026,12 +1072,16 @@ mod tests {
         task.abort();
         assert!(runtime.block_on(task).is_err());
         drop(runtime);
-        let permits = (0..7)
-            .map(|_| budget.reserve(99).unwrap())
+        let permits = (0..15)
+            .map(|_| budget.reserve(77).unwrap())
             .collect::<Vec<_>>();
-        assert!(budget.reserve(99).is_err());
-        drop(permits);
+        assert!(budget.reserve(77).is_err());
+        let other_client = budget.reserve(99).unwrap();
+        budget.confirm_remote_release(99);
+        assert!(budget.reserve(77).is_err());
         budget.confirm_remote_release(77);
-        assert!(budget.reserve(99).is_ok());
+        assert!(budget.reserve(77).is_ok());
+        drop(permits);
+        drop(other_client);
     }
 }

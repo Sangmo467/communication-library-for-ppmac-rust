@@ -15,9 +15,9 @@ public sealed class Client : IDisposable, IAsyncDisposable
     }
 
     public async Task ConnectAsync(ConnectOptions options, CancellationToken cancellationToken = default) { using var request = Connect(options); await request.WaitAsync(cancellationToken).ConfigureAwait(false); }
-    public Request CommandAsync(string command, RequestOptions? options = null) { using var pinned = new PinnedText(); var bytes = pinned.Add(command); var native = Native(options); return runtime.Submit(() => { Runtime.Check(NativeMethods.pmac_command_submit(Id, bytes.Data, bytes.Length, ref native, out var request)); return request; }); }
+    public Request CommandAsync(string command, RequestOptions? options = null) { using var pinned = new PinnedText(); var bytes = pinned.Add(command); var native = NativeCommand(command, options); return runtime.Submit(() => { Runtime.Check(NativeMethods.pmac_command_submit(Id, bytes.Data, bytes.Length, ref native, out var request)); return request; }); }
     public byte[] Command(string command, RequestOptions? options = null) { using var request = CommandAsync(command, options); request.Wait(); return request.Response(); }
-    public Request GetResponseAsync(string command, RequestOptions? options = null) { using var pinned = new PinnedText(); var bytes = pinned.Add(command); var native = Native(options); return runtime.Submit(() => { Runtime.Check(NativeMethods.pmac_get_response_async(Id, bytes.Data, bytes.Length, ref native, out var request)); return request; }); }
+    public Request GetResponseAsync(string command, RequestOptions? options = null) { using var pinned = new PinnedText(); var bytes = pinned.Add(command); var native = NativeCommand(command, options); return runtime.Submit(() => { Runtime.Check(NativeMethods.pmac_get_response_async(Id, bytes.Data, bytes.Length, ref native, out var request)); return request; }); }
     public byte[] GetResponse(string command, string? pattern = null, RequestOptions? options = null) { using var request = GetResponseAsync(command, options); request.Wait(); return string.IsNullOrEmpty(pattern) ? request.Response() : request.Match(pattern); }
     public Request DartConnectAsync(RequestOptions? options = null) { var native = Native(options); return runtime.Submit(() => { Runtime.Check(NativeMethods.pmac_dart_connect_async(Id, ref native, out var request)); return request; }); }
     public void DartConnect(RequestOptions? options = null) { using var request = DartConnectAsync(options); request.Wait(); }
@@ -141,15 +141,18 @@ public sealed class Client : IDisposable, IAsyncDisposable
     public bool MotorClosedLoop(int v, RequestOptions? o = null) { var n = Native(o); Runtime.Check(NativeMethods.pmac_motor_closed_loop(Id, v, ref n, out var value)); return value != 0; }
     public bool CoordMotorEnabled(int v, RequestOptions? o = null) { var n = Native(o); Runtime.Check(NativeMethods.pmac_coord_motor_enabled(Id, v, ref n, out var value)); return value != 0; }
 
+    private static NativeMethods.RequestOptions NativeCommand(string command, RequestOptions? options) =>
+        (options ?? new RequestOptions(TimeoutMs: command?.Trim() is "$$$" or "$$$***" ? 30000u : 5000u)).Native();
     private static NativeMethods.RequestOptions Native(RequestOptions? options) => (options ?? new RequestOptions()).Native();
     private ulong Id { get { var value = Volatile.Read(ref id); return value == 0 ? throw new ObjectDisposedException(nameof(Client)) : value; } }
-    ~Client() { try { var value = Volatile.Read(ref id); if (value != 0) { NativeMethods.pmac_client_close(value, 0, 0); NativeMethods.pmac_client_release(value); } } catch { } }
+    ~Client() { try { var value = Volatile.Read(ref id); if (value != 0) { runtime.FinalizeClient(value); } } catch { } }
     internal void ReleaseAfterRuntimeShutdown()
     {
         lock (lifecycle)
         {
             if (id == 0) return;
             Runtime.Check(NativeMethods.pmac_client_release(id));
+            runtime.ForgetClient(id);
             Volatile.Write(ref id, 0UL);
             GC.SuppressFinalize(this);
         }
