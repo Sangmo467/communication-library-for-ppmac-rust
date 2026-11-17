@@ -445,7 +445,7 @@ impl server::Handler for TestServer {
                 }
                 "P910002" => session.data(
                     channel,
-                    b"stdin:1:1: error #5: Invalid statement:\r\n\x06".to_vec(),
+                    b"stdin:1:1: error #5: Invalid statement:\r\n0\r\n\x06".to_vec(),
                 )?,
                 "P910003" => {
                     session.extended_data(
@@ -1756,6 +1756,26 @@ fn cancelled_control_command_cannot_deliver_a_late_frame_to_a_later_request() {
 mod sftp;
 
 #[test]
+fn gpascii_channel_requests_pty_during_initialization() {
+    let fixture = Fixture::new(None);
+    fixture.connect();
+    let ptys = fixture.observed.monitor_ptys.lock().unwrap();
+    assert_eq!(ptys.len(), 1);
+    assert!(ptys.values().next().unwrap().is_empty());
+}
+
+#[test]
+fn gpascii_pty_rejection_aborts_before_exec() {
+    let fixture = Fixture::new(None);
+    fixture.observed.monitor_mode.store(8, Ordering::Release);
+    let error = fixture
+        .run(Operation::Connect(fixture.options()))
+        .unwrap_err();
+    assert!(error.message.contains("PTY"));
+    assert!(fixture.observed.commands.lock().unwrap().is_empty());
+}
+
+#[test]
 fn gpascii_stderr_is_preserved_outside_the_response_frame() {
     let fixture = Fixture::new(None);
     fixture.connect();
@@ -2279,7 +2299,10 @@ fn geterrors_pty_stream_preserves_normal_commands_and_stops_with_ctrl_c() {
         ["geterrors -t0.01 -T -c0x0 -m0x123 -r0xffffffffffffffff -g0x7"]
     );
     let ptys = fixture.observed.monitor_ptys.lock().unwrap();
-    let modes = ptys.values().next().unwrap();
+    let modes = ptys
+        .values()
+        .find(|modes| modes.contains(&(russh::Pty::VINTR, 3)))
+        .unwrap();
     assert!(modes.contains(&(russh::Pty::ISIG, 1)));
     assert!(modes.contains(&(russh::Pty::VINTR, 3)));
     assert!(modes.contains(&(russh::Pty::ECHO, 0)));
@@ -2448,6 +2471,7 @@ fn controller_errors_with_ack_or_stderr_are_reported_without_replay() {
         .message
         .contains("controller rejected command: P910002"));
     assert!(error.message.contains("response: stdin:1:1: error #5"));
+    assert!(error.message.contains("Invalid statement:\r\n0"));
     assert!(!error.fatal_transport);
     assert!(fixture.client.is_connected());
 

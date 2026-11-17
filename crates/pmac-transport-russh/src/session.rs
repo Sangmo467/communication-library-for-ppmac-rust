@@ -793,17 +793,34 @@ async fn open_gpascii(
         permit,
     );
     let initialized = async {
-        channel
-            .channel
-            .as_ref()
-            .expect("initializing channel")
+        let active = channel.channel.as_mut().expect("initializing channel");
+        // A PTY makes gpascii flush diagnostics before the ACK response and merges the streams.
+        active
+            .request_pty(true, "dumb", 80, 24, 0, 0, &[])
+            .await
+            .map_err(transport_error)?;
+        loop {
+            match active.wait().await {
+                Some(ChannelMsg::Success) => break,
+                Some(ChannelMsg::Failure) => {
+                    return Err(disconnected("server rejected GPASCII PTY request"));
+                }
+                Some(ChannelMsg::Eof | ChannelMsg::Close) | None => {
+                    return Err(disconnected(
+                        "GPASCII channel ended during PTY initialization",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        active
             .exec(true, "gpascii -2")
             .await
             .map_err(transport_error)?;
         let ready = Command::raw("Sys.ServoCount")?;
         let verified = execute_gpascii(
             connection,
-            channel.channel.as_mut().expect("initializing channel"),
+            active,
             &ready,
             context,
             READINESS_RESPONSE_LIMIT,

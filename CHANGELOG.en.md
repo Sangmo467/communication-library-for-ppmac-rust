@@ -4,6 +4,11 @@
 
 This project follows semantic versioning. The public C ABI major/minor versions are recorded independently; existing input structure layouts remain compatible within ABI major 2.
 
+## 2.0.10
+
+- Explicitly request a PTY for GPASCII channels so the controller merges and flushes diagnostics before ACK. Invalid commands now return their `stdin`-numbered error and `0` in the same synchronous response without delays or extra queries. Initialization fails if PTY is unavailable rather than falling back to non-PTY stream mixing.
+- Retain `stdin`-line isolation for asynchronous stderr. Add PTY-rejection, error-body and large-response regressions. Verify 250 invalid/valid polling rounds, a 1000-line response and 10 reconnections on the controller. C ABI remains 2.1.
+
 ## 2.0.9
 
 - Attribute asynchronous GPASCII stderr by each command's `stdin` line number. Late diagnostics for completed commands are logged rather than written into a later valid request's `stderr` field.
