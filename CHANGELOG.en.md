@@ -8,6 +8,7 @@ This project follows semantic versioning. The public C ABI major/minor versions 
 
 - Explicitly request a PTY for GPASCII channels so the controller merges and flushes diagnostics before ACK. Invalid commands now return their `stdin`-numbered error and `0` in the same synchronous response without delays or extra queries. Initialization fails if PTY is unavailable rather than falling back to non-PTY stream mixing.
 - Retain `stdin`-line isolation for asynchronous stderr. Add PTY-rejection, error-body and large-response regressions. Verify 250 invalid/valid polling rounds, a 1000-line response and 10 reconnections on the controller. C ABI remains 2.1.
+- Record a targeted `RUSTSEC-2026-0543` exception: chrono is only a transitive russh-sftp timestamp dependency, the notice is informational rather than a vulnerability, and no patched upgrade exists. All other security checks remain enabled.
 
 ## 2.0.9
 

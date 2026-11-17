@@ -9,6 +9,9 @@ all-features = true
 [advisories]
 db-path = "build/security-advisory-dbs"
 yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "Informational unmaintained advisory only; chrono is reached solely through russh-sftp 3.0.1 timestamp formatting. No vulnerability or patched upstream release; review on the next russh-sftp release." },
+]
 
 [licenses]
 confidence-threshold = 0.93
